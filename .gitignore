@@ -1,0 +1,13 @@
+.env
+.env.*
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.pem
+*.key
+*.p12
+*.log
