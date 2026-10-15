@@ -14,6 +14,7 @@
 
   var POLL_MS = 5000;
   var HISTORY_REFRESH_MS = 30000;
+  var HISTORY_RETRY_MS = 45000;
   var INCIDENTS_REFRESH_MS = 10000;
   var INCIDENTS_LIMIT = 20;
   var FETCH_TIMEOUT_MS = 9000;
@@ -49,10 +50,36 @@
     incidents: null,
     incidentsSignature: null,
     incidentsMs: null,
-    incidentsError: null
+    incidentsError: null,
+    // history bookkeeping: which zone the loaded series belongs to, and when a failed
+    // attempt happened, so a broken history route is not retried on every 5 s poll.
+    historyZone: null,
+    historyMinutesLoaded: null,
+    historyInFlight: false,
+    historyFailedMs: null,
+    connectionKey: null,
+    // when the current payload arrived, and how much local time has passed since: the feed
+    // ages reported by the API are interpolated forward so the freshness line keeps moving
+    payloadReceivedMs: null,
+    lastErrorMessage: null
   };
 
+  /* Seconds elapsed since the payload was received, added to the ages inside it. */
+  function payloadAgeOffsetSeconds() {
+    if (state.payloadReceivedMs === null) return 0;
+    return Math.max(0, (Date.now() - state.payloadReceivedMs) / 1000);
+  }
+
   function $(id) { return document.getElementById(id); }
+
+  /* Writing the same string into a node still dirties it, so every text update goes
+   * through here: the one-second ticker must not churn the DOM for nothing. */
+  function setText(id, text) {
+    var node = el[id];
+    if (!node) return;
+    var value = (text === null || text === undefined) ? '' : String(text);
+    if (node.textContent !== value) node.textContent = value;
+  }
 
   function cacheDom() {
     [
@@ -60,7 +87,8 @@
       'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
       'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
       'incidents', 'incidents-meta', 'incidents-alerting',
-      'data-banner', 'banner-title', 'banner-detail', 'summary-mode', 'summary-weather', 'attribution'
+      'data-banner', 'banner-title', 'banner-detail', 'summary-mode', 'summary-weather', 'attribution',
+      'brand-subtitle', 'summary-freshness', 'footer-disclaimer', 'ranking-title', 'zones-title'
     ].forEach(function (id) { el[id] = $(id); });
   }
 
@@ -97,7 +125,9 @@
     getJson('/zones').then(function (payload) {
       state.inFlight = false;
       state.lastError = false;
+      state.lastErrorMessage = null;
       state.lastSuccessMs = Date.now();
+      state.payloadReceivedMs = Date.now();
       state.payload = payload;
       applyPayload(payload);
       var nowMs = Date.now();
@@ -107,9 +137,9 @@
     }).catch(function (error) {
       state.inFlight = false;
       state.lastError = true;
-      if (el['conn-detail']) {
-        el['conn-detail'].textContent = 'last request failed (' + error.message + ') — keeping last good data';
-      }
+      state.lastErrorMessage = error.message;
+      // keep the last good payload and let refreshConnection describe the failure in the
+      // status line, so a long outage cannot leave one stale error message on screen
       refreshConnection();
     });
   }
@@ -124,14 +154,33 @@
 
     rememberSeries(state.zones);
     renderSummary(payload);
+    renderTitles(payload);
     renderHero(payload);
     renderCards(state.zones);
     renderRanking(state.zones);
     renderHistoryButtons(state.zones);
     refreshConnection();
 
-    if (state.history === null) {
+    if (state.historyZone !== state.selectedZone || state.historyMinutesLoaded !== state.historyMinutes) {
+      // The API may re-point the default zone at a new highest-risk zone (the live fleet
+      // changes leader as rain moves). Reload so the chart always matches the highlighted
+      // zone button instead of silently showing a different city's series.
       loadHistory();
+    }
+  }
+
+  /* The board is one page in both modes, so its headings follow the fleet the payload
+   * describes: "city" in the India live fleet, "zone" in the simulated demo fleet. */
+  function renderTitles(payload) {
+    var noun = FP.zoneNoun(payload);
+    var plural = FP.zoneNounPlural(payload);
+    setText('ranking-title', 'Risk ranking by ' + noun);
+    if (el['zones-title']) {
+      el['zones-title'].innerHTML = noun.charAt(0).toUpperCase() + noun.slice(1) +
+        ' detail <span class="muted">live values from DynamoDB via the API</span>';
+    }
+    if (el['summary-live'] && el['summary-live'].title !== plural) {
+      el['summary-live'].title = 'How many ' + plural + ' have a scored reading in this snapshot';
     }
   }
 
@@ -163,52 +212,93 @@
   function renderSummary(payload) {
     var live = FP.liveCount(state.zones);
     var mode = FP.modeMeta(payload.zone_mode);
-    el['summary-live'].textContent = live + ' / ' + (payload.zone_count || state.zones.length) + ' zones live';
-    el['summary-model'].textContent = payload.model || 'heuristic-v1';
-    el['summary-generated'].textContent = FP.clockLabel(payload.generated_at);
-    if (el['summary-mode']) {
-      el['summary-mode'].textContent = mode.label + (payload.data_classification ? ' · ' + payload.data_classification : '');
-      el['summary-mode'].title = mode.title;
-    }
-    if (el['summary-weather']) {
-      var weatherText = FP.weatherSummary(payload);
-      if (el['summary-weather'].textContent !== weatherText) el['summary-weather'].textContent = weatherText;
-    }
+    setText('summary-live', live + ' / ' + (payload.zone_count || state.zones.length) + ' zones reporting');
+    setText('summary-model', payload.model || 'heuristic-v1');
+    setText('summary-generated', FP.clockLabel(payload.generated_at));
+    setText('summary-mode', mode.label + (payload.data_classification ? ' · ' + payload.data_classification : ''));
+    if (el['summary-mode']) el['summary-mode'].title = mode.title;
+    setText('summary-weather', FP.weatherSummary(payload));
+    renderFreshness(payload);
     renderDataNotice(payload);
     if (el['api-base']) {
-      el['api-base'].textContent = API_BASE;
+      setText('api-base', API_BASE);
       el['api-base'].setAttribute('href', API_BASE + '/zones');
     }
   }
 
-  // The banner is driven by the payload so the page stays honest in both modes: demo
-  // payloads say everything is simulated, live payloads name what is real.
-  function renderDataNotice(payload) {
-    if (!el['data-banner']) return;
-    var liveMode = payload.zone_mode === 'live_weather';
-    el['data-banner'].classList.toggle('is-live-data', liveMode);
-    el['banner-title'].textContent = liveMode ? 'LIVE WEATHER + SIMULATED HYDRAULICS' : 'SIMULATED DATA';
-    el['banner-detail'].textContent = FP.dataNotice(payload);
-    if (el['attribution']) {
-      var weather = payload.weather || {};
-      el['attribution'].textContent = weather.attribution
-        ? weather.attribution + (weather.docs ? ' — ' + weather.docs : '')
-        : '';
+  /* Data freshness is its own panel row, not a footnote: it is the difference between
+   * "the API answered" and "the weather is new". Recomputed every second so the
+   * countdown to the next provider check actually moves. */
+  function renderFreshness(payload) {
+    if (!el['summary-freshness']) return;
+    var feed = FP.feedStatus(payload, Date.now(), payloadAgeOffsetSeconds());
+    if (!feed.live) {
+      setText('summary-freshness', 'simulator feed');
+      if (el['summary-freshness']) el['summary-freshness'].title = 'Demo mode: readings come from the FloodPulse simulator';
+      return;
+    }
+    var line = FP.freshnessLine(feed) || 'no weather fetched yet';
+    setText('summary-freshness', line);
+    if (el['summary-freshness']) {
+      el['summary-freshness'].title = line;
+      el['summary-freshness'].setAttribute('data-feed-state', feed.state);
     }
   }
 
+  // The banner is driven by the payload so the page stays honest in both modes: demo
+  // payloads say everything is simulated, live payloads name what is real. A stale or
+  // failing feed colours it amber/red instead of pretending nothing is wrong.
+  function renderDataNotice(payload) {
+    if (!el['data-banner']) return;
+    var feed = FP.feedStatus(payload, Date.now(), payloadAgeOffsetSeconds());
+    el['data-banner'].classList.toggle('is-live-data', feed.live);
+    el['data-banner'].classList.toggle('is-feed-degraded', feed.live && (feed.state === 'stale' || feed.state === 'failed'));
+    el['data-banner'].classList.toggle('is-feed-off', feed.live && feed.state === 'off');
+    setText('banner-title', FP.modeTitle(payload));
+    setText('banner-detail', FP.dataNotice(payload));
+    setText('attribution', FP.dataAttribution(payload));
+    if (el['footer-disclaimer'] && payload.model_note) {
+      setText('footer-disclaimer', payload.model_note);
+    }
+    // The page title line states the fleet the payload actually describes, so a live
+    // board is never captioned with the demo fleet's cities.
+    if (el['brand-subtitle']) {
+      setText('brand-subtitle', fleetSubtitle(payload, feed));
+    }
+  }
+
+  function fleetSubtitle(payload, feed) {
+    var zones = (payload && payload.zones) || [];
+    var names = zones.slice(0, 5).map(function (zone) { return zone.name; });
+    var suffix = zones.length > names.length ? ' +' + (zones.length - names.length) : '';
+    if (feed.live) {
+      return 'India live-weather monitoring · ' + (feed.zoneCount || zones.length) +
+        ' cities · ' + names.join(', ') + suffix;
+    }
+    return 'Simulated sensor fleet · ' + zones.length + ' zones · ' +
+      (names.length ? names.join(', ') + suffix : 'demo mode');
+  }
+
   function refreshConnection() {
-    var info = FP.connectionState(Date.now(), state.lastSuccessMs, state.lastError);
-    el['conn-badge'].textContent = info.label;
-    el['conn-badge'].className = 'conn-badge conn-' + info.state;
-    document.body.classList.remove('is-live', 'is-stale', 'is-disconnected', 'is-connecting');
-    document.body.classList.add('is-' + info.state);
-    if (!state.lastError) {
-      el['conn-detail'].textContent = info.detail;
+    var info = FP.connectionState(Date.now(), state.lastSuccessMs, state.lastError, state.payload, {
+      ageOffsetSeconds: payloadAgeOffsetSeconds(),
+      lastErrorMessage: state.lastErrorMessage
+    });
+    // Toggling body classes re-styles the whole document, so only do it on a real
+    // transition; the one-second ticker otherwise rewrote the same classes forever.
+    if (state.connectionKey !== info.state) {
+      state.connectionKey = info.state;
+      el['conn-badge'].className = 'conn-badge conn-' + info.state;
+      document.body.classList.remove('is-live', 'is-stale', 'is-disconnected', 'is-connecting');
+      document.body.classList.add('is-' + info.state);
     }
+    setText('conn-badge', info.label);
+    setText('conn-detail', info.detail);
     if (state.lastSuccessMs) {
-      el['last-update'].textContent = FP.clockLabel(new Date(state.lastSuccessMs).toISOString());
+      setText('last-update', FP.clockLabel(new Date(state.lastSuccessMs).toISOString()));
     }
+    // the feed countdown ticks here, once per second, on the panel row only
+    if (state.payload) renderFreshness(state.payload);
   }
 
   /* ------------------------------------------------------------------- hero --- */
@@ -216,13 +306,22 @@
   function renderHero(payload) {
     var highest = payload.highest_risk_zone;
     var container = el.hero;
+    var feed = FP.feedStatus(payload, Date.now());
+    var noun = FP.zoneNoun(payload);
     if (!highest) {
+      // An empty board has to say why it is empty, and the reason differs per mode: in
+      // live mode nothing is started by hand, the fleet waits for the provider.
+      var hint = feed.live
+        ? 'No city reading has been computed yet. The live fleet fetches rainfall and soil ' +
+          'moisture from ' + (feed.provider || 'the weather provider') + (feed.refreshMinutes ? ' every ' + feed.refreshMinutes + ' minutes' : '') +
+          ' and this panel fills in as soon as the first refresh is ingested.'
+        : 'No simulated reading has been ingested yet. Start the simulator ' +
+          '(<code>python tools\\live_simulator.py</code>) and this panel populates automatically.';
       container.innerHTML =
         '<div class="card hero hero-empty">' +
-        '<p class="hero-kicker">Highest risk zone</p>' +
+        '<p class="hero-kicker">Highest risk ' + noun + '</p>' +
         '<h2>Awaiting live data</h2>' +
-        '<p class="muted">No simulated reading has been ingested yet. Start the simulator ' +
-        '(<code>python tools/live_simulator.py</code>) and this panel will populate automatically.</p>' +
+        '<p class="muted">' + hint + '</p>' +
         '</div>';
       return;
     }
@@ -232,7 +331,7 @@
     container.innerHTML =
       '<div class="card hero band-' + band + '">' +
       '<div class="hero-main">' +
-      '<p class="hero-kicker">Highest risk zone</p>' +
+      '<p class="hero-kicker">Highest risk ' + noun + '</p>' +
       '<h2 class="hero-name">' + FP.escapeHtml(highest.name) + '</h2>' +
       '<p class="hero-meta">' + FP.escapeHtml(highest.zone_id) + ' · reading ' +
       FP.escapeHtml(FP.clockLabel(highest.timestamp)) +
@@ -427,9 +526,21 @@
 
   function loadHistory() {
     if (!state.selectedZone) return;
-    getJson('/zones/' + encodeURIComponent(state.selectedZone) + '/history?minutes=' + state.historyMinutes)
+    if (state.historyInFlight) return;
+    // A failing history route must not be hammered: the 5 s poll and the 30 s ticker would
+    // otherwise both retry a broken endpoint. One retry per backoff window instead.
+    if (state.historyFailedMs !== null && Date.now() - state.historyFailedMs < HISTORY_RETRY_MS) return;
+    var zone = state.selectedZone;
+    var minutes = state.historyMinutes;
+    state.historyInFlight = true;
+    getJson('/zones/' + encodeURIComponent(zone) + '/history?minutes=' + minutes)
       .then(function (data) {
+        state.historyInFlight = false;
+        state.historyFailedMs = null;
+        if (zone !== state.selectedZone || minutes !== state.historyMinutes) return; // stale response
         state.history = data;
+        state.historyZone = zone;
+        state.historyMinutesLoaded = minutes;
         state.hoverIndex = null;
         drawHistory();
         el['history-meta'].textContent = data.point_count + ' points · ' + data.minutes +
@@ -437,7 +548,10 @@
           ' · model ' + data.model;
       })
       .catch(function (error) {
-        el['history-meta'].textContent = 'history unavailable (' + error.message + ')';
+        state.historyInFlight = false;
+        state.historyFailedMs = Date.now();
+        el['history-meta'].textContent = 'history unavailable (' + error.message + ') — retrying in ' +
+          Math.round(HISTORY_RETRY_MS / 1000) + ' s';
       });
   }
 
@@ -472,11 +586,17 @@
     if (!canvas || !canvas.getContext) return;
     var ctx = canvas.getContext('2d');
     var dpr = window.devicePixelRatio || 1;
-    var cssWidth = canvas.clientWidth || 900;
+    var cssWidth = Math.round(canvas.clientWidth || 900);
     var cssHeight = 220;
-    canvas.width = Math.round(cssWidth * dpr);
-    canvas.height = Math.round(cssHeight * dpr);
-    canvas.style.height = cssHeight + 'px';
+    // Only resize the backing store when it actually changes: assigning canvas.width on
+    // every hover repaint forced a synchronous reflow on each mousemove.
+    var pixelWidth = Math.round(cssWidth * dpr);
+    var pixelHeight = Math.round(cssHeight * dpr);
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+      canvas.style.height = cssHeight + 'px';
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssWidth, cssHeight);
 
@@ -588,11 +708,12 @@
     state.hoverIndex = index;
     var point = data.points[index];
     var tooltip = el['history-tooltip'];
+    var readings = point.readings || {}; // a point without readings must not throw
     tooltip.hidden = false;
     tooltip.innerHTML = FP.escapeHtml(FP.clockLabel(point.timestamp)) + ' · score ' +
       FP.escapeHtml(FP.formatScore(point.risk_score)) + ' · ' + FP.escapeHtml(FP.classLabel(point.risk_class)) +
-      '<br><span class="muted">rain ' + FP.escapeHtml(FP.formatValueWithUnit('rainfall_mm_per_hr', point.readings.rainfall_mm_per_hr)) +
-      ' · water ' + FP.escapeHtml(FP.formatValueWithUnit('water_level_m', point.readings.water_level_m)) + '</span>';
+      '<br><span class="muted">rain ' + FP.escapeHtml(FP.formatValueWithUnit('rainfall_mm_per_hr', readings.rainfall_mm_per_hr)) +
+      ' · water ' + FP.escapeHtml(FP.formatValueWithUnit('water_level_m', readings.water_level_m)) + '</span>';
     tooltip.style.left = Math.round(event.clientX - rect.left) + 'px';
     drawHistory();
   }
@@ -622,7 +743,9 @@
     var signature = FP.incidentsSignature(payload);
     if (signature !== state.incidentsSignature) {
       state.incidentsSignature = signature;
-      el.incidents.innerHTML = FP.renderIncidents(payload, Date.now());
+      el.incidents.innerHTML = FP.renderIncidents(payload, Date.now(), {
+        noun: FP.zoneNoun(state.payload)
+      });
     } else {
       tickIncidentDurations();
     }
@@ -666,6 +789,7 @@
       state.selectedZone = button.getAttribute('data-zone-pick');
       state.userSelected = true;
       state.history = null;
+      state.historyFailedMs = null; // an explicit click always retries immediately
       renderHistoryButtons(state.zones);
       loadHistory();
     });
@@ -674,6 +798,8 @@
       var button = event.target.closest('[data-range]');
       if (!button) return;
       state.historyMinutes = Number(button.getAttribute('data-range'));
+      state.history = null;
+      state.historyFailedMs = null;
       renderHistoryButtons(state.zones);
       loadHistory();
     });

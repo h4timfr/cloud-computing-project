@@ -213,30 +213,65 @@
 
   /* ------------------------------------------------------- connection state --- */
 
-  function connectionState(nowMs, lastSuccessMs, hadError) {
+  function connectionState(nowMs, lastSuccessMs, hadError, payload, options) {
+    var opts = options || {};
     if (lastSuccessMs === null || lastSuccessMs === undefined) {
       return {
         state: 'connecting',
         label: 'CONNECTING',
-        detail: 'waiting for the first successful poll'
+        // a first poll that failed must say why: otherwise the page sits on "waiting"
+        // with no sign that the API actually answered with an error
+        detail: 'waiting for the first successful poll' +
+          (hadError && opts.lastErrorMessage ? ' — last request failed: ' + opts.lastErrorMessage : '')
       };
     }
     var age = Math.max(0, nowMs - lastSuccessMs);
+    var feed = payload ? feedStatus(payload, nowMs, opts.ageOffsetSeconds) : null;
+    // A successful poll proves the API answered, not that the weather in it is new: in live
+    // mode the detail always states the feed's own age, so "LIVE" can never be read as
+    // "this second's measurement".
+    var liveDetail = feed && feed.live ? liveFeedDetail(feed) : null;
+    // The most recent request error is part of the state, not a one-off message: a board
+    // that has been failing for ten minutes must say so, not repeat one old error forever.
+    var errorNote = (hadError && opts.lastErrorMessage) ? ' · last request failed: ' + opts.lastErrorMessage : '';
     if (age <= LIVE_MS && !hadError) {
-      return { state: 'live', label: 'LIVE', detail: 'updated ' + ageLabel(age / 1000) };
+      return {
+        state: 'live',
+        label: 'LIVE',
+        detail: liveDetail || ('updated ' + ageLabel(age / 1000))
+      };
     }
     if (age <= STALE_MS) {
       return {
         state: 'stale',
         label: 'STALE',
-        detail: 'showing last good data, updated ' + ageLabel(age / 1000)
+        detail: 'API answers are late (last good poll ' + ageLabel(age / 1000) + ')' +
+          (liveDetail ? ' · ' + liveDetail : '') + errorNote
       };
     }
     return {
       state: 'disconnected',
       label: 'DISCONNECTED',
-      detail: 'no successful poll for ' + ageLabel(age / 1000) + ' — values below may be out of date'
+      detail: 'no successful poll for ' + ageLabel(age / 1000) +
+        ' — the values below may be out of date' +
+        (liveDetail ? ' · ' + liveDetail : '') + errorNote
     };
+  }
+
+  function liveFeedDetail(feed) {
+    if (!feed.enabled) return 'weather provider disabled — serving the last fetched values';
+    if (feed.failedZones.length) {
+      return 'latest weather fetch failed (' + feed.failedZones[0].error + ') — showing the last fetched values';
+    }
+    if (feed.feedAgeSeconds === null) return 'no weather fetched yet for this fleet';
+    var parts = ['weather feed ' + agePhrase(feed.feedAgeSeconds)];
+    var countdown = refreshCountdown(feed);
+    if (countdown !== null) {
+      parts.push(countdown <= 0 ? 'refresh due now'
+        : 'next provider check in ' + Math.floor(countdown / 60) + ':' + pad2(countdown % 60));
+    }
+    if (feed.state === 'stale') parts.push('the provider has missed a full refresh cycle');
+    return parts.join(' · ');
   }
 
   /* -------------------------------------------------------------- ranking --- */
@@ -305,6 +340,31 @@
     return MODE_META[mode] || MODE_META.UNKNOWN;
   }
 
+  // The provider id as it arrives in the payload versus the name a reader recognises.
+  var PROVIDER_LABELS = { 'open-meteo': 'Open-Meteo' };
+
+  function providerLabel(provider) {
+    if (!provider) return null;
+    var key = String(provider).toLowerCase();
+    return PROVIDER_LABELS[key] || String(provider);
+  }
+
+  // "city" in the live India fleet, "zone" in the simulated fleet: the same board has to
+  // read naturally in both, without hardcoding either one.
+  function zoneNoun(payload) {
+    return payload && payload.zone_mode === 'live_weather' ? 'city' : 'zone';
+  }
+
+  function zoneNounPlural(payload) {
+    return payload && payload.zone_mode === 'live_weather' ? 'cities' : 'zones';
+  }
+
+  /* A single zone entry carries its own mode, which is what card rendering has to work
+   * from (it never sees the whole payload). */
+  function isLiveZone(zone) {
+    return !!zone && zone.zone_mode === 'live_weather';
+  }
+
   function modeBadge(zone) {
     var meta = modeMeta(zone && zone.zone_mode);
     var weather = zone && zone.weather;
@@ -336,28 +396,156 @@
     return modeBadge(zone) + weatherEvidence(zone);
   }
 
-  // The banner text must follow the payload, never a hardcoded assumption: the same
-  // page is served in demo (all simulated) and live (mixed) mode.
+  /* CC BY requires attribution while provider data is displayed, so it is shown exactly
+   * when such data is being shown: a demo board with no fetched weather gets nothing. */
+  function dataAttribution(payload) {
+    var data = payload || {};
+    var weather = data.weather || {};
+    var feed = feedStatus(data, null);
+    if (!feed.live) return '';
+    if (!feed.enabled && !feed.zoneCount) return '';
+    if (!weather.attribution) return '';
+    return weather.attribution + (weather.docs ? ' — ' + weather.docs : '');
+  }
+
+  function modeTitle(payload) {
+    var mode = payload ? payload.zone_mode : undefined;
+    if (mode === 'live_weather') return 'LIVE WEATHER · SIMULATED HYDRAULICS';
+    if (mode === 'simulated' || mode === undefined) return 'SIMULATED DATA';
+    return 'DATA SOURCE: ' + String(mode).toUpperCase();
+  }
+
+  // The banner detail is deliberately short: one sentence on what is real, plus the
+  // freshness line. The long "not a validated model" wording belongs in the footer, not
+  // in a banner a demo visitor has to read from across the room.
   function dataNotice(payload) {
     var data = payload || {};
-    var notes = data.notes || [];
-    var mode = data.zone_mode;
     var weather = data.weather || {};
-    var lines = [];
-    if (mode === 'live_weather') {
-      lines.push('LIVE WEATHER + SIMULATED HYDRAULICS');
-    } else if (mode === 'simulated' || mode === undefined) {
-      lines.push('SIMULATED DATA');
-    } else {
-      lines.push('DATA SOURCE: ' + String(mode).toUpperCase());
+    var feed = feedStatus(data, null);
+    if (data.zone_mode === 'live_weather') {
+      var sentence = 'Rainfall intensity and soil saturation come from the external ' +
+        (providerLabel(feed.provider) || 'weather') + ' service' +
+        (feed.zoneCount ? ' for ' + feed.zoneCount + ' Indian cities' : '') +
+        '. Drain level, water level and flow rate are SIMULATED: no real sensors exist for them.';
+      var fresh = freshnessLine(feed);
+      return fresh ? sentence + ' ' + fresh + '.' : sentence;
     }
-    if (notes.length) {
-      lines.push(notes[0]);
+    // A payload with no mode at all is not proof of live data: describe it as the
+    // simulated default rather than implying anything was measured.
+    var notes = data.notes || [];
+    if (notes.length) return 'Every metric on this board is simulated by the FloodPulse ' +
+      'simulator. ' + notes[0];
+    return 'Every metric on this board is simulated by the FloodPulse simulator.';
+  }
+
+  /* ------------------------------------------------------------ feed health --- */
+
+  // Everything the page knows about the external weather feed, derived only from the
+  // payload. Missing fields come back as null: nothing here is guessed or assumed fresh.
+  //
+  // ageOffsetSeconds is the time this page has been holding the payload: the API reports
+  // an age that was true when it answered, and adding the local elapsed time is what makes
+  // the age (and the countdown) keep moving between polls instead of freezing for 5 s.
+  function feedStatus(payload, nowMs, ageOffsetSeconds) {
+    var data = payload || {};
+    var weather = data.weather || {};
+    var refresh = toNumber(weather.refresh_seconds);
+    var offset = toNumber(ageOffsetSeconds);
+    if (offset === null || offset < 0) offset = 0;
+    var ages = [];
+    var attemptAges = [];
+    var failed = [];
+
+    function note(zoneId, cache) {
+      var age = toNumber(cache.cache_age_seconds);
+      if (age !== null) ages.push(age + offset);
+      var attemptAge = toNumber(cache.last_attempt_age_seconds);
+      if (attemptAge !== null) attemptAges.push(attemptAge + offset);
+      if (cache.last_attempt_error) {
+        failed.push({ zone_id: zoneId, error: String(cache.last_attempt_error) });
+      }
     }
-    if (weather.enabled && weather.attribution) {
-      lines.push(weather.attribution);
+
+    (data.zones || []).forEach(function (zone) {
+      if (zone && zone.weather) note(zone.zone_id, zone.weather);
+    });
+    // the weather block also carries per-zone maps, so a payload whose zones are not
+    // expanded still reports a usable feed age
+    if (!ages.length && weather.cache_age_seconds) {
+      Object.keys(weather.cache_age_seconds).forEach(function (zoneId) {
+        note(zoneId, {
+          cache_age_seconds: weather.cache_age_seconds[zoneId],
+          last_attempt_age_seconds: (weather.last_attempt_age_seconds || {})[zoneId],
+          last_attempt_error: (weather.last_attempt_error || {})[zoneId]
+        });
+      });
     }
-    return lines.join(' ');
+
+    var live = data.zone_mode === 'live_weather';
+    var feed = {
+      live: live,
+      // 'enabled' is only claimed off when the payload says so outright
+      enabled: weather.enabled !== false,
+      provider: weather.provider || null,
+      refreshSeconds: refresh,
+      refreshMinutes: refresh === null ? null : Math.round(refresh / 60),
+      attribution: weather.attribution || null,
+      docs: weather.docs || null,
+      zoneCount: (weather.live_zones || []).length,
+      feedAgeSeconds: ages.length ? Math.min.apply(null, ages) : null,
+      attemptAgeSeconds: attemptAges.length ? Math.min.apply(null, attemptAges) : null,
+      failedZones: failed,
+      attempted: !!(weather.last_refresh && weather.last_refresh.attempted),
+      reason: (weather.last_refresh && weather.last_refresh.reason) || null,
+      error: (weather.last_refresh && weather.last_refresh.error) || null,
+      ageOffsetSeconds: offset,
+      nowMs: isFiniteNumber(nowMs) ? nowMs : null
+    };
+    feed.state = feedState(feed);
+    return feed;
+  }
+
+  function feedState(feed) {
+    if (!feed || !feed.live) return 'simulated';
+    if (!feed.enabled) return 'off';
+    if (feed.failedZones.length) return 'failed';
+    if (feed.feedAgeSeconds === null) return 'none';
+    // twice the refresh window means the provider has missed at least one whole cycle
+    if (feed.refreshSeconds && feed.feedAgeSeconds > feed.refreshSeconds * 2) return 'stale';
+    return 'fresh';
+  }
+
+  function agePhrase(seconds) {
+    var num = toNumber(seconds);
+    if (num === null) return 'unknown';
+    if (num < 60) return Math.round(num) + ' s old';
+    if (num < 5400) return Math.round(num / 60) + ' min old';
+    return Math.round(num / 3600) + ' h old';
+  }
+
+  // "weather feed 4 min old · next provider check in ~6 min" — the countdown matters: at a
+  // ten-minute cadence a still page otherwise looks broken during a live demo.
+  function freshnessLine(feed) {
+    if (!feed || !feed.live) return '';
+    if (!feed.enabled) return 'provider disabled — serving the last fetched values';
+    var parts = [];
+    if (feed.feedAgeSeconds !== null) parts.push('weather feed ' + agePhrase(feed.feedAgeSeconds));
+    if (feed.refreshSeconds && feed.attemptAgeSeconds !== null) {
+      var wait = feed.refreshSeconds - feed.attemptAgeSeconds;
+      parts.push(wait <= 0 ? 'refresh due now'
+        : 'next provider check in ~' + Math.max(1, Math.round(wait / 60)) + ' min');
+    }
+    if (feed.failedZones.length) {
+      parts.push('fetch failing on ' + feed.failedZones.length + ' zone(s)');
+    }
+    return parts.join(' · ');
+  }
+
+  // Seconds until the provider is allowed to be asked again (for the ticking countdown).
+  function refreshCountdown(feed) {
+    if (!feed || !feed.enabled || !feed.refreshSeconds) return null;
+    if (feed.attemptAgeSeconds === null) return null;
+    return Math.max(0, Math.round(feed.refreshSeconds - feed.attemptAgeSeconds));
   }
 
   function weatherSummary(payload) {
@@ -374,7 +562,7 @@
     var refresh = isFiniteNumber(weather.refresh_seconds) ? weather.refresh_seconds : 600;
     var last = weather.last_refresh || {};
     var parts = [];
-    parts.push('Provider ' + (weather.provider || 'unknown') + ', refreshed at most every ' +
+    parts.push('Provider ' + (providerLabel(weather.provider) || 'unknown') + ', refreshed at most every ' +
       Math.round(refresh / 60) + ' min');
     if (last.attempted) {
       parts.push('last refresh: ' + ((last.refreshed || []).length) + ' zone(s) updated');
@@ -444,8 +632,13 @@
         '<div><dt>Reading #</dt><dd data-f="sequence">' + escapeHtml(latest.sequence) + '</dd></div>' +
         '</dl>' +
         '</div>'
-      : '<div class="zone-empty"><p>Awaiting the first simulated reading for this zone.</p>' +
-        '<p class="muted">Thresholds below are the configured zone limits.</p></div>';
+      // A city with no reading yet is not waiting for a simulator: in live mode the
+      // fleet waits for the next provider refresh, and saying otherwise would be false.
+      : '<div class="zone-empty"><p>' + (isLiveZone(zone)
+        ? 'Awaiting the first live weather refresh for this city.'
+        : 'Awaiting the first simulated reading for this zone.') + '</p>' +
+        '<p class="muted">Thresholds below are the configured ' +
+        (isLiveZone(zone) ? 'city' : 'zone') + ' limits.</p></div>';
 
     return (
       '<article class="card zone-card band-' + band + (latest ? '' : ' is-empty') + '" data-zone="' + escapeHtml(zone.zone_id) + '">' +
@@ -628,13 +821,15 @@
     );
   }
 
-  function renderIncidents(payload, nowMs) {
+  function renderIncidents(payload, nowMs, options) {
     if (!payload) return '<li class="incident-row incident-empty muted">loading incidents…</li>';
     var incidents = payload.incidents || [];
     if (!incidents.length) {
+      var noun = (options && options.noun) || 'zone';
       return '<li class="incident-row incident-empty muted">' +
-        'No flood incidents recorded yet. An incident opens automatically when a zone\'s ' +
-        'effective risk class reaches WARNING or CRITICAL, and closes once the zone is back to NORMAL.' +
+        'No flood incidents recorded yet. An incident opens automatically when a ' + noun +
+        '\'s effective risk class reaches WARNING or CRITICAL, and closes once the ' + noun +
+        ' is back to NORMAL.' +
         '</li>';
     }
     return incidents.map(function (incident) {
@@ -702,10 +897,21 @@
     sourceSummary: sourceSummary,
     modeMeta: modeMeta,
     modeBadge: modeBadge,
+    zoneNoun: zoneNoun,
+    zoneNounPlural: zoneNounPlural,
+    isLiveZone: isLiveZone,
+    dataAttribution: dataAttribution,
+    providerLabel: providerLabel,
     weatherEvidence: weatherEvidence,
     zoneProvenance: zoneProvenance,
     dataNotice: dataNotice,
+    modeTitle: modeTitle,
     weatherSummary: weatherSummary,
+    feedStatus: feedStatus,
+    feedState: feedState,
+    freshnessLine: freshnessLine,
+    refreshCountdown: refreshCountdown,
+    agePhrase: agePhrase,
     sparklinePath: sparklinePath,
     historySeries: historySeries,
     toNumber: toNumber

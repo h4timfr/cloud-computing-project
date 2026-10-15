@@ -487,18 +487,36 @@ check('the ranking names the mode of every zone', () => {
 });
 
 check('the banner text follows the payload in both modes', () => {
+  // The title and the detail are asserted separately: the title states the mode, the
+  // detail states what is real and how fresh it is. A demo payload must never be
+  // captioned as live, and a live payload must never claim a real sensor.
   const demoNotice = FP.dataNotice({ zone_mode: 'simulated', notes: ['All FloodPulse sensor data is SIMULATED.'] });
-  assert.match(demoNotice, /^SIMULATED DATA/);
-  const liveNotice = FP.dataNotice({
+  assert.equal(FP.modeTitle({ zone_mode: 'simulated' }), 'SIMULATED DATA');
+  assert.match(demoNotice, /simulated/i);
+  assert.ok(!/provider|Open-Meteo|REAL/.test(demoNotice), 'a demo banner must not name a provider');
+
+  const livePayload = {
     zone_mode: 'live_weather',
     notes: ['Rainfall intensity and soil saturation in these zones come from the external Open-Meteo weather service;'],
-    weather: { enabled: true, attribution: 'Weather data by Open-Meteo.com (CC BY 4.0)' }
-  });
-  assert.match(liveNotice, /^LIVE WEATHER \+ SIMULATED HYDRAULICS/);
+    weather: {
+      enabled: true, provider: 'open-meteo', attribution: 'Weather data by Open-Meteo.com (CC BY 4.0)',
+      refresh_seconds: 600, live_zones: ['a', 'b', 'c', 'd', 'e'],
+      cache_age_seconds: { a: 240, b: 240, c: 240, d: 240, e: 240 },
+      last_attempt_age_seconds: { a: 240, b: 240, c: 240, d: 240, e: 240 }
+    }
+  };
+  assert.equal(FP.modeTitle(livePayload), 'LIVE WEATHER · SIMULATED HYDRAULICS');
+  const liveNotice = FP.dataNotice(livePayload);
   assert.match(liveNotice, /Open-Meteo/);
+  assert.match(liveNotice, /5 Indian cities/);
+  assert.match(liveNotice, /SIMULATED/);
+  assert.match(liveNotice, /weather feed 4 min old/);
+  assert.match(liveNotice, /next provider check in ~6 min/);
   assert.ok(!/^SIMULATED DATA/.test(liveNotice));
-  const unknownNotice = FP.dataNotice({});
-  assert.match(unknownNotice, /SIMULATED DATA/);
+  // an unknown mode is never upgraded to a live claim
+  assert.match(FP.modeTitle({}), /SIMULATED DATA/);
+  assert.match(FP.dataNotice({}), /simulated/i);
+  assert.match(FP.modeTitle({ zone_mode: 'weird-mode' }), /WEIRD-MODE/);
 });
 
 check('the weather summary explains the refresh cadence and any provider problem', () => {
@@ -518,7 +536,7 @@ check('the weather summary explains the refresh cadence and any provider problem
       last_refresh: { attempted: true, refreshed: ['city-chennai'], error: 'http_503' }
     }
   });
-  assert.match(fresh, /open-meteo/);
+  assert.match(fresh, /open-meteo/i);
   assert.match(fresh, /10 min/);
   assert.match(fresh, /http_503/);
   const cached = FP.weatherSummary({
@@ -746,10 +764,15 @@ check('dashboard never writes: no POST, no /readings, no key handling', () => {
 });
 
 check('dashboard has no remote dependencies or CDN assets', () => {
+  // data: URIs (the inline favicon) are not remote fetches, so they are stripped first;
+  // every remaining absolute URL still has to be the project's own API endpoint.
+  const withoutDataUris = (source) => source
+    .replace(/href="data:[^"]*"/gi, 'href="data:"')
+    .replace(/url\(data:[^)]*\)/gi, 'url(data:)');
   const remote = /https?:\/\/(?!2rg2u8quzd\.execute-api\.eu-north-1\.amazonaws\.com)[a-z0-9.-]+/i;
-  assert.ok(!remote.test(htmlSource), 'index.html references a remote asset');
-  assert.ok(!remote.test(cssSource), 'styles.css references a remote asset');
-  assert.ok(!remote.test(appSource), 'app.js references a remote asset');
+  assert.ok(!remote.test(withoutDataUris(htmlSource)), 'index.html references a remote asset');
+  assert.ok(!remote.test(withoutDataUris(cssSource)), 'styles.css references a remote asset');
+  assert.ok(!remote.test(withoutDataUris(appSource)), 'app.js references a remote asset');
   assert.ok(!/cdn|unpkg|jsdelivr|googleapis/i.test(htmlSource), 'index.html mentions a CDN');
   assert.ok(!/import\s+.*from\s+['"]https?:/i.test(appSource), 'app.js imports a remote module');
 });
