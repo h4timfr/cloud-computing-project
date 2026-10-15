@@ -9,8 +9,9 @@ No AWS calls are made anywhere in this package at M0.
 
 from __future__ import annotations
 
+import os
 from copy import deepcopy
-from typing import Any
+from typing import Any, Mapping
 
 SCHEMA_VERSION = "1.0"
 RISK_MODEL_ID = "heuristic-v1"
@@ -63,12 +64,12 @@ DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
 }
 
 # --------------------------------------------------------------------------- #
-# Fixed zone definitions (3 zones, MVP scope)
+# Fixed zone definitions (3 simulated zones = the local/demo fleet)
 # --------------------------------------------------------------------------- #
 # ``thresholds`` holds per-zone overrides only; empty means "use the defaults".
 # Overrides model different local drainage capacity, not measured calibration.
 
-ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
+DEMO_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "zone_id": "zone-riverside-north",
         "name": "Riverside North",
@@ -101,7 +102,185 @@ ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
 )
 
-ZONE_IDS: tuple[str, ...] = tuple(zone["zone_id"] for zone in ZONE_DEFINITIONS)
+# --------------------------------------------------------------------------- #
+# Live-weather zones (M4): five Indian cities fed by a real external provider
+# --------------------------------------------------------------------------- #
+# Rainfall intensity and soil saturation for these zones come from Open-Meteo (see
+# ``weather.py``). Drain level, water level and flow rate are **simulated** by a
+# deterministic hydraulic response to that real rainfall (see ``live_weather.py``),
+# because FloodPulse has no real drain/flow sensors anywhere.
+#
+# The breakpoints are the same hand-set heuristic defaults as the demo zones: they
+# are NOT calibrated for these cities, they are not official warning thresholds, and
+# nothing here should be read as an authoritative flood warning for them.
+
+LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    {
+        "zone_id": "city-chennai",
+        "name": "Chennai",
+        "country": "IN",
+        "latitude": 13.0827,
+        "longitude": 80.2707,
+        "description": "Coastal Bay of Bengal metropolis; monsoon and cyclone rainfall.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-mumbai",
+        "name": "Mumbai",
+        "country": "IN",
+        "latitude": 19.0760,
+        "longitude": 72.8777,
+        "description": "Dense Arabian Sea coast; extreme short-duration monsoon rainfall.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-bengaluru",
+        "name": "Bengaluru",
+        "country": "IN",
+        "latitude": 12.9716,
+        "longitude": 77.5946,
+        "description": "Inland plateau city; flash flooding from convective storms.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-hyderabad",
+        "name": "Hyderabad",
+        "country": "IN",
+        "latitude": 17.3850,
+        "longitude": 78.4867,
+        "description": "Deccan plateau city with lake and drainage-network flooding.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-kochi",
+        "name": "Kochi",
+        "country": "IN",
+        "latitude": 9.9312,
+        "longitude": 76.2673,
+        "description": "Backwater coastal city; very heavy south-west monsoon rainfall.",
+        "thresholds": {},
+    },
+)
+
+#: Kept as the library default so every pre-M4 caller keeps working unchanged.
+ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = DEMO_ZONE_DEFINITIONS
+ZONE_IDS: tuple[str, ...] = tuple(zone["zone_id"] for zone in DEMO_ZONE_DEFINITIONS)
+LIVE_ZONE_IDS: tuple[str, ...] = tuple(zone["zone_id"] for zone in LIVE_ZONE_DEFINITIONS)
+
+#: Zone "mode": which fleet is active and where its numbers come from.
+#: The canonical values below are what the API reports; the env var accepts the short
+#: forms ``live``/``demo`` as aliases so operators do not have to remember the exact string.
+ZONE_MODE_LIVE = "live_weather"
+ZONE_MODE_DEMO = "simulated"
+ZONE_MODE_ENV = "FLOODPULSE_ZONE_MODE"
+ZONE_MODE_INPUT_LIVE = "live"
+ZONE_MODE_INPUT_DEMO = "demo"
+ZONE_MODE_INPUTS: tuple[str, ...] = (ZONE_MODE_INPUT_LIVE, ZONE_MODE_INPUT_DEMO)
+ZONE_MODE_ALIASES: dict[str, str] = {
+    ZONE_MODE_INPUT_LIVE: ZONE_MODE_LIVE,
+    ZONE_MODE_LIVE: ZONE_MODE_LIVE,
+    ZONE_MODE_INPUT_DEMO: ZONE_MODE_DEMO,
+    ZONE_MODE_DEMO: ZONE_MODE_DEMO,
+}
+
+#: Default when the environment says nothing: the simulator, i.e. pre-M4 behaviour.
+DEFAULT_ZONE_MODE = ZONE_MODE_DEMO
+
+# --------------------------------------------------------------------------- #
+# Metric provenance tags (M4)
+# --------------------------------------------------------------------------- #
+# Every metric of every reading is tagged with where its number came from:
+#   REAL          -- passed through from an external provider as delivered
+#   MODEL_DERIVED -- computed by FloodPulse from external provider fields
+#   SIMULATED     -- generated by the FloodPulse simulator / hydraulic response
+
+SOURCE_REAL = "REAL"
+SOURCE_MODEL_DERIVED = "MODEL_DERIVED"
+SOURCE_SIMULATED = "SIMULATED"
+SOURCES: tuple[str, ...] = (SOURCE_REAL, SOURCE_MODEL_DERIVED, SOURCE_SIMULATED)
+
+SOURCE_DESCRIPTIONS: dict[str, str] = {
+    SOURCE_REAL: "Measured/provider value passed through unchanged",
+    SOURCE_MODEL_DERIVED: "Derived by FloodPulse from real provider fields",
+    SOURCE_SIMULATED: "Generated by the FloodPulse simulator (no real sensor exists)",
+}
+
+#: Provenance per metric for the two kinds of zone.
+METRIC_SOURCES_SIMULATED: dict[str, str] = {metric: SOURCE_SIMULATED for metric in METRIC_ORDER}
+METRIC_SOURCES_LIVE: dict[str, str] = {
+    "rainfall_mm_per_hr": SOURCE_REAL,
+    "drain_level_m": SOURCE_SIMULATED,
+    "soil_saturation_pct": SOURCE_MODEL_DERIVED,
+    "water_level_m": SOURCE_SIMULATED,
+    "flow_rate_m3_s": SOURCE_SIMULATED,
+}
+
+DATA_CLASSIFICATION_SIMULATED = "simulated"
+DATA_CLASSIFICATION_MIXED = "mixed"
+
+# --------------------------------------------------------------------------- #
+# External weather provider (M4, Open-Meteo -- free, no API key)
+# --------------------------------------------------------------------------- #
+
+WEATHER_PROVIDER = "open-meteo"
+WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast"
+WEATHER_ATTRIBUTION = "Weather data by Open-Meteo.com (CC BY 4.0)"
+WEATHER_DOCS_URL = "https://open-meteo.com/en/docs"
+
+#: ``open-meteo`` (live) or ``off`` (never call the network: pure demo mode).
+WEATHER_MODE_ENV = "FLOODPULSE_WEATHER"
+WEATHER_MODE_LIVE = "open-meteo"
+WEATHER_MODE_OFF = "off"
+WEATHER_MODES: tuple[str, ...] = (WEATHER_MODE_LIVE, WEATHER_MODE_OFF)
+
+#: "refresh external weather at most every 10 minutes" -- enforced by this cache age.
+WEATHER_REFRESH_SECONDS = 600
+WEATHER_REFRESH_ENV = "FLOODPULSE_WEATHER_REFRESH_SECONDS"
+WEATHER_REFRESH_MIN_SECONDS = 60
+WEATHER_REFRESH_MAX_SECONDS = 24 * 60 * 60
+
+#: The Lambda timeout is 10 s, so the provider call must stay well inside that.
+WEATHER_TIMEOUT_SECONDS = 4.0
+WEATHER_TIMEOUT_ENV = "FLOODPULSE_WEATHER_TIMEOUT_SECONDS"
+WEATHER_TIMEOUT_MIN_SECONDS = 1.0
+WEATHER_TIMEOUT_MAX_SECONDS = 8.0
+
+WEATHER_CACHE_SORT_KEY = "WEATHER#CACHE"
+WEATHER_PROVIDER_FIELDS: tuple[str, ...] = ("precipitation", "rain")
+WEATHER_PROVIDER_HOURLY_FIELDS: tuple[str, ...] = ("precipitation", "soil_moisture_0_to_7cm")
+
+#: Volumetric soil moisture that FloodPulse treats as 100 % saturation (m3/m3).
+#: A modelling choice, not a measurement: it is documented next to the MODEL_DERIVED tag.
+WEATHER_SOIL_SATURATION_M3M3 = 0.5
+
+#: A provider coordinate must be at least this close to the requested one, otherwise the
+#: response is rejected for that zone (guards against silently mismatched positions).
+WEATHER_LOCATION_TOLERANCE_DEGREES = 0.5
+
+# --------------------------------------------------------------------------- #
+# Deterministic hydraulic response for live zones (all SIMULATED)
+# --------------------------------------------------------------------------- #
+# Real rainfall is the only driver; the three hydraulic metrics are generated by a
+# first-order response so they stay physically plausible and perfectly reproducible:
+#   target = f(rainfall, soil moisture);  level += (target - level) * (1 - exp(-dt/TAU))
+
+HYDRAULICS_RAIN_REFERENCE_MM_PER_HR = 45.0  # rainfall that alone fills the drain to critical
+HYDRAULICS_DRAIN_BASE_M = 0.15
+HYDRAULICS_DRAIN_RAIN_M = 2.35
+HYDRAULICS_DRAIN_SOIL_M = 0.80
+HYDRAULICS_DRAIN_TAU_SECONDS = 900.0
+HYDRAULICS_DRAIN_DEFAULT_DT_SECONDS = 600.0
+HYDRAULICS_WATER_PER_DRAIN = 1.15
+HYDRAULICS_WATER_SOIL_PER_FRACTION = 0.25
+HYDRAULICS_FLOW_PER_WATER = 2.0
+HYDRAULICS_FLOW_PER_RAIN = 0.05
+
+#: Documented in the API so the dashboard can explain the simulated half of a live zone.
+HYDRAULICS_NOTE = (
+    "Drain level, water level and flow rate are SIMULATED: they follow a deterministic "
+    "first-order response to the real rainfall and soil moisture, because FloodPulse has "
+    "no real drain, water-level or flow sensors."
+)
 
 # --------------------------------------------------------------------------- #
 # Risk bands and hysteresis
@@ -195,13 +374,83 @@ SIMULATION_DISCLAIMER = (
     "prediction."
 )
 
+#: Used instead of the disclaimer above when the active fleet includes real weather.
+MIXED_DATA_DISCLAIMER = (
+    "Rainfall intensity and soil saturation in these zones come from the external "
+    "Open-Meteo weather service; drain level, water level and flow rate are SIMULATED by "
+    "FloodPulse's deterministic hydraulic response, because no real drain or flow sensors "
+    "exist. Risk scores come from the heuristic-v1 deterministic scoring heuristic, which "
+    "is not a validated hydrological model, is not calibrated for these cities, and is not "
+    "an official flood warning."
+)
+
+
+def zone_definitions_for_mode(mode: str) -> tuple[dict[str, Any], ...]:
+    """Return the zone definitions for a zone mode (accepts ``live``/``demo`` aliases)."""
+    normalised = zone_mode_input(mode)
+    if normalised == ZONE_MODE_INPUT_LIVE:
+        return LIVE_ZONE_DEFINITIONS
+    if normalised == ZONE_MODE_INPUT_DEMO:
+        return DEMO_ZONE_DEFINITIONS
+    raise KeyError(mode)
+
+
+def zone_mode_input(raw: str | None) -> str:
+    """Normalise any accepted zone-mode spelling to the short form ``live``/``demo``.
+
+    Unknown values fall back to the default (the simulator), so a typo can never switch
+    the deployment onto the live weather provider by accident.
+    """
+    return (
+        ZONE_MODE_INPUT_LIVE
+        if zone_mode_canonical(raw) == ZONE_MODE_LIVE
+        else ZONE_MODE_INPUT_DEMO
+    )
+
+
+def zone_mode_canonical(raw: str | None) -> str:
+    """Normalise any accepted zone-mode spelling to the canonical value the API reports."""
+    return ZONE_MODE_ALIASES.get((raw or "").strip().lower(), DEFAULT_ZONE_MODE)
+
+
+def zone_ids_for_mode(mode: str) -> tuple[str, ...]:
+    """Return the zone ids of a zone mode."""
+    return tuple(zone["zone_id"] for zone in zone_definitions_for_mode(mode))
+
+
+def zone_mode_for_env(env: Mapping[str, str] | None = None) -> str:
+    """Resolve the canonical active zone mode from the environment (simulator by default)."""
+    environment = os.environ if env is None else env
+    return zone_mode_canonical(environment.get(ZONE_MODE_ENV))
+
+
+def zone_ids_for_env(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Return the active zone ids for this environment."""
+    return zone_ids_for_mode(zone_mode_for_env(env))
+
 
 def zone_definition(zone_id: str) -> dict[str, Any]:
     """Return the fixed definition for ``zone_id`` (raises ``KeyError`` if unknown)."""
-    for zone in ZONE_DEFINITIONS:
+    for zone in DEMO_ZONE_DEFINITIONS + LIVE_ZONE_DEFINITIONS:
         if zone["zone_id"] == zone_id:
             return deepcopy(zone)
     raise KeyError(zone_id)
+
+
+def zone_display_for_mode(zone_id: str, mode: str) -> dict[str, str]:
+    """Return the provenance labels for a zone: its mode and each metric's source tag."""
+    resolved = zone_mode_input(mode)
+    sources = METRIC_SOURCES_LIVE if resolved == ZONE_MODE_INPUT_LIVE else METRIC_SOURCES_SIMULATED
+    return {"mode": resolved, "metric_sources": dict(sources)}
+
+
+def data_classification_for_mode(mode: str) -> str:
+    """``mixed`` once any metric of the active fleet comes from outside FloodPulse."""
+    return (
+        DATA_CLASSIFICATION_MIXED
+        if zone_mode_input(mode) == ZONE_MODE_INPUT_LIVE
+        else DATA_CLASSIFICATION_SIMULATED
+    )
 
 
 def thresholds_for(zone_id: str) -> dict[str, dict[str, float]]:
