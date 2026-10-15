@@ -2,11 +2,11 @@
 
 Live AWS-based flash-flood early-warning and risk-prediction system (cloud computing project).
 
-**Current milestone: M3 — flood incidents and SNS alerts (implemented, tested locally, deploy held).**
-M2 remains live and verified: a simulated reading → API Gateway HTTP API → one Lambda → DynamoDB →
-read back through the API → **an S3-hosted dashboard that polls the live API every 5 seconds**, which
-never invents risk values. M3 adds automatic incident records (`GET /incidents`) and escalation-only
-SNS alerts; its AWS deploy is waiting on one IAM grant described in the M3 section below.
+**Current milestone: M3 — flood incidents and SNS alerts are deployed and verified live.**
+M2 remains live: a simulated reading → API Gateway HTTP API → one Lambda → DynamoDB → read back
+through the API → **an S3-hosted dashboard that polls the live API every 5 seconds**, which never
+invents risk values. M3 adds automatic incident records (`GET /incidents`), escalation-only SNS
+alerts with a per-zone cooldown, and an incident log panel in the dashboard.
 
 **Dashboard: <http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com>**
 **API: <https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com>**
@@ -29,10 +29,10 @@ Every stored record and every API response carries `simulated: true` and
 | Risk engine | Deterministic `heuristic-v1` + explainability + hysteresis | ✅ implemented |
 | Storage | In-memory store + DynamoDB store (same interface) | ✅ **live** against table `floodpulse` |
 | API | `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (public reads) | ✅ **live** in the same handler |
-| AWS deployment | DynamoDB / Lambda / HTTP API / S3 site / SNS topic | ⏳ M3 code and deploy script ready; **AWS deploy paused** pending one IAM grant (see M3 section) |
-| Dashboard | S3-hosted static UI polling the live API, incident log panel | ⏳ M3 panel written and checked locally; **not yet uploaded** |
-| Incidents | Automatic incident records + lifecycle (open/escalate/close) | ✅ implemented and unit-tested; not yet deployed |
-| Alerts | One SNS topic, escalation-only publishing with a per-zone cooldown | ✅ implemented and unit-tested; publishing needs `sns:Publish` on the role (denied so far) |
+| AWS deployment | DynamoDB / Lambda / HTTP API / S3 site / SNS topic | ✅ **deployed and verified** (`infra/deploy.ps1`) |
+| Dashboard | S3-hosted static UI polling the live API, plus the incident log panel | ✅ **live and verified** (`web/`) |
+| Incidents | Automatic incident records + lifecycle (open/escalate/close) | ✅ **live and verified** |
+| Alerts | One SNS topic, escalation-only publishing with a per-zone cooldown | ✅ **live and verified** (publish proof; no subscriber yet) |
 | Time-to-threshold | Estimate time to a threshold | ⛔ **deferred until after M3** |
 | ML | Any learned model | ⛔ out of scope until the deterministic system works end to end |
 
@@ -49,22 +49,25 @@ Deployed resources (profile `cloud-project`, region `eu-north-1`, account `72593
 |---|---|---|
 | DynamoDB table | `floodpulse` | `pk`(S) HASH + `sk`(S) RANGE, `PAY_PER_REQUEST`, TTL ENABLED on `ttl` |
 | Lambda function | `floodpulse-api` | python3.13, 256 MB, 10 s, handler `floodpulse.handler.lambda_handler`, env `FLOODPULSE_STORE=dynamodb`, `FLOODPULSE_TABLE=floodpulse`, `FLOODPULSE_INGEST_KEY` (set, never displayed) |
-| Lambda execution role | `floodpulse-lambda-role` | trust `lambda.amazonaws.com`; `AWSLambdaBasicExecutionRole`; inline `FloodPulseDynamoDBAccess` = `dynamodb:GetItem/PutItem/UpdateItem/Query` on `table/floodpulse` only. **Created by the project owner**; the deploy script never creates or edits IAM |
+| Lambda execution role | `floodpulse-lambda-role` | trust `lambda.amazonaws.com`; `AWSLambdaBasicExecutionRole`; inline `FloodPulseDynamoDBAccess` = `dynamodb:GetItem/PutItem/UpdateItem/Query` on `table/floodpulse` only; inline `FloodPulseSnsPublish` (M3) = `sns:Publish` on the one alert topic ARN only. **Created and edited by the project owner** (`iam:PutRolePolicy` is denied for the `cloud-project` user); the deploy script only *reads* the role's policy list |
 | HTTP API | `floodpulse-api` (`2rg2u8quzd`) | `$default` stage, auto-deploy, integration `tcdtda1` (AWS_PROXY, payload format 2.0) |
-| Routes | | `POST /readings` (requires `x-fp-key`), `GET /zones`, `GET /zones/{zone_id}/history` |
-| CORS | | origins **restricted** to the dashboard website origin + `http://localhost:8000`; methods `GET,POST,OPTIONS`; headers `content-type,x-fp-key`; max age 300 |
-| Invoke permission | `floodpulse-apigateway-invoke` | `apigateway.amazonaws.com`, scoped to `arn:aws:execute-api:eu-north-1:725934295966:2rg2u8quzd/*/*` |
+| Routes | | `POST /readings` (requires `x-fp-key`), `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (M3) |
+| CORS | | origins **restricted** to the dashboard website origin + `http://localhost:8000`; methods `GET,POST,OPTIONS`; headers `content-type,x-fp-key`; max age 300 (verified live for `/incidents` too) |
+| SNS topic | `floodpulse-alerts` | `DisplayName = FloodPulse Alerts`, standard topic, **0 subscriptions** (`SubscriptionsConfirmed = 0`) |
+| API Gateway invoke permission | `floodpulse-apigateway-invoke` | `apigateway.amazonaws.com`, scoped to `arn:aws:execute-api:eu-north-1:725934295966:2rg2u8quzd/*/*` |
 | CloudWatch Logs | `/aws/lambda/floodpulse-api` | retention **7 days** |
-| S3 dashboard bucket | `floodpulse-dashboard-725934295966` | static website hosting (`index.html`), public read of objects only (no list, no write), ~72 KB of assets |
+| S3 dashboard bucket | `floodpulse-dashboard-725934295966` | static website hosting (`index.html`), public read of objects only (no list, no write), ~85 KB of assets |
 
 Live endpoint: `https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com`
 
-Item model (one table, no GSI, no scan — `LATEST` per zone plus append-only history):
+Item model (one table, no GSI, no scan — `LATEST` per zone plus append-only history, extended in M3):
 
 | `sk` | purpose | TTL |
 |---|---|---|
 | `LATEST` | newest reading + risk for a zone, overwritten each time | none |
 | `H#<iso timestamp>` | history point; duplicate timestamps get `#2`, `#3`, … via a conditional write | 7 days (`ttl`) |
+| `INCIDENT#<iso timestamp>` | one flood incident (M3), oldest→newest sorted, kept as history | none |
+| `ALERT#COOLDOWN` | per-zone alert cooldown marker with the last SNS `MessageId` per severity (M3) | none |
 
 ### Verified acceptance run
 
@@ -137,6 +140,7 @@ marks the connection stale/disconnected, and never fabricates a value. History p
 | Local mode | With the in-memory store and no secret, ingestion stays open so the M0/M1 tests and `tools/local_demo.py` keep working |
 | Reads stay public | `GET /zones` and history never require or return the secret (the browser dashboard holds no key) |
 | Secret hygiene | The key lives only in `.floodpulse-key` and `build/env-prod.json` (both gitignored) and is never printed, logged, committed or sent to the browser |
+| Rotation | `python tools/init_ingest_key.py --force --key-file .floodpulse-key --lambda-env build/env-prod.json` mints a new key and prints only a `sha256:` fingerprint; the deploy re-applies the environment. Rotated in M3 (`sha256:6ba7227085ac` → `sha256:b3b91ff07129`) after the previous value appeared in a terminal transcript |
 
 ### Verified M2 acceptance run
 
@@ -189,7 +193,7 @@ The simulator reads the secret from `.floodpulse-key` (or `FLOODPULSE_INGEST_KEY
   done.
 * The S3 website endpoint is HTTP-only (no CloudFront, to stay effectively free).
 
-## M3 incidents and SNS alerts (implemented and tested locally; AWS deploy paused)
+## M3 incidents and SNS alerts (deployed, verified)
 
 M3 adds real flood-incident tracking and one SNS alert topic, without changing what M1/M2 already do.
 
@@ -243,34 +247,57 @@ the duration text between polls, keeps the last good list when a request fails (
 incident), and shows the honest state of alerting ("not configured yet" / "armed, max 1 per zone and
 severity every 10 min"). No part of the storm-blue design was changed.
 
-### Status of this milestone (honest)
+### Status of this milestone (verified)
 
 | Item | State |
 |---|---|
-| Incident engine, storage, API route, notifier, dashboard panel | ✅ implemented, covered by unit tests, verified locally |
+| Incident engine, storage, API route, notifier, dashboard panel | ✅ implemented and covered by unit tests |
 | Local test suite | ✅ **250 tests** pass (`python -m unittest discover -s tests -t .`) |
-| Dashboard harness | ✅ **33 checks** pass (`node tools/dashboard_check.mjs --payload build/zones-live.json`) |
-| SNS topic `floodpulse-alerts` | ✅ created in `eu-north-1`, `DisplayName = FloodPulse Alerts` |
-| `sns:Publish` for the Lambda role | ⛔ **blocked**: `iam:PutRolePolicy` is denied for the `cloud-project` user, so the operator must attach `FloodPulseSnsPublish` (documented below) |
-| Lambda code, `GET /incidents` route, dashboard upload | ⏳ **not deployed**: the deploy is deliberately held until that policy exists, so the milestone is verified in one pass instead of shipping unverifiable alerting |
-| Email/SMS subscription | ⏳ **pending**: the topic has 0 subscriptions, so publishing (once allowed) proves the publish path only |
+| Dashboard harness | ✅ **35 checks** pass against the live payloads (`node tools/dashboard_check.mjs --payload build/zones-live.json --history build/history-live.json --incidents build/incidents-live.json`) |
+| SNS topic `floodpulse-alerts` | ✅ live in `eu-north-1`, `DisplayName = FloodPulse Alerts` |
+| `sns:Publish` for the Lambda role | ✅ inline `FloodPulseSnsPublish` attached by the project owner, scoped to that one topic ARN |
+| Lambda code, `GET /incidents` route, dashboard upload | ✅ deployed and verified live |
+| Ingestion key | ✅ **rotated** (fingerprint `sha256:6ba7227085ac` → `sha256:b3b91ff07129`) before this deploy, because the earlier value had appeared in a terminal transcript; only a fingerprint is ever printed |
+| Email/SMS subscription | ⚠️ **not present**: `list-subscriptions` returns `[]` in every region and the topic reports `SubscriptionsConfirmed = 0`, so publishes succeed (verifiable by `MessageId`) but **nobody is notified** |
 
-Operator step required before the deploy (one command, granted on this topic only):
-
-```powershell
-# the policy document is written by infra/deploy.ps1 (and is already at build/iam-sns-publish.json):
-#   { "Action": "sns:Publish", "Resource": "arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts" }
-aws iam put-role-policy --role-name floodpulse-lambda-role --policy-name FloodPulseSnsPublish `
-  --policy-document file://build/iam-sns-publish.json --profile cloud-project --region eu-north-1
-```
-
-Then the whole milestone is deployed and verified with one idempotent command:
+Redeploying (idempotent; never deletes anything, never edits IAM — it only *checks* the role policy):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File infra\deploy.ps1
 # creates/uses the SNS topic, adds FLOODPULSE_SNS_TOPIC_ARN + FLOODPULSE_ALERT_COOLDOWN_SECONDS to the
-# gitignored env file (values never printed), adds the GET /incidents route, uploads the dashboard
+# gitignored env file (values are never printed), applies the Lambda code + environment, adds the
+# GET /incidents route and uploads the dashboard. If iam:PutRolePolicy is denied it says so and continues.
 ```
+
+To subscribe an address (the subscriber must confirm the AWS email):
+
+```powershell
+aws sns subscribe --topic-arn arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts `
+  --protocol email --notification-endpoint <address> --profile cloud-project --region eu-north-1
+```
+
+### Verified M3 acceptance run (live, 2026-10-15)
+
+| Check | Result |
+|---|---|
+| Ingest rebuilt and protected | `POST /readings`: no `x-fp-key` → **401**, wrong key → **401**, rotated key → **202** |
+| Public reads still work | `GET /zones` **200**, `GET /zones/zone-riverside-north/history?minutes=60` **200**, `GET /incidents?limit=20` **200** |
+| Real storm through the live stack | `tools/live_simulator.py --steps 100 --interval 1.0` → **300 accepted, 0 rejected, 0 failed**, all three zones peaked at **1.0000 CRITICAL** and returned to NORMAL |
+| Incidents created | **3** (one per zone), each `severity=CRITICAL`, `severity_at_open=WARNING`, `escalation_count=1`, `current_status=CLOSED`, durations 67/69/68 s, `top_driver=water_level_m` |
+| No duplicate incidents during a storm | exactly one `INCIDENT#…` item opened per zone for a whole storm (each zone's whole arc produced one incident) |
+| Alerts published only on escalation | CloudWatch `AWS/SNS NumberOfMessagesPublished = 6.0` = 3 zones × (WARNING + CRITICAL) — nothing for the other ~290 readings |
+| Publish really succeeded | the `ALERT#COOLDOWN` marker stores the returned SNS `MessageId`s: WARNING `18b0fd5d-e6b6-59e2-922b-9e16e06e4ca7`, CRITICAL `3664fbc6-d588-5078-9aef-988dd36bed6e` |
+| Duplicate alert suppressed | a second storm for the same zone, inside the cooldown: a **new** incident opened (`inc-riverside-north-20261015T165728Z`) and escalated, with **0 published** and **2 suppressed** (`reason=cooldown`, `cooldown_remaining_seconds` 249 s then 257 s); the publish metric stayed at **6.0** |
+| Incident history retained | the incident item has no `ttl`; `GET /incidents` returns 4 incidents (3 CLOSED + 1 OPEN) newest first |
+| Dashboard live | `index.html` **200**, contains the incident panel ids; `lib.js`/`app.js`/`styles.css`/`bg-storm.webp` served byte-for-byte identical to the local files; CORS preflight from the dashboard origin returns it verbatim; no `arn:aws` anywhere in the site |
+| `/zones` unchanged | **200**, 3 zones, all `live`, ranking `[riverside-north, old-town-canal, harbor-east]`, highest risk zone reported |
+| Lambda health | no `ERROR`/`Exception`/`Traceback` lines in `/aws/lambda/floodpulse-api` across both storms |
+| Key rotation took effect | the deployed function now carries the new `FLOODPULSE_INGEST_KEY` (compare against the old fingerprint; the value is never printed) |
+
+Not verifiable from here, and stated as such: the dashboard was never opened in a real browser (no
+browser on this machine), so its rendering is verified by the node harness against the captured live
+payloads plus the live HTML/asset fetches above — not by looking at pixels. Email delivery is also
+unverified because the topic has no subscription.
 
 ### M3 limitations (known, deliberate)
 
@@ -458,7 +485,7 @@ constant so tests never depend on the wall clock.
 | M0 | Local foundation: simulator, validation, risk engine, store, handler, tests | ✅ done |
 | M1 | AWS: DynamoDB table, single Lambda + one execution role, HTTP API routes, DynamoDB-backed store | ✅ **done and verified** |
 | M2 | Live dashboard (S3 static site polling `GET /zones`) + protected ingestion + restricted CORS — first live demo | ✅ **done and verified** |
-| M3 | Flood incidents + SNS alerts + incident log in the dashboard | ✅ implemented and tested locally; ⏳ AWS deploy held pending one IAM grant (see M3 section) |
+| M3 | Flood incidents + SNS alerts + incident log in the dashboard | ✅ **done and verified live** |
 | M4 | Historical chart polish, session trends, zone drill-down | ⛔ |
 | M5 | Time-to-threshold, CloudWatch alarm | ⛔ |
 | M6 | Demo hardening, deterministic run-book, scheduled simulator | ⛔ |
@@ -471,8 +498,9 @@ constant so tests never depend on the wall clock.
   `/aws/lambda/floodpulse-api`, S3 bucket `floodpulse-dashboard-725934295966` (M2), SNS topic
   `floodpulse-alerts` (M3, `DisplayName = FloodPulse Alerts`, **0 subscriptions**)
 * the execution role `floodpulse-lambda-role` was created by the project owner, not by this repository;
-  adding the M3 `sns:Publish` policy is an operator action because `iam:PutRolePolicy` is denied here
-  (exact error recorded in the M3 section)
+  the M3 inline policy `FloodPulseSnsPublish` (`sns:Publish` on that one topic ARN) was attached by the
+  owner as well, because `iam:PutRolePolicy` is denied for the `cloud-project` user (AWS returns
+  `AccessDenied … no identity-based policy allows the iam:PutRolePolicy action`)
 * no EC2, RDS, CloudFront, VPC, NAT gateway, ECS/EKS or OpenSearch resource exists for this project
 * `cloudformation:*` is **denied** for this profile (verified earlier: `ListStacks`, `DescribeStacks`,
   `ValidateTemplate`) → SAM/CDK/`cfn deploy` are unusable; deployment is per-service AWS CLI calls
@@ -482,10 +510,11 @@ constant so tests never depend on the wall clock.
 
 Live now: DynamoDB on-demand + Lambda (free tier) + HTTP API ($1 per million requests) + 7-day log
 retention + one S3 bucket holding ~85 KB (a few cents at most per month) + one SNS topic with no
-subscriptions (idle topics cost nothing). No NAT gateway, CloudFront, IoT Core, EC2, RDS or
-OpenSearch. Estimated cost while the stack sits idle: effectively $0 (all on-demand/free-tier, log
-retention bounded at 7 days); a demo day of thousands of API requests, tens of thousands of DynamoDB
-writes and a handful of SNS publishes stays far below $0.05.
+subscriptions (idle topics and 6 publishes cost nothing; SNS's first 1M publishes/month are free).
+No NAT gateway, CloudFront, IoT Core, EC2, RDS or OpenSearch. Estimated cost while the stack sits
+idle: effectively $0 (all on-demand/free-tier, log retention bounded at 7 days); a demo day of
+thousands of API requests, tens of thousands of DynamoDB writes and a handful of SNS publishes stays
+far below $0.05.
 
 ## Engineering rules
 
