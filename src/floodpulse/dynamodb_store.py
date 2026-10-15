@@ -19,13 +19,14 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
-from .config import ZONE_IDS
+from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX, ZONE_IDS
 from .storage import (
     HISTORY_PREFIX,
     LATEST_SORT_KEY,
     build_history_item,
     build_latest_item,
     build_zone_pk,
+    sort_incident_items,
 )
 
 MAX_QUERY_PAGES = 10
@@ -96,6 +97,46 @@ def history_count_params(zone_id: str) -> dict[str, Any]:
         "ExpressionAttributeValues": {":pk": build_zone_pk(zone_id), ":prefix": HISTORY_PREFIX},
         "Select": "COUNT",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Incident parameters (M3)
+# --------------------------------------------------------------------------- #
+
+
+def incident_query_params(zone_id: str, limit: int | None = None) -> dict[str, Any]:
+    """``query`` parameters for a zone's incidents, newest first.
+
+    The sort key (``INCIDENT#<iso timestamp>``) sorts chronologically, so this is a
+    key-condition query: no scan, no filter, no GSI.
+    """
+    params: dict[str, Any] = {
+        "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+        "ExpressionAttributeValues": {":pk": build_zone_pk(zone_id), ":prefix": INCIDENT_PREFIX},
+        "ScanIndexForward": False,
+    }
+    if limit is not None:
+        params["Limit"] = int(limit)
+    return params
+
+
+def incident_count_params(zone_id: str) -> dict[str, Any]:
+    """``query`` parameters that only count a zone's incidents."""
+    return {
+        "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+        "ExpressionAttributeValues": {":pk": build_zone_pk(zone_id), ":prefix": INCIDENT_PREFIX},
+        "Select": "COUNT",
+    }
+
+
+def alert_marker_key(zone_id: str) -> dict[str, str]:
+    """Primary key of a zone's alert cooldown marker."""
+    return {"pk": build_zone_pk(zone_id), "sk": ALERT_MARKER_SORT_KEY}
+
+
+def alert_marker_get_params(zone_id: str) -> dict[str, Any]:
+    """``get_item`` parameters for one zone's alert cooldown marker."""
+    return {"Key": alert_marker_key(zone_id), "ConsistentRead": True}
 
 
 def to_storable(value: Any) -> Any:
@@ -267,9 +308,81 @@ class DynamoDbStore:
         return total
 
     def item_count(self) -> int:
-        """Total records stored for the FloodPulse zones (LATEST + history)."""
+        """Total records stored for the FloodPulse zones (latest + history + incidents)."""
         latest = sum(1 for zone in self.zone_ids if self.get_latest(zone))
-        return latest + sum(self.history_count(zone) for zone in self.zone_ids)
+        markers = sum(1 for zone in self.zone_ids if self.get_alert_marker(zone))
+        return (
+            latest
+            + markers
+            + sum(self.history_count(zone) for zone in self.zone_ids)
+            + self.incident_count()
+        )
+
+    # -- incidents (M3) ----------------------------------------------------- #
+
+    def create_incident(self, item: Mapping[str, Any]) -> bool:
+        """Insert an incident only if the record does not exist yet.
+
+        The conditional write is what makes "one incident per event" safe even if two
+        requests are processed concurrently: the loser sees ``False`` and treats the
+        existing incident as the active one instead of opening a duplicate.
+        """
+        try:
+            self._table.put_item(
+                Item=to_storable(deepcopy(dict(item))),
+                ConditionExpression="attribute_not_exists(pk)",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return False
+            raise
+
+    def put_incident(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Insert or update an incident record (used for escalate/observe/close)."""
+        self._table.put_item(Item=to_storable(deepcopy(dict(item))))
+        return dict(item)
+
+    def latest_incident(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's newest incident record (open or closed), or ``None``."""
+        items = self._query(incident_query_params(zone_id, limit=1))
+        return plain(items[0]) if items else None
+
+    def list_incidents(self, zone_id: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        """Incidents newest first, optionally for one zone and capped at ``limit``."""
+        zones = [zone_id] if zone_id is not None else list(self.zone_ids)
+        collected: list[dict[str, Any]] = []
+        for zone in zones:
+            params = incident_query_params(zone, limit=int(limit) if limit is not None else None)
+            collected.extend(plain(item) for item in self._query(params))
+        ordered = sort_incident_items(collected)
+        return ordered if limit is None else ordered[: int(limit)]
+
+    def incident_count(self, zone_id: str | None = None) -> int:
+        """Number of stored incident records."""
+        zones = [zone_id] if zone_id is not None else list(self.zone_ids)
+        total = 0
+        for zone in zones:
+            params = incident_count_params(zone)
+            for _page in range(MAX_QUERY_PAGES):
+                response = self._table.query(**params)
+                total += int(response.get("Count") or 0)
+                last_key = response.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                params = dict(params, ExclusiveStartKey=last_key)
+        return total
+
+    def get_alert_marker(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's alert cooldown marker, or ``None``."""
+        response = self._table.get_item(**alert_marker_get_params(zone_id))
+        item = response.get("Item")
+        return plain(item) if item else None
+
+    def put_alert_marker(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Store the zone's alert cooldown marker."""
+        self._table.put_item(Item=to_storable(deepcopy(dict(item))))
+        return dict(item)
 
     def _query(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Run a query, following ``LastEvaluatedKey`` up to ``MAX_QUERY_PAGES``.

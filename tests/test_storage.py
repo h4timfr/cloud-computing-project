@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from floodpulse.incidents import build_alert_marker, build_incident_item
 from floodpulse.storage import (
     LATEST_SORT_KEY,
     LocalStore,
@@ -149,6 +150,85 @@ class LocalStoreTests(unittest.TestCase):
         self.store.reset()
         self.assertEqual(self.store.item_count(), 0)
         self.assertIsNone(self.store.get_latest("zone-riverside-north"))
+
+
+class LocalStoreIncidentTests(unittest.TestCase):
+    """Incident records and alert cooldown markers in the local store (M3)."""
+
+    def setUp(self) -> None:
+        self.store = LocalStore()
+
+    def incident(self, zone_id: str = "zone-riverside-north", ts_epoch: int = 1_000, severity: str = "WARNING"):
+        return build_incident_item(
+            zone_id=zone_id,
+            severity=severity,
+            risk_score=0.65,
+            risk_class=severity,
+            top_driver="water_level_m",
+            opened_ts_epoch=ts_epoch,
+            now_epoch=ts_epoch,
+        )
+
+    def test_create_is_conditional_and_put_updates(self) -> None:
+        item = self.incident()
+        self.assertTrue(self.store.create_incident(item))
+        self.assertFalse(self.store.create_incident(item))
+        self.assertEqual(self.store.incident_count(), 1)
+
+        closed = dict(item, current_status="CLOSED", closed_ts_epoch=1_300, duration_seconds=300)
+        self.store.put_incident(closed)
+        self.assertEqual(self.store.incident_count(), 1)
+        self.assertEqual(self.store.latest_incident(item["zone_id"])["duration_seconds"], 300)
+
+        # the stored copy is not aliased to the caller's dict
+        closed["current_status"] = "MUTATED"
+        self.assertEqual(self.store.latest_incident(item["zone_id"])["current_status"], "CLOSED")
+
+    def test_latest_and_list_are_newest_first(self) -> None:
+        for epoch in (1_000, 1_600, 2_200):
+            self.store.create_incident(self.incident(ts_epoch=epoch))
+        self.store.create_incident(self.incident(zone_id="zone-harbor-east", ts_epoch=1_900))
+
+        self.assertEqual(self.store.latest_incident("zone-riverside-north")["opened_ts_epoch"], 2_200)
+        self.assertIsNone(self.store.latest_incident("zone-old-town-canal"))
+
+        epochs = [item["opened_ts_epoch"] for item in self.store.list_incidents()]
+        self.assertEqual(epochs, [2_200, 1_900, 1_600, 1_000])
+        self.assertEqual(
+            [item["opened_ts_epoch"] for item in self.store.list_incidents(limit=2)], [2_200, 1_900]
+        )
+        self.assertEqual(len(self.store.list_incidents(zone_id="zone-riverside-north")), 3)
+        self.assertEqual(self.store.incident_count(), 4)
+        self.assertEqual(self.store.incident_count("zone-harbor-east"), 1)
+
+    def test_incidents_do_not_collide_with_readings(self) -> None:
+        """An incident and a reading for the same zone share the partition key only."""
+        self.store.create_incident(self.incident())
+        self.assertEqual(self.store.get_latest("zone-riverside-north"), None)
+        self.assertEqual(self.store.history_count("zone-riverside-north"), 0)
+        self.assertEqual(self.store.incident_count("zone-riverside-north"), 1)
+        self.assertIsNone(self.store.get_alert_marker("zone-riverside-north"))
+
+    def test_alert_marker_round_trip(self) -> None:
+        self.store.put_alert_marker(
+            build_alert_marker(zone_id="zone-riverside-north", severity="WARNING", now_epoch=1_000, message_id="m1")
+        )
+        marker = self.store.get_alert_marker("zone-riverside-north")
+        self.assertEqual(marker["sk"], "ALERT#COOLDOWN")
+        self.assertEqual(marker["last_alert_by_severity"]["WARNING"]["message_id"], "m1")
+
+        merged = build_alert_marker(
+            zone_id="zone-riverside-north",
+            severity="CRITICAL",
+            now_epoch=1_100,
+            previous=marker,
+            message_id="m2",
+        )
+        self.store.put_alert_marker(merged)
+        stored = self.store.get_alert_marker("zone-riverside-north")
+        self.assertEqual(set(stored["last_alert_by_severity"]), {"WARNING", "CRITICAL"})
+        self.assertEqual(stored["updated_ts_epoch"], 1_100)
+        self.assertEqual(self.store.item_count(), 1, "the marker is a single item per zone")
 
 
 if __name__ == "__main__":  # pragma: no cover

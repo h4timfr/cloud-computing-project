@@ -21,6 +21,8 @@ const payloadArgIndex = args.indexOf('--payload');
 const payloadPath = payloadArgIndex >= 0 ? args[payloadArgIndex + 1] : null;
 const historyArgIndex = args.indexOf('--history');
 const historyPath = historyArgIndex >= 0 ? args[historyArgIndex + 1] : null;
+const incidentsArgIndex = args.indexOf('--incidents');
+const incidentsPath = incidentsArgIndex >= 0 ? args[incidentsArgIndex + 1] : null;
 
 const repoRoot = process.cwd();
 const webDir = path.join(repoRoot, 'web');
@@ -263,6 +265,57 @@ check('history series projection', () => {
   assert.equal(series.labels.length, 2);
 });
 
+check('duration formatting is stable across magnitudes', () => {
+  assert.equal(FP.formatDuration(0), '0 s');
+  assert.equal(FP.formatDuration(45.4), '45 s');
+  assert.equal(FP.formatDuration(200), '3 min 20 s');
+  assert.equal(FP.formatDuration(600), '10 min');
+  assert.equal(FP.formatDuration(3600 + 25 * 60), '1 h 25 min');
+  assert.equal(FP.formatDuration(null), '\u2013');
+  assert.equal(FP.formatDuration(-5), '\u2013');
+});
+
+check('open incident duration ticks forward, closed uses the API value', () => {
+  const opened = 1_000_000;
+  const open = { current_status: 'OPEN', opened_ts_epoch: opened, duration_seconds: 30 };
+  assert.equal(FP.incidentDurationSeconds(open, opened * 1000), 30, 'never reports less than the API said');
+  assert.equal(FP.incidentDurationSeconds(open, (opened + 120) * 1000), 120);
+  // a clock that is behind must not make the duration jump backwards
+  assert.equal(FP.incidentDurationSeconds(open, (opened - 500) * 1000), 30);
+
+  const closed = { current_status: 'CLOSED', opened_ts_epoch: opened, duration_seconds: 340 };
+  assert.equal(FP.incidentDurationSeconds(closed, (opened + 9999) * 1000), 340);
+  assert.equal(FP.incidentIsOpen(closed), false);
+  assert.equal(FP.incidentIsOpen(open), true);
+  assert.equal(FP.incidentIsOpen(null), false);
+});
+
+check('incident meta and alerting notes never leak the topic', () => {
+  const meta = FP.incidentsMeta({ count: 4, open_count: 1, limit: 20 });
+  assert.match(meta, /1 open/);
+  assert.match(meta, /4 recorded/);
+  assert.equal(FP.incidentsMeta(null), 'loading incidents…');
+
+  const off = FP.alertingNote({ enabled: false, severities: ['WARNING'], cooldown_seconds: 600 });
+  const armed = FP.alertingNote({ enabled: true, severities: ['WARNING', 'CRITICAL'], cooldown_seconds: 600 });
+  assert.match(off, /not configured/);
+  assert.match(armed, /10 min/);
+  [off, armed, meta].forEach((text) => {
+    assert.ok(!/arn:/i.test(text), 'alerting text mentions an ARN');
+    assert.ok(!/topic/i.test(text), 'alerting text mentions the topic');
+  });
+});
+
+check('incident signature changes with status, severity and alert count', () => {
+  const base = { incidents: [{ incident_id: 'inc-a', current_status: 'OPEN', severity: 'WARNING', alert_count: 1 }] };
+  const same = { incidents: [{ incident_id: 'inc-a', current_status: 'OPEN', severity: 'WARNING', alert_count: 1 }] };
+  const escalated = { incidents: [{ incident_id: 'inc-a', current_status: 'OPEN', severity: 'CRITICAL', alert_count: 2 }] };
+  const closed = { incidents: [{ incident_id: 'inc-a', current_status: 'CLOSED', severity: 'CRITICAL', alert_count: 2 }] };
+  assert.equal(FP.incidentsSignature(base), FP.incidentsSignature(same));
+  assert.notEqual(FP.incidentsSignature(base), FP.incidentsSignature(escalated));
+  assert.notEqual(FP.incidentsSignature(escalated), FP.incidentsSignature(closed));
+});
+
 /* -------------------------------------------------------------- rendering --- */
 
 group('Rendering from a real payload');
@@ -333,6 +386,149 @@ check('band classes vary with the payload (calm vs storm)', () => {
   assert.ok(!calm.includes('band-critical'));
 });
 
+/* -------------------------------------------------------------- incidents --- */
+
+group('Incident log rendering');
+
+const INCIDENT_FIXTURE = {
+  count: 2,
+  open_count: 1,
+  closed_count: 1,
+  limit: 20,
+  alerting: { enabled: true, severities: ['WARNING', 'CRITICAL'], cooldown_seconds: 600 },
+  incidents: [
+    {
+      incident_id: 'inc-riverside-north-20251009T085545Z',
+      zone_id: 'zone-riverside-north',
+      zone_name: 'Riverside North',
+      severity: 'CRITICAL',
+      severity_at_open: 'WARNING',
+      current_status: 'OPEN',
+      is_open: true,
+      opened_at: '2025-10-09T08:55:45Z',
+      opened_ts_epoch: 1_760_000_145,
+      closed_at: null,
+      duration_seconds: 340,
+      risk_score_at_open: 0.66,
+      top_driver: 'water_level_m',
+      top_driver_label: 'Water level',
+      alert_count: 2,
+      escalation_count: 1,
+      simulated: true
+    },
+    {
+      incident_id: 'inc-harbor-east-20251009T080000Z',
+      zone_id: 'zone-harbor-east',
+      zone_name: 'Harbor East',
+      severity: 'WARNING',
+      severity_at_open: 'WARNING',
+      current_status: 'CLOSED',
+      is_open: false,
+      opened_at: '2025-10-09T08:00:00Z',
+      opened_ts_epoch: 1_759_999_600,
+      closed_at: '2025-10-09T08:24:00Z',
+      duration_seconds: 1440,
+      risk_score_at_open: 0.62,
+      top_driver: 'rainfall_mm_per_hr',
+      top_driver_label: 'Rainfall intensity',
+      alert_count: 1,
+      escalation_count: 0,
+      simulated: true
+    }
+  ]
+};
+
+check('open incident row shows severity, zone, opened time, status and duration', () => {
+  const incident = INCIDENT_FIXTURE.incidents[0];
+  const html = FP.renderIncidentRow(incident, (incident.opened_ts_epoch + 700) * 1000);
+  assert.ok(html.includes(incident.zone_name), 'zone name missing');
+  assert.ok(html.includes(incident.incident_id), 'incident id missing');
+  assert.ok(html.includes('CRITICAL'), 'severity missing');
+  assert.ok(html.includes('OPEN'), 'status missing');
+  assert.ok(html.includes(FP.clockLabel(incident.opened_at)), 'opened time missing');
+  assert.ok(html.includes('11 min 40 s'), `live duration missing: ${html}`);
+  assert.ok(html.includes('band-critical'), 'severity band class missing');
+  assert.ok(html.includes('data-status="OPEN"'), 'status attribute missing');
+  assert.ok(html.includes('Water level'), 'top driver label missing');
+  assert.ok(!html.includes('undefined'), 'row contains undefined');
+  assert.ok(!html.includes('NaN'), 'row contains NaN');
+});
+
+check('closed incident row shows the stored duration and closed status', () => {
+  const incident = INCIDENT_FIXTURE.incidents[1];
+  const html = FP.renderIncidentRow(incident, Date.now());
+  assert.ok(html.includes('CLOSED'), 'closed status missing');
+  assert.ok(html.includes('data-status="CLOSED"'), 'status attribute missing');
+  assert.ok(html.includes(FP.formatDuration(incident.duration_seconds)), 'stored duration missing');
+  assert.ok(html.includes('band-warning'), 'warning band class missing');
+  assert.ok(!html.includes('and counting'), 'a closed incident must not tick');
+});
+
+check('the whole incident list renders newest first with both states', () => {
+  const html = FP.renderIncidents(INCIDENT_FIXTURE, 1_760_000_845_000);
+  const firstIndex = html.indexOf('inc-riverside-north');
+  const secondIndex = html.indexOf('inc-harbor-east');
+  assert.ok(firstIndex >= 0 && secondIndex > firstIndex, 'incidents are not in payload order');
+  assert.equal((html.match(/<li class="incident-row band-/g) || []).length, 2);
+});
+
+check('an empty incident log explains what would create one', () => {
+  const html = FP.renderIncidents({ incidents: [], count: 0, open_count: 0 }, Date.now());
+  assert.match(html, /No flood incidents recorded yet/);
+  assert.match(html, /WARNING or CRITICAL/);
+  assert.match(html, /NORMAL/);
+  assert.ok(!html.includes('undefined'), 'empty state contains undefined');
+});
+
+check('incident markup escapes API-supplied text', () => {
+  const hostile = Object.assign({}, INCIDENT_FIXTURE.incidents[0], {
+    zone_name: '<img src=x onerror="alert(1)">',
+    top_driver_label: '</li><script>alert(2)</script>'
+  });
+  const html = FP.renderIncidentRow(hostile, Date.now());
+  assert.ok(!html.includes('<img'), 'zone name markup was not escaped');
+  assert.ok(!html.includes('<script>'), 'driver markup was not escaped');
+  assert.ok(html.includes('&lt;'), 'expected escaped entities');
+});
+
+check('incident markup never contains the SNS topic or a secret', () => {
+  const html = FP.renderIncidents(INCIDENT_FIXTURE, Date.now());
+  const meta = FP.incidentsMeta(INCIDENT_FIXTURE);
+  const note = FP.alertingNote(INCIDENT_FIXTURE.alerting);
+  [html, meta, note].forEach((text) => {
+    assert.ok(!/arn:aws/i.test(text), 'incident UI contains an ARN');
+    assert.ok(!/floodpulse-alerts/i.test(text), 'incident UI names the topic');
+    assert.ok(!text.includes('FLOODPULSE_INGEST_KEY'), 'incident UI mentions the secret');
+  });
+});
+
+if (incidentsPath) {
+  const live = JSON.parse(fs.readFileSync(incidentsPath, 'utf8'));
+
+  check(`live incidents payload from ${incidentsPath} is panel-ready`, () => {
+    assert.ok(Array.isArray(live.incidents), 'incidents must be an array');
+    assert.equal(live.count, live.incidents.length, 'count disagrees with incidents');
+    assert.ok(live.open_count <= live.count, 'open_count exceeds count');
+    assert.ok(live.alerting && typeof live.alerting.enabled === 'boolean', 'alerting state missing');
+    live.incidents.forEach((incident, index) => {
+      ['incident_id', 'zone_id', 'zone_name', 'severity', 'current_status', 'opened_at'].forEach((field) => {
+        assert.ok(incident[field], `incident ${index} is missing ${field}`);
+      });
+      assert.ok(FP.BANDS.includes(incident.severity), `incident ${index} has an unknown severity`);
+      assert.ok(['OPEN', 'CLOSED'].includes(incident.current_status), `incident ${index} has an unknown status`);
+      assert.ok(!isNaN(new Date(incident.opened_at).getTime()), `incident ${index} opened_at is unparseable`);
+      assert.equal(typeof incident.duration_seconds, 'number', `incident ${index} duration missing`);
+      assert.ok(incident.risk_score_at_open >= 0.6, `incident ${index} opened below WARNING`);
+      assert.equal(incident.simulated, true, `incident ${index} is not marked simulated`);
+    });
+    const html = FP.renderIncidents(live, Date.now());
+    assert.ok(!html.includes('undefined'), 'live incident markup contains undefined');
+    assert.ok(!html.includes('NaN'), 'live incident markup contains NaN');
+    assert.ok(!/arn:aws/i.test(html), 'live incident markup contains an ARN');
+    console.log(`         ${live.incidents.length} incident(s): ${live.open_count} open`);
+  });
+}
+
 if (historyPath) {
   const history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
 
@@ -391,6 +587,7 @@ check('site contains no credentials, keys or tokens', () => {
     const source = fs.readFileSync(path.join(webDir, file), 'utf8');
     assert.ok(!/AKIA[0-9A-Z]{16}/.test(source), `${file} contains an access key id`);
     assert.ok(!/aws_secret_access_key|aws_access_key_id|BEGIN [A-Z ]*PRIVATE KEY/.test(source), `${file} contains a credential`);
+    assert.ok(!/arn:aws/i.test(source), `${file} contains an AWS ARN (including the SNS topic)`);
   });
   const keyFile = path.join(repoRoot, '.floodpulse-key');
   if (fs.existsSync(keyFile)) {
@@ -420,7 +617,8 @@ check('every element id app.js uses exists in index.html', () => {
   const idsToCheck = [
     'conn-badge', 'conn-detail', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
     'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
-    'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count'
+    'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
+    'incidents', 'incidents-meta', 'incidents-alerting'
   ];
   const missing = idsToCheck.filter((id) => !declared.has(id));
   assert.deepEqual(missing, [], `index.html is missing ids used by app.js: ${missing.join(', ')}`);

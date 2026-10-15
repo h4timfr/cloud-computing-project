@@ -77,6 +77,40 @@
   <h2 class="section-title">Zone detail <span class="muted">live values from DynamoDB via the API</span></h2>
   <section id="zones" class="zone-grid" aria-live="polite"></section>
 
+  <section class="card incidents-panel">
+    <header class="panel-head">
+      <div>
+        <h2 class="panel-title">Incident log</h2>
+        <p class="muted" id="incidents-meta">loading incidents…</p>
+      </div>
+      <div class="panel-controls">
+        <span id="incidents-alerting" class="alert-chip">SNS alerts: unknown</span>
+      </div>
+    </header>
+    <div class="incident-scroll">
+      <ol class="incident-head" aria-hidden="true">
+        <li class="incident-row">
+          <span class="incident-severity">Severity</span>
+          <span class="incident-zone">Zone</span>
+          <span class="incident-time">Opened (UTC)</span>
+          <span class="incident-status">Status</span>
+          <span class="incident-duration">Duration</span>
+          <span class="incident-detail">Facts at open</span>
+        </li>
+      </ol>
+      <ul id="incidents" class="incident-list" aria-live="polite">
+        <li class="incident-row incident-empty muted">waiting for data…</li>
+      </ul>
+    </div>
+    <p class="muted small">
+      Source: <code>GET /incidents?limit=20</code>. A zone opens exactly one incident when its
+      hysteresis-filtered class reaches WARNING or CRITICAL, escalates in place if it later reaches
+      CRITICAL, and closes once the zone is back to NORMAL — the record is kept as history either way.
+      Alerts are published to one SNS topic, rate-limited per zone and severity; the topic itself is
+      never exposed to this page.
+    </p>
+  </section>
+
   <section class="card history-panel">
     <header class="panel-head">
       <div>

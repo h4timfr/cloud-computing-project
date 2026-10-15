@@ -54,10 +54,14 @@ param(
     [string]$DashboardBucket = 'floodpulse-dashboard-725934295966',
     [string]$IngestKeyFile = '.floodpulse-key',
     [string]$LocalDevOrigin = 'http://localhost:8000',
-    [switch]$SkipDashboard
+    [string]$AlertTopicName = 'floodpulse-alerts',
+    [int]$AlertCooldownSeconds = 600,
+    [switch]$SkipDashboard,
+    [switch]$SkipAlerts
 )
 
 $ErrorActionPreference = 'Stop'
+$alertsBlocked = $false
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $buildDir = Join-Path $repoRoot 'build'
 $zipPath = Join-Path $buildDir 'floodpulse-api.zip'
@@ -168,6 +172,68 @@ Write-Info "lambda environment variables: $($envNames -join ', ') (values not di
 if ($envNames -notcontains 'FLOODPULSE_INGEST_KEY') {
     Write-Warn2 'the environment file has no FLOODPULSE_INGEST_KEY: cloud ingestion will fail closed with HTTP 503.'
     Write-Warn2 "regenerate it with: python tools/init_ingest_key.py --key-file $IngestKeyFile --lambda-env build\env-prod.json"
+}
+
+# --------------------------------------------------------------------------- sns topic --------------------------------------------------------------------------- #
+
+if (-not $SkipAlerts) {
+    Write-Step "SNS alert topic '$AlertTopicName'"
+    $alertTopicArn = (Invoke-AwsJson sns create-topic --name $AlertTopicName --attributes 'DisplayName=FloodPulse Alerts').TopicArn
+    if (-not $alertTopicArn) { throw "could not resolve the ARN of SNS topic '$AlertTopicName'" }
+    Write-Ok "topic ready: $alertTopicArn (created if it was missing; existing topics are never reused silently under another name)"
+
+    $subscriptions = Invoke-AwsJson sns list-subscriptions-by-topic --topic-arn $alertTopicArn
+    $confirmed = @($subscriptions.Subscriptions | Where-Object { $_.SubscriptionArn -ne 'PendingConfirmation' }).Count
+    $pending = @($subscriptions.Subscriptions | Where-Object { $_.SubscriptionArn -eq 'PendingConfirmation' }).Count
+    if ($confirmed -eq 0) {
+        Write-Warn2 "no confirmed subscription on the topic: publishes will succeed but nobody is notified."
+        Write-Warn2 "add an email subscriber with (the address is the operator's choice):"
+        Write-Warn2 "  aws sns subscribe --topic-arn $alertTopicArn --protocol email --notification-endpoint <address> --profile $Profile --region $Region"
+    } else {
+        Write-Ok "$confirmed confirmed subscription(s), $pending pending"
+    }
+
+    # merge the topic ARN (and the cooldown) into the gitignored env file: only the
+    # variable names are ever printed, never the ingestion secret
+    $envDocument = Get-Content -Raw -Path $envPath | ConvertFrom-Json
+    $envDocument.Variables | Add-Member -Force -NotePropertyName 'FLOODPULSE_SNS_TOPIC_ARN' -NotePropertyValue $alertTopicArn
+    $envDocument.Variables | Add-Member -Force -NotePropertyName 'FLOODPULSE_ALERT_COOLDOWN_SECONDS' -NotePropertyValue "$AlertCooldownSeconds"
+    Write-JsonFile $envPath ($envDocument | ConvertTo-Json -Depth 6)
+    $envVariables = (Get-Content -Raw -Path $envPath | ConvertFrom-Json).Variables
+    $envNames = @($envVariables.PSObject.Properties.Name)
+    Write-Ok "environment file updated: $($envNames -join ', ') (values not displayed; cooldown ${AlertCooldownSeconds}s)"
+
+    # the execution role must be allowed to publish to this one topic and nothing else.
+    # This needs iam:PutRolePolicy; if that is denied we report it and carry on, because
+    # incident tracking and the dashboard do not depend on alerting.
+    $rolePolicies = Invoke-AwsJson iam list-role-policies --role-name $RoleName
+    if (@($rolePolicies.PolicyNames) -contains 'FloodPulseSnsPublish') {
+        Write-Ok 'inline policy FloodPulseSnsPublish already attached'
+    } else {
+        $snsPolicyPath = Join-Path $buildDir 'iam-sns-publish.json'
+        $snsPolicy = [ordered]@{
+            Version   = '2012-10-17'
+            Statement = @([ordered]@{
+                    Sid      = 'PublishOnlyToTheFloodPulseAlertTopic'
+                    Effect   = 'Allow'
+                    Action   = 'sns:Publish'
+                    Resource = $alertTopicArn
+                })
+        } | ConvertTo-Json -Depth 5
+        Write-JsonFile $snsPolicyPath $snsPolicy
+        try {
+            Invoke-Aws iam put-role-policy --role-name $RoleName --policy-name FloodPulseSnsPublish --policy-document "file://$snsPolicyPath" | Out-Null
+            Write-Ok "inline policy FloodPulseSnsPublish attached (sns:Publish on $alertTopicArn only)"
+        } catch {
+            $alertsBlocked = $true
+            Write-Warn2 'IAM DENIED: could not attach FloodPulseSnsPublish; alerting will report publish failures.'
+            Write-Warn2 ($_.Exception.Message -replace "`n", ' ')
+            Write-Warn2 "operator action: attach this inline policy to $RoleName, then re-run this script:"
+            Write-Warn2 "  aws iam put-role-policy --role-name $RoleName --policy-name FloodPulseSnsPublish --policy-document file://$snsPolicyPath --profile $Profile --region $Region"
+        }
+    }
+    $envVariables = (Get-Content -Raw -Path $envPath | ConvertFrom-Json).Variables
+    $envNames = @($envVariables.PSObject.Properties.Name)
 }
 
 # --------------------------------------------------------------------------- cors --------------------------------------------------------------------------- #
@@ -302,7 +368,7 @@ if ($null -eq $integration) {
 }
 $target = "integrations/$($integration.IntegrationId)"
 $routes = Invoke-AwsJson apigatewayv2 get-routes --api-id $apiId
-foreach ($routeKey in @('POST /readings', 'GET /zones', 'GET /zones/{zone_id}/history')) {
+foreach ($routeKey in @('POST /readings', 'GET /zones', 'GET /zones/{zone_id}/history', 'GET /incidents')) {
     $existing = $null
     if ($routes -and $routes.Items) { $existing = $routes.Items | Where-Object { $_.RouteKey -eq $routeKey } | Select-Object -First 1 }
     if ($null -eq $existing) {
@@ -413,14 +479,19 @@ Write-Host "  api id        : $apiId"
 Write-Host "  function      : $FunctionName ($Runtime, $MemorySize MB, ${TimeoutSeconds}s)"
 Write-Host "  table         : $TableName"
 Write-Host "  stage         : $StageName"
+if ($alertTopicArn) {
+    $alertState = if ($alertsBlocked) { 'topic ready, BUT the execution role may not publish (IAM denied)' } else { 'publishing allowed on this topic only' }
+    Write-Host "  alert topic   : $alertTopicArn ($alertState)"
+}
 if ($dashboardReady) { Write-Host "  dashboard     : $dashboardUrl" }
 Write-Host @"
 
 Acceptance checks (no secrets involved):
 
   curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/zones
+  curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/incidents?limit=20
   curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/zones/zone-riverside-north/history?minutes=60
-  node tools/dashboard_check.mjs --payload build/zones-live.json   # static dashboard checks
+  node tools/dashboard_check.mjs --payload build/zones-live.json --incidents build/incidents-live.json
 
   python tools/live_simulator.py --url $endpoint --steps 60 --interval 1.0
   # ^ reads the secret from $IngestKeyFile (or FLOODPULSE_INGEST_KEY) and never prints it
@@ -432,6 +503,10 @@ Acceptance checks (no secrets involved):
   # POST /readings requires the x-fp-key header; the read routes are public:
   #   missing header -> HTTP 401      wrong value -> HTTP 401
   #   function without FLOODPULSE_INGEST_KEY -> HTTP 503 ingest_not_configured (fail closed)
+
+Incidents live in the same table as extra items (sk INCIDENT#... retained as history,
+sk ALERT#COOLDOWN per zone). Alerts publish only on a WARNING/CRITICAL escalation and are
+rate-limited per zone and severity; the topic ARN is never returned to the dashboard.
 
 All FloodPulse sensor data is SIMULATED; risk scores come from the heuristic-v1
 heuristic, not a validated prediction model. The ingestion secret lives only in

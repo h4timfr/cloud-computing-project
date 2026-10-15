@@ -8,6 +8,8 @@ same dicts with ``boto3`` unchanged:
 * ``pk = "ZONE#<zone_id>"``
 * ``sk = "LATEST"``   -> the newest scored reading for the zone (overwritten)
 * ``sk = "H#<timestamp>"`` -> timestamped history record (TTL via ``ttl``)
+* ``sk = "INCIDENT#<timestamp>"`` -> one flood incident (M3, kept indefinitely)
+* ``sk = "ALERT#COOLDOWN"`` -> per-zone alert cooldown marker (M3)
 
 There is intentionally **no** aggregate snapshot item: zones are read individually.
 """
@@ -16,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Mapping
 
+from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX
+
 LATEST_SORT_KEY = "LATEST"
 HISTORY_PREFIX = "H#"
 
@@ -23,6 +27,20 @@ HISTORY_PREFIX = "H#"
 def build_zone_pk(zone_id: str) -> str:
     """Partition key for a zone."""
     return f"ZONE#{zone_id}"
+
+
+def incident_sort_value(item: Mapping[str, Any]) -> tuple[int, str, str]:
+    """Canonical newest-first ordering key for incidents (shared by both stores)."""
+    return (
+        -int(item.get("opened_ts_epoch") or 0),
+        str(item.get("zone_id") or ""),
+        str(item.get("incident_id") or ""),
+    )
+
+
+def sort_incident_items(items: list[Mapping[str, Any]]) -> list[Any]:
+    """Newest first, with a deterministic tie-break by zone then incident id."""
+    return sorted(items, key=incident_sort_value)
 
 
 def _core_record(reading: Mapping[str, Any]) -> dict[str, Any]:
@@ -185,8 +203,67 @@ class LocalStore:
         )
 
     def item_count(self) -> int:
-        """Total number of stored items (LATEST + history)."""
+        """Total number of stored items (LATEST + history + incidents + markers)."""
         return len(self._items)
+
+    # -- incidents (M3) ----------------------------------------------------- #
+
+    def _incident_keys(self, zone_id: str | None = None) -> list[tuple[str, str]]:
+        pks = [build_zone_pk(zone_id)] if zone_id is not None else [
+            pk for (pk, _sk) in self._items if pk.startswith("ZONE#")
+        ]
+        return sorted(
+            (pk, sk)
+            for (pk, sk) in self._items
+            if pk in pks and sk.startswith(INCIDENT_PREFIX)
+        )
+
+    def create_incident(self, item: Mapping[str, Any]) -> bool:
+        """Insert an incident only if its sort key is still free.
+
+        Returns ``False`` when the record already exists, mirroring the conditional
+        write used against DynamoDB, so two concurrent requests cannot both open the
+        same incident.
+        """
+        key = (str(item["pk"]), str(item["sk"]))
+        if key in self._items:
+            return False
+        self._items[key] = dict(item)
+        return True
+
+    def put_incident(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Insert or update an incident record."""
+        stored = dict(item)
+        self._items[(str(stored["pk"]), str(stored["sk"]))] = stored
+        return stored
+
+    def latest_incident(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's newest incident record (open or closed), or ``None``."""
+        keys = self._incident_keys(zone_id)
+        if not keys:
+            return None
+        return self._items[keys[-1]]
+
+    def list_incidents(self, zone_id: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        """Incidents newest first, optionally for one zone and capped at ``limit``."""
+        items = sort_incident_items([self._items[key] for key in self._incident_keys(zone_id)])
+        if limit is not None:
+            items = items[: int(limit)]
+        return items
+
+    def incident_count(self, zone_id: str | None = None) -> int:
+        """Number of stored incident records."""
+        return len(self._incident_keys(zone_id))
+
+    def get_alert_marker(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's alert cooldown marker, or ``None``."""
+        return self._items.get((build_zone_pk(zone_id), ALERT_MARKER_SORT_KEY))
+
+    def put_alert_marker(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Store the zone's alert cooldown marker."""
+        stored = dict(item)
+        self._items[(str(stored["pk"]), str(stored["sk"]))] = stored
+        return stored
 
     def items(self) -> Iterator[dict[str, Any]]:
         """Iterate over stored items (test/debug helper)."""

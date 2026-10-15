@@ -363,6 +363,131 @@
     };
   }
 
+  /* ----------------------------------------------------------- incidents --- */
+
+  function pad2(value) {
+    return value < 10 ? '0' + value : '' + value;
+  }
+
+  /* Human duration. Short and long forms are both used on the incident log. */
+  function formatDuration(seconds) {
+    var num = toNumber(seconds);
+    if (num === null || num < 0) return '\u2013';
+    num = Math.round(num);
+    if (num < 60) return num + ' s';
+    var minutes = Math.floor(num / 60);
+    if (minutes < 60) {
+      var rest = num % 60;
+      return minutes + ' min' + (rest ? ' ' + rest + ' s' : '');
+    }
+    var hours = Math.floor(minutes / 60);
+    return hours + ' h ' + pad2(minutes % 60) + ' min';
+  }
+
+  function severityBand(severity) {
+    return bandKey(severity);
+  }
+
+  function incidentIsOpen(incident) {
+    var status = incident && incident.current_status ? String(incident.current_status) : '';
+    return status.toUpperCase() === 'OPEN';
+  }
+
+  /* Closed incidents carry an authoritative duration from the API. Open ones keep
+     counting in the browser (against the stored duration, so the value never jumps
+     backwards if the clocks disagree slightly). */
+  function incidentDurationSeconds(incident, nowMs) {
+    if (!incident) return null;
+    var stored = toNumber(incident.duration_seconds);
+    if (!incidentIsOpen(incident)) return stored;
+    var opened = toNumber(incident.opened_ts_epoch);
+    if (opened === null || !isFiniteNumber(nowMs)) return stored;
+    var elapsed = nowMs / 1000 - opened;
+    if (elapsed < 0) return stored;
+    return Math.max(elapsed, stored === null ? elapsed : stored);
+  }
+
+  /* Honest alerting status. The topic ARN is deliberately never sent to the browser,
+     so this can only describe whether host-side publishing is armed and how it is
+     rate-limited. */
+  function alertingNote(alerting) {
+    if (!alerting || !alerting.enabled) {
+      return 'SNS alerts: not configured yet — incidents are still recorded';
+    }
+    var cooldown = toNumber(alerting.cooldown_seconds);
+    var rate = cooldown === null ? '' : ' — max 1 alert per zone and severity every ' + formatDuration(cooldown);
+    return 'SNS alerts armed' + rate;
+  }
+
+  function incidentsMeta(payload) {
+    if (!payload) return 'loading incidents…';
+    var total = toNumber(payload.count);
+    var open = toNumber(payload.open_count);
+    var limit = toNumber(payload.limit);
+    return (open === null ? 0 : open) + ' open · ' + (total === null ? 0 : total) + ' recorded' +
+      (limit === null ? '' : ' · newest ' + limit) + ' · source GET /incidents';
+  }
+
+  function renderIncidentRow(incident, nowMs) {
+    var severity = String(incident.severity || '').toUpperCase();
+    var band = severityBand(severity);
+    var open = incidentIsOpen(incident);
+    var duration = incidentDurationSeconds(incident, nowMs);
+    var driver = incident.top_driver_label || incident.top_driver || '\u2013';
+    var alertCount = toNumber(incident.alert_count);
+    var escalations = toNumber(incident.escalation_count);
+    return (
+      '<li class="incident-row band-' + band + (open ? ' is-open' : ' is-closed') +
+        '" data-incident="' + escapeHtml(incident.incident_id) +
+        '" data-status="' + (open ? 'OPEN' : 'CLOSED') + '">' +
+        '<span class="incident-severity band-' + band + '" data-f="severity">' + escapeHtml(classLabel(severity)) + '</span>' +
+        '<span class="incident-zone" data-f="zone_name">' + escapeHtml(incident.zone_name || incident.zone_id || 'unknown zone') + '</span>' +
+        '<span class="incident-time" data-f="opened_at" title="' + escapeHtml(incident.opened_at) + '">' +
+          escapeHtml(clockLabel(incident.opened_at)) + '</span>' +
+        '<span class="incident-status status-' + (open ? 'open' : 'closed') + '" data-f="status">' +
+          (open ? 'OPEN' : 'CLOSED') + '</span>' +
+        '<span class="incident-duration" data-f="duration">' + escapeHtml(formatDuration(duration)) +
+          (open ? ' and counting' : '') + '</span>' +
+        '<span class="incident-detail" data-f="detail">' +
+          'score at open ' + escapeHtml(formatScore(incident.risk_score_at_open)) +
+          ' · driver ' + escapeHtml(driver) +
+          ' · alerts ' + escapeHtml(alertCount === null ? 0 : alertCount) +
+          (escalations ? ' · escalated ' + escapeHtml(escalations) + '\u00d7' : '') +
+        '</span>' +
+      '</li>'
+    );
+  }
+
+  function renderIncidents(payload, nowMs) {
+    if (!payload) return '<li class="incident-row incident-empty muted">loading incidents…</li>';
+    var incidents = payload.incidents || [];
+    if (!incidents.length) {
+      return '<li class="incident-row incident-empty muted">' +
+        'No flood incidents recorded yet. An incident opens automatically when a zone\'s ' +
+        'effective risk class reaches WARNING or CRITICAL, and closes once the zone is back to NORMAL.' +
+        '</li>';
+    }
+    return incidents.map(function (incident) {
+      return renderIncidentRow(incident, nowMs);
+    }).join('');
+  }
+
+  /* Identity of the rendered list: lets the controller skip re-writing identical HTML
+     while still ticking the open durations every second. */
+  function incidentsSignature(payload) {
+    if (!payload) return '';
+    return (payload.incidents || []).map(function (incident) {
+      return [
+        incident.incident_id,
+        incident.current_status,
+        incident.severity,
+        incident.alert_count,
+        incident.escalation_count,
+        incident.duration_seconds
+      ].join(':');
+    }).join('|');
+  }
+
   var api = {
     BANDS: BANDS,
     METRIC_ORDER: METRIC_ORDER,
@@ -388,6 +513,15 @@
     connectionState: connectionState,
     ranking: ranking,
     liveCount: liveCount,
+    formatDuration: formatDuration,
+    severityBand: severityBand,
+    incidentIsOpen: incidentIsOpen,
+    incidentDurationSeconds: incidentDurationSeconds,
+    alertingNote: alertingNote,
+    incidentsMeta: incidentsMeta,
+    incidentsSignature: incidentsSignature,
+    renderIncidentRow: renderIncidentRow,
+    renderIncidents: renderIncidents,
     renderMetricRow: renderMetricRow,
     renderZoneCard: renderZoneCard,
     renderRanking: renderRanking,

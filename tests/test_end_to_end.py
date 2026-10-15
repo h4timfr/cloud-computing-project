@@ -10,11 +10,13 @@ import json
 import unittest
 from datetime import datetime
 
-from floodpulse.config import HISTORY_TTL_SECONDS, METRIC_ORDER, ZONE_IDS
-from floodpulse.handler import dispatch, set_store
+from floodpulse.config import ALERT_MARKER_SORT_KEY, HISTORY_TTL_SECONDS, METRIC_ORDER, ZONE_IDS
+from floodpulse.handler import dispatch, set_notifier, set_store
 from floodpulse.risk import class_rank
 from floodpulse.simulator import simulators_for_all_zones
 from floodpulse.storage import LocalStore
+
+from tests.support import ALERT_COOLDOWN, RecordingNotifier
 
 SEED = 20260214
 STEPS = 60
@@ -28,6 +30,8 @@ def run_scenario(steps: int = STEPS, seed: int = SEED) -> dict:
     """Push a full simulated scenario through the handler, in-process."""
     store = LocalStore()
     set_store(store)
+    notifier = RecordingNotifier()
+    set_notifier(notifier)
     simulators = simulators_for_all_zones(seed=seed)
 
     responses: list[dict] = []
@@ -41,6 +45,10 @@ def run_scenario(steps: int = STEPS, seed: int = SEED) -> dict:
                 json.dumps(payload),
                 store,
                 epoch_of(payload["timestamp"]),
+                {},
+                {},
+                notifier,
+                ALERT_COOLDOWN,
             )
             statuses.append(status)
             responses.append(body)
@@ -52,6 +60,7 @@ def run_scenario(steps: int = STEPS, seed: int = SEED) -> dict:
     )
     return {
         "store": store,
+        "notifier": notifier,
         "statuses": statuses,
         "responses": responses,
         "zones": zones,
@@ -136,21 +145,92 @@ class LocalEndToEndTests(unittest.TestCase):
         store = self.scenario["store"]
         items = list(store.items())
         self.assertTrue(items)
+        reading_items = 0
+        incident_items = 0
+        marker_items = 0
         for item in items:
             with self.subTest(sk=item["sk"]):
                 self.assertTrue(item["simulated"])
                 self.assertEqual(item["data_classification"], "simulated")
-                self.assertEqual(item["ttl"], int(item["ts_epoch"]) + HISTORY_TTL_SECONDS)
                 self.assertNotIn("device_id", item)
-                self.assertIn("sensor_node_id", item)
+                if item["sk"].startswith("INCIDENT#"):
+                    # incidents are retained as permanent history, so no TTL at all
+                    incident_items += 1
+                    self.assertNotIn("ttl", item)
+                    self.assertEqual(item["record_type"], "INCIDENT")
+                    self.assertEqual(item["current_status"], item["current_status"].upper())
+                elif item["sk"] == ALERT_MARKER_SORT_KEY:
+                    marker_items += 1
+                    self.assertIn("last_alert_by_severity", item)
+                    self.assertNotIn("ttl", item)
+                else:
+                    reading_items += 1
+                    self.assertIn("sensor_node_id", item)
+                    self.assertEqual(item["ttl"], int(item["ts_epoch"]) + HISTORY_TTL_SECONDS)
+        self.assertGreater(reading_items, 0)
+        self.assertGreater(incident_items, 0, "the scenario should have produced incidents")
+        self.assertGreater(marker_items, 0, "published alerts should leave a cooldown marker")
         for zone_id in ZONE_IDS:
             self.assertEqual(store.history_count(zone_id), STEPS)
 
+    def test_incidents_are_created_once_per_zone_and_never_duplicated(self) -> None:
+        store = self.scenario["store"]
+        responses = self.scenario["responses"]
+
+        opened: dict[str, list[str]] = {}
+        for body in responses:
+            if body["incident"]["action"] == "opened":
+                opened.setdefault(body["zone_id"], []).append(body["incident"]["incident_id"])
+        self.assertTrue(opened, "the storm should open at least one incident")
+        for zone_id, incident_ids in opened.items():
+            with self.subTest(zone_id=zone_id):
+                self.assertEqual(len(incident_ids), 1, "an incident must open only once")
+                self.assertEqual(store.incident_count(zone_id), 1)
+
+        # zones that never left NORMAL/WATCH have no incident at all
+        elevated = {
+            body["zone_id"]
+            for body in responses
+            if body["risk"]["risk_class"] in ("WARNING", "CRITICAL")
+        }
+        self.assertEqual(set(opened), elevated)
+        self.assertEqual(store.incident_count(), len(elevated))
+
+    def test_alerts_are_published_only_for_escalations(self) -> None:
+        notifier = self.scenario["notifier"]
+        store = self.scenario["store"]
+
+        # one alert per recorded escalation, and nothing else
+        expected = sum(len(incident["alert_severities"]) for incident in store.list_incidents())
+        self.assertEqual(len(notifier.published), expected)
+        self.assertEqual(len(notifier.attempts), expected)
+        self.assertGreater(len(notifier.published), 0)
+        self.assertTrue(all("FloodPulse" in entry["subject"] for entry in notifier.published))
+        self.assertTrue(all("simulated" in entry["message"].lower() for entry in notifier.published))
+
+        # no suppression was needed during a single first storm
+        self.assertTrue(
+            all(body["alert"].get("reason") != "cooldown" for body in self.scenario["responses"])
+        )
+
+    def test_incidents_endpoint_reflects_the_run(self) -> None:
+        store = self.scenario["store"]
+        status, payload = dispatch(
+            "GET", "/incidents", None, store, self.scenario["end_epoch"], {"limit": "50"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["count"], store.incident_count())
+        self.assertEqual(payload["open_count"], len(store.list_incidents()))
+        for incident in payload["incidents"]:
+            for field in ("incident_id", "zone_id", "severity", "opened_at", "current_status", "duration_seconds"):
+                self.assertIn(field, incident)
+
     def test_deferred_features_are_reported_not_faked(self) -> None:
         zones = self.scenario["zones"]
-        self.assertIn("time_to_threshold", zones["deferred_features"])
-        self.assertIn("automated_alerts_sns", zones["deferred_features"])
-        self.assertIn("web_dashboard", zones["deferred_features"])
+        # M3 delivered incident creation and SNS alerting, so only time-to-threshold remains
+        self.assertEqual(list(zones["deferred_features"]), ["time_to_threshold"])
+        for delivered in ("automated_alerts_sns", "incident_creation", "web_dashboard"):
+            self.assertNotIn(delivered, zones["deferred_features"])
         self.assertIn("Time-to-threshold is not implemented yet", " ".join(zones["notes"]))
         for view in zones["zones"]:
             self.assertNotIn("time_to_threshold", view["latest"])

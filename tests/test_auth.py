@@ -212,10 +212,26 @@ class DispatchProtectionTest(unittest.TestCase):
                 None,
                 {INGEST_KEY_HEADER: SECRET},
             )
-            for path in ("/zones", "/zones/zone-riverside-north/history"):
+            for path in ("/zones", "/zones/zone-riverside-north/history", "/incidents"):
                 with self.subTest(path=path):
                     status, payload = dispatch("GET", path, None, self.store, 1_792_000_060)
                     self.assertEqual(status, 200)
+                    self.assertNotIn(SECRET, json.dumps(payload))
+
+    def test_incidents_read_is_public_but_writing_incidents_is_not_a_route(self) -> None:
+        """GET /incidents stays read-only public; there is no client-side incident write."""
+        with mock.patch.dict(os.environ, {INGEST_KEY_ENV: SECRET}):
+            status, payload = dispatch("GET", "/incidents", None, self.store, 1_792_000_000)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["count"], 0)
+
+            # a protected route is still protected: the incident log needs no key,
+            # but nothing about incidents may be created from outside
+            for method in ("POST", "PUT", "DELETE"):
+                with self.subTest(method=method):
+                    status, payload = dispatch(method, "/incidents", "{}", self.store, 1_792_000_000)
+                    self.assertEqual(status, 405)
+                    self.assertEqual(payload["allowed"], ["GET"])
                     self.assertNotIn(SECRET, json.dumps(payload))
 
     def test_local_runs_without_secret_stay_open(self) -> None:

@@ -1,18 +1,19 @@
 """The single FloodPulse Lambda handler (MVP: one function, all routes).
 
-Routes implemented at M0/M1:
+Routes:
 
-* ``POST /readings``                -- validate, score, store (requires the ``x-fp-key`` header)
+* ``POST /readings``                -- validate, score, store (requires the ``x-fp-key`` header),
+                                       then open/escalate/close an incident and alert if warranted
 * ``GET  /zones``                   -- latest state per zone + ranking (public)
 * ``GET  /zones/{zone_id}/history`` -- timestamped history for one zone (public)
+* ``GET  /incidents``               -- flood incident log, newest first (public)
 
 The read endpoints are deliberately unauthenticated: the dashboard in S3 needs them and
 they expose only simulated data. ``POST /readings`` is protected by the shared secret in
 ``FLOODPULSE_INGEST_KEY`` (see ``auth.py``); the secret is never accepted, required or
-revealed on the read routes.
+revealed on the read routes. The SNS topic ARN is never returned to any client.
 
-Deliberately **not** implemented yet (deferred, see ``config.DEFERRED_FEATURES``):
-time-to-threshold, SNS alerts, incident creation, dashboard, AWS deployment.
+Still deferred (see ``config.DEFERRED_FEATURES``): time-to-threshold estimation.
 
 ``dispatch()`` is the pure, AWS-free entry point used by tests and by
 ``tools/local_demo.py``. ``lambda_handler()`` only adapts an API Gateway event.
@@ -32,9 +33,16 @@ from typing import Any, Mapping
 
 from .auth import check_ingest
 from .config import (
+    ALERT_COOLDOWN_ENV,
+    ALERT_COOLDOWN_MAX_SECONDS,
+    ALERT_COOLDOWN_MIN_SECONDS,
+    ALERT_COOLDOWN_SECONDS,
     DEFERRED_FEATURES,
     HISTORY_DEFAULT_MINUTES,
     HISTORY_MAX_MINUTES,
+    INCIDENT_DEFAULT_LIMIT,
+    INCIDENT_MAX_LIMIT,
+    INCIDENT_STATUS_OPEN,
     MAX_HISTORY_POINTS,
     RISK_MODEL_ID,
     SIMULATION_DISCLAIMER,
@@ -46,6 +54,27 @@ from .config import (
     thresholds_for,
     zone_definition,
 )
+from .incidents import (
+    ACTION_CLOSED,
+    ACTION_ESCALATED,
+    ACTION_NONE,
+    ACTION_OPENED,
+    alerting_view,
+    build_alert_entry,
+    build_alert_marker,
+    cooldown_remaining_seconds,
+    decide_transition,
+    incident_view,
+    record_alert,
+)
+from .notify import (
+    ALERT_KIND_ESCALATED,
+    ALERT_KIND_OPENED,
+    NoopNotifier,
+    alert_subject,
+    build_alert_message,
+    notifier_for_env,
+)
 from .risk import MODEL_NOTE, apply_hysteresis, rolling_mean_metrics, score_zone
 from .storage import LocalStore
 from .validation import ValidationError, validate_body_size, validate_reading
@@ -53,6 +82,7 @@ from .validation import ValidationError, validate_body_size, validate_reading
 LOGGER = logging.getLogger("floodpulse.handler")
 
 _STORE: Any = None
+_NOTIFIER: Any = None
 
 
 def get_store():
@@ -83,8 +113,225 @@ def set_store(store: Any) -> None:
     _STORE = store
 
 
+def get_notifier():
+    """Process-wide SNS notifier.
+
+    With no ``FLOODPULSE_SNS_TOPIC_ARN`` this is a no-op, so local runs and the test
+    suite never talk to AWS.
+    """
+    global _NOTIFIER
+    if _NOTIFIER is None:
+        _NOTIFIER = notifier_for_env(os.environ)
+    return _NOTIFIER
+
+
+def set_notifier(notifier: Any) -> None:
+    """Replace the process-wide notifier (used by tests)."""
+    global _NOTIFIER
+    _NOTIFIER = notifier
+
+
+def alert_cooldown_seconds() -> int:
+    """Per-zone, per-severity alert cooldown, overridable by environment.
+
+    Out-of-range or unparseable values fall back to the configured default rather than
+    failing a deployment.
+    """
+    raw = os.environ.get(ALERT_COOLDOWN_ENV, "").strip()
+    if not raw:
+        return ALERT_COOLDOWN_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        LOGGER.warning("ignoring non-numeric %s=%r", ALERT_COOLDOWN_ENV, raw)
+        return ALERT_COOLDOWN_SECONDS
+    if not ALERT_COOLDOWN_MIN_SECONDS <= value <= ALERT_COOLDOWN_MAX_SECONDS:
+        LOGGER.warning("ignoring out-of-range %s=%s", ALERT_COOLDOWN_ENV, value)
+        return ALERT_COOLDOWN_SECONDS
+    return value
+
+
 def _utc_iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# --------------------------------------------------------------------------- #
+# Incidence tracking and alerting (M3)
+# --------------------------------------------------------------------------- #
+
+
+def _incident_summary(
+    action: str, incident: Mapping[str, Any], now_epoch: float, reason: str
+) -> dict[str, Any]:
+    """Client-facing view of what happened to the zone's incident."""
+    summary = incident_view(incident, now_epoch)
+    summary["action"] = action
+    summary["changed"] = action in (ACTION_OPENED, ACTION_ESCALATED, ACTION_CLOSED)
+    summary["reason"] = reason
+    return summary
+
+
+def _no_incident_summary(reason: str) -> dict[str, Any]:
+    return {"action": ACTION_NONE, "changed": False, "current_status": None, "reason": reason}
+
+
+def _maybe_alert(
+    store: Any,
+    notifier: Any,
+    *,
+    zone_id: str,
+    incident: Mapping[str, Any],
+    action: str,
+    alert_severity: str | None,
+    now_epoch: float,
+    cooldown_seconds: int,
+) -> dict[str, Any]:
+    """Publish one alert when the rules allow it.
+
+    Ordering matters: the cooldown marker is only advanced after a *successful* publish,
+    so a transient SNS failure does not silently mute the next attempt. Never returns the
+    topic ARN (a notifier error is redacted before it is reported).
+    """
+    if not alert_severity:
+        return {"evaluated": False, "published": False, "severity": None, "reason": "no_escalation"}
+    if notifier is None or not getattr(notifier, "enabled", False):
+        return {
+            "evaluated": True,
+            "published": False,
+            "severity": alert_severity,
+            "reason": "alerts_not_configured",
+        }
+
+    marker = store.get_alert_marker(zone_id)
+    remaining = cooldown_remaining_seconds(marker, alert_severity, now_epoch, cooldown_seconds)
+    if remaining > 0:
+        return {
+            "evaluated": True,
+            "published": False,
+            "severity": alert_severity,
+            "reason": "cooldown",
+            "cooldown_seconds": int(cooldown_seconds),
+            "cooldown_remaining_seconds": remaining,
+        }
+
+    kind = ALERT_KIND_ESCALATED if action == ACTION_ESCALATED else ALERT_KIND_OPENED
+    zone_name = str(incident.get("zone_name") or zone_id)
+    try:
+        result = notifier.publish(
+            alert_subject(kind, zone_name, alert_severity),
+            build_alert_message(kind, incident),
+        )
+    except Exception as exc:  # noqa: BLE001 - a bad notifier must not break tracking
+        LOGGER.exception("alert publish failed for zone %s", zone_id)
+        redact = getattr(notifier, "redact", None)
+        detail = f"{exc.__class__.__name__}: {exc}"
+        result = {
+            "published": False,
+            "reason": "publish_failed",
+            "detail": (redact(detail) if callable(redact) else detail)[:200],
+        }
+    outcome: dict[str, Any] = {
+        "evaluated": True,
+        "severity": alert_severity,
+        "published": bool(result.get("published")),
+        "kind": kind,
+    }
+    if outcome["published"]:
+        outcome["message_id"] = result.get("message_id")
+        store.put_alert_marker(
+            build_alert_marker(
+                zone_id=zone_id,
+                severity=alert_severity,
+                now_epoch=now_epoch,
+                previous=marker,
+                message_id=result.get("message_id"),
+            )
+        )
+    else:
+        outcome["reason"] = str(result.get("reason") or "publish_failed")
+        if result.get("detail"):
+            outcome["detail"] = str(result["detail"])[:200]
+    return outcome
+
+
+def _track_incident(
+    store: Any,
+    notifier: Any,
+    *,
+    zone_id: str,
+    risk_class: str,
+    risk_score: float,
+    top_driver: str | None,
+    observed_ts_epoch: float,
+    now_epoch: float,
+    cooldown_seconds: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply the incident rules for one scored reading and alert if required.
+
+    ``risk_class`` must be the *effective* class, so the existing hysteresis streaks
+    govern both opening and closing.
+    """
+    plan = decide_transition(
+        zone_id=zone_id,
+        active=store.latest_incident(zone_id),
+        risk_class=risk_class,
+        risk_score=risk_score,
+        top_driver=top_driver,
+        observed_ts_epoch=observed_ts_epoch,
+        now_epoch=now_epoch,
+    )
+    if plan.incident is None:
+        return _no_incident_summary(plan.reason), {
+            "evaluated": False,
+            "published": False,
+            "severity": None,
+            "reason": "no_escalation",
+        }
+
+    action, incident, alert_severity, reason = plan.action, plan.incident, plan.alert_severity, plan.reason
+
+    if action == ACTION_OPENED:
+        if not store.create_incident(incident):
+            # A concurrent request opened the incident first. Adopt the stored record
+            # instead of writing a duplicate, and do not alert (the winner did).
+            existing = store.latest_incident(zone_id)
+            if existing is None or existing.get("current_status") != INCIDENT_STATUS_OPEN:
+                return _no_incident_summary("concurrent incident creation was suppressed"), {
+                    "evaluated": False,
+                    "published": False,
+                    "severity": None,
+                    "reason": "duplicate_suppressed",
+                }
+            incident, action, alert_severity = existing, "observed", None
+            reason = "an incident was already open (duplicate suppressed)"
+            store.put_incident(incident)
+    else:
+        store.put_incident(incident)
+
+    alert = _maybe_alert(
+        store,
+        notifier,
+        zone_id=zone_id,
+        incident=incident,
+        action=action,
+        alert_severity=alert_severity,
+        now_epoch=now_epoch,
+        cooldown_seconds=cooldown_seconds,
+    )
+    if alert.get("evaluated"):
+        incident = record_alert(
+            incident,
+            build_alert_entry(
+                severity=str(alert["severity"]),
+                now_epoch=now_epoch,
+                published=bool(alert.get("published")),
+                reason=str(alert.get("reason") or ""),
+                message_id=alert.get("message_id"),
+            ),
+        )
+        store.put_incident(incident)
+
+    return _incident_summary(action, incident, now_epoch, reason), alert
 
 
 # --------------------------------------------------------------------------- #
@@ -112,7 +359,13 @@ def _water_level_lookback(store: LocalStore, zone_id: str, ts_epoch: int) -> flo
     return float(best["readings"]["water_level_m"])
 
 
-def _handle_reading(body: str | None, store: LocalStore, now_epoch: float) -> tuple[int, dict[str, Any]]:
+def _handle_reading(
+    body: str | None,
+    store: LocalStore,
+    now_epoch: float,
+    notifier: Any = None,
+    cooldown_seconds: int = 0,
+) -> tuple[int, dict[str, Any]]:
     try:
         validate_body_size(body)
     except ValidationError as exc:
@@ -148,6 +401,30 @@ def _handle_reading(body: str | None, store: LocalStore, now_epoch: float) -> tu
 
     latest, history = store.put_reading(reading, risk, hysteresis, smoothed)
 
+    # Incident tracking must never cost us an accepted reading: a failure here is
+    # reported in the response and in the logs, but the reading stays stored.
+    try:
+        incident_summary, alert_summary = _track_incident(
+            store,
+            notifier,
+            zone_id=zone_id,
+            risk_class=str(hysteresis["risk_class"]),
+            risk_score=float(risk["risk_score"]),
+            top_driver=(risk["top_drivers"] or [None])[0],
+            observed_ts_epoch=int(reading["ts_epoch"]),
+            now_epoch=now_epoch,
+            cooldown_seconds=int(cooldown_seconds),
+        )
+    except Exception:  # noqa: BLE001 - never lose an accepted reading
+        LOGGER.exception("incident tracking failed for zone %s", zone_id)
+        incident_summary = {
+            "action": "tracking_failed",
+            "changed": False,
+            "current_status": None,
+            "reason": "incident tracking failed; the reading was stored regardless",
+        }
+        alert_summary = {"evaluated": False, "published": False, "severity": None, "reason": "tracking_failed"}
+
     return 202, {
         "status": "accepted",
         "simulated": True,
@@ -169,6 +446,8 @@ def _handle_reading(body: str | None, store: LocalStore, now_epoch: float) -> tu
             "explanation": risk["explanation"],
         },
         "hysteresis": hysteresis,
+        "incident": incident_summary,
+        "alert": alert_summary,
         "stored": {
             "latest_sk": latest["sk"],
             "history_sk": history["sk"],
@@ -328,6 +607,74 @@ def _handle_history(
 
 
 # --------------------------------------------------------------------------- #
+# GET /incidents
+# --------------------------------------------------------------------------- #
+
+
+def _parse_limit(raw: Any) -> int:
+    if raw is None:
+        return INCIDENT_DEFAULT_LIMIT
+    if isinstance(raw, bool):
+        raise ValidationError("must be an integer number of incidents", "limit")
+    if isinstance(raw, int):
+        limit = raw
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        limit = int(raw.strip())
+    else:
+        raise ValidationError("must be an integer number of incidents", "limit")
+    if not 1 <= limit <= INCIDENT_MAX_LIMIT:
+        raise ValidationError(f"must be between 1 and {INCIDENT_MAX_LIMIT}", "limit")
+    return limit
+
+
+def _handle_incidents(
+    store: Any,
+    now_epoch: float,
+    query: Mapping[str, Any],
+    notifier: Any = None,
+    cooldown_seconds: int = 0,
+) -> tuple[int, dict[str, Any]]:
+    raw_zone = query.get("zone_id")
+    zone_id: str | None = None
+    if raw_zone is not None and str(raw_zone).strip() != "":
+        zone_id = str(raw_zone).strip()
+        if zone_id not in ZONE_IDS:
+            return 404, {
+                "error": "unknown_zone",
+                "detail": f"unknown zone_id {zone_id!r}",
+                "known_zones": list(ZONE_IDS),
+            }
+    try:
+        limit = _parse_limit(query.get("limit"))
+    except ValidationError as exc:
+        return 400, {"error": "invalid_query", "field": exc.field, "detail": exc.reason}
+
+    incidents = [incident_view(item, now_epoch) for item in store.list_incidents(zone_id=zone_id, limit=limit)]
+    open_count = sum(1 for view in incidents if view["is_open"])
+
+    return 200, {
+        "generated_at": _utc_iso(now_epoch),
+        "simulated": True,
+        "data_classification": "simulated",
+        "model": RISK_MODEL_ID,
+        "model_note": MODEL_NOTE,
+        "zone_id": zone_id,
+        "limit": limit,
+        "count": len(incidents),
+        "open_count": open_count,
+        "closed_count": len(incidents) - open_count,
+        "alerting": alerting_view(notifier is not None and getattr(notifier, "enabled", False), cooldown_seconds),
+        "incidents": incidents,
+        "notes": [
+            SIMULATION_DISCLAIMER,
+            "Incidents record heuristic band crossings: a zone opens one on reaching "
+            "WARNING or CRITICAL and it closes once the zone returns to NORMAL.",
+        ],
+        "deferred_features": list(DEFERRED_FEATURES),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Routing
 # --------------------------------------------------------------------------- #
 
@@ -347,10 +694,13 @@ def dispatch(
     now_epoch: float | None = None,
     query: Mapping[str, Any] | None = None,
     headers: Mapping[str, Any] | None = None,
+    notifier: Any = None,
+    cooldown_seconds: int | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Route one request without touching AWS. Returns ``(status_code, payload)``.
 
     ``headers`` is only consulted for ``POST /readings`` (the ingestion secret).
+    ``notifier`` and ``cooldown_seconds`` default to the environment configuration.
     """
     store = store if store is not None else get_store()
     now_epoch = time.time() if now_epoch is None else float(now_epoch)
@@ -364,12 +714,29 @@ def dispatch(
         denial = check_ingest(headers)
         if denial is not None:
             return denial
-        return _handle_reading(body, store, now_epoch)
+        return _handle_reading(
+            body,
+            store,
+            now_epoch,
+            notifier if notifier is not None else get_notifier(),
+            alert_cooldown_seconds() if cooldown_seconds is None else int(cooldown_seconds),
+        )
 
     if route == "/zones":
         if method != "GET":
             return 405, {"error": "method_not_allowed", "allowed": ["GET"], "path": route}
         return _handle_zones(store, now_epoch)
+
+    if route == "/incidents":
+        if method != "GET":
+            return 405, {"error": "method_not_allowed", "allowed": ["GET"], "path": route}
+        return _handle_incidents(
+            store,
+            now_epoch,
+            query,
+            notifier if notifier is not None else get_notifier(),
+            alert_cooldown_seconds() if cooldown_seconds is None else int(cooldown_seconds),
+        )
 
     if route.startswith("/zones/"):
         parts = [part for part in route.split("/") if part]

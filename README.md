@@ -2,10 +2,11 @@
 
 Live AWS-based flash-flood early-warning and risk-prediction system (cloud computing project).
 
-**Current milestone: M2 — the live dashboard is deployed and verified end to end.**
-A simulated reading → API Gateway HTTP API → one Lambda → DynamoDB → read back through the
-API → **an S3-hosted dashboard that polls the live API every 5 seconds** works against the
-real account. The dashboard reads real current state from AWS; it never invents risk values.
+**Current milestone: M3 — flood incidents and SNS alerts (implemented, tested locally, deploy held).**
+M2 remains live and verified: a simulated reading → API Gateway HTTP API → one Lambda → DynamoDB →
+read back through the API → **an S3-hosted dashboard that polls the live API every 5 seconds**, which
+never invents risk values. M3 adds automatic incident records (`GET /incidents`) and escalation-only
+SNS alerts; its AWS deploy is waiting on one IAM grant described in the M3 section below.
 
 **Dashboard: <http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com>**
 **API: <https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com>**
@@ -27,12 +28,12 @@ Every stored record and every API response carries `simulated: true` and
 | Validation | Strict payload validation, server-side epoch/TTL | ✅ implemented |
 | Risk engine | Deterministic `heuristic-v1` + explainability + hysteresis | ✅ implemented |
 | Storage | In-memory store + DynamoDB store (same interface) | ✅ **live** against table `floodpulse` |
-| API | `GET /zones`, `GET /zones/{zone_id}/history` (public reads) | ✅ **live** in the same handler |
-| AWS deployment | DynamoDB / Lambda / HTTP API / S3 site | ✅ **deployed and verified** (`infra/deploy.ps1`) |
-| Dashboard | S3-hosted static UI polling the live API | ✅ **live and verified** (`web/`) |
-| Time-to-threshold | Estimate time to a threshold | ⛔ **deferred until after the live dashboard** |
-| Alerts | SNS email/SMS notifications | ⛔ **deferred until after the live dashboard** |
-| Incidents | Automatic incident records | ⛔ deferred (M4) |
+| API | `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (public reads) | ✅ **live** in the same handler |
+| AWS deployment | DynamoDB / Lambda / HTTP API / S3 site / SNS topic | ⏳ M3 code and deploy script ready; **AWS deploy paused** pending one IAM grant (see M3 section) |
+| Dashboard | S3-hosted static UI polling the live API, incident log panel | ⏳ M3 panel written and checked locally; **not yet uploaded** |
+| Incidents | Automatic incident records + lifecycle (open/escalate/close) | ✅ implemented and unit-tested; not yet deployed |
+| Alerts | One SNS topic, escalation-only publishing with a per-zone cooldown | ✅ implemented and unit-tested; publishing needs `sns:Publish` on the role (denied so far) |
+| Time-to-threshold | Estimate time to a threshold | ⛔ **deferred until after M3** |
 | ML | Any learned model | ⛔ out of scope until the deterministic system works end to end |
 
 Locked MVP decisions reflected in the code: **one** Lambda handling all routes,
@@ -184,9 +185,100 @@ The simulator reads the secret from `.floodpulse-key` (or `FLOODPULSE_INGEST_KEY
 
 * Readings are still only produced by `tools/live_simulator.py`; nothing runs on a schedule, so the
   dashboard shows **stale/disconnected** once a run ends (by design, and clearly labelled).
-* No time-to-threshold estimate and no SNS alerts yet — deliberately deferred until after this
-  dashboard, which is now done.
+* No time-to-threshold estimate yet — deliberately deferred until after this dashboard, which is now
+  done.
 * The S3 website endpoint is HTTP-only (no CloudFront, to stay effectively free).
+
+## M3 incidents and SNS alerts (implemented and tested locally; AWS deploy paused)
+
+M3 adds real flood-incident tracking and one SNS alert topic, without changing what M1/M2 already do.
+
+### Incident rules (as implemented)
+
+| Rule | Behaviour |
+|---|---|
+| Open | A zone opens **exactly one** incident when its **hysteresis-filtered** class reaches WARNING or CRITICAL (so `ESCALATION_STREAK` still governs it) |
+| No duplicates | Only one OPEN incident per zone; `create_incident()` uses a conditional write (`attribute_not_exists(pk)`), so two concurrent requests cannot both open one. A zone that reaches WARNING again while already open just updates the existing record |
+| Escalate | WARNING → CRITICAL on the **same** incident: `severity` is raised, `severity_changes` gets an entry, `alert_count` grows. Severity is never downgraded inside an incident |
+| Stay open | WATCH (or any non-NORMAL class) keeps the incident OPEN — that is still an elevated state |
+| Close | Only once the zone is back to NORMAL per the existing `DEESCALATION_STREAK`, then `closed_at`, `duration_seconds` and `close_reason` are set |
+| History | Closed incidents are kept forever (no TTL) and returned by the API newest first |
+| Tracking failures | Incident/alert errors are caught: the reading still returns **202** with `incident.action = "tracking_failed"`, so ingestion never breaks because of alerting |
+
+Incident records carry `incident_id` (`inc-<zone>-<UTC stamp>`), `zone_id`, `zone_name`, `severity`,
+`opened_at`, `current_status`, `risk_score_at_open`, `top_driver`, `simulated: true` and
+`data_classification: "simulated"`, plus the escalation/alert bookkeeping.
+
+### Alerting rules
+
+* **One** SNS topic: `floodpulse-alerts` (created in `eu-north-1`; **0 subscriptions — pending**).
+* Published **only** on a WARNING/CRITICAL escalation, never on every reading: an incident opening at
+  WARNING sends one alert, reaching CRITICAL sends one more, and the rest of the storm is silent.
+* **Cooldown** per zone *and* severity (`FLOODPULSE_ALERT_COOLDOWN_SECONDS`, default 600 s) stored
+  outside the incident (`sk = ALERT#COOLDOWN`), so a repeated simulator run cannot spam subscribers
+  and the cooldown survives close/reopen cycles.
+* A suppressed alert is not even attempted; a **failed** publish is recorded on the incident
+  (`published: false`) and **does not** advance the cooldown, so the next escalation retries.
+* The topic ARN is never sent to the browser: the API exposes only
+  `alerting: { enabled, severities, cooldown_seconds }`, and AWS error strings are redacted
+  (`arn:aws…` → `<alert-topic>`) before they are reported.
+
+### Data model additions (same table, no GSI, no scan)
+
+| `sk` | purpose | TTL |
+|---|---|---|
+| `INCIDENT#<iso timestamp>` | one incident record (sorted chronologically, so the newest is a `Limit=1` reverse query) | none — kept as history |
+| `ALERT#COOLDOWN` | per-zone alert cooldown marker: last alert time + `MessageId` per severity | none |
+
+`GET /incidents?limit=50` (max 200, optional `zone_id`) queries those items per zone, merges and sorts
+them newest first. The route reuses the existing Lambda and table and is a **public read**;
+`POST /readings` keeps its `x-fp-key` protection and there is no client-side write route.
+
+### Dashboard incident panel
+
+A read-only panel between the zone cards and the risk chart: severity, zone, opened time, status,
+a duration that ticks live for OPEN incidents, plus score/top-driver/alert facts. It polls
+`GET /incidents?limit=20` every 10 s **in addition to** the existing 5 s `/zones` poll, patches only
+the duration text between polls, keeps the last good list when a request fails (never inventing an
+incident), and shows the honest state of alerting ("not configured yet" / "armed, max 1 per zone and
+severity every 10 min"). No part of the storm-blue design was changed.
+
+### Status of this milestone (honest)
+
+| Item | State |
+|---|---|
+| Incident engine, storage, API route, notifier, dashboard panel | ✅ implemented, covered by unit tests, verified locally |
+| Local test suite | ✅ **250 tests** pass (`python -m unittest discover -s tests -t .`) |
+| Dashboard harness | ✅ **33 checks** pass (`node tools/dashboard_check.mjs --payload build/zones-live.json`) |
+| SNS topic `floodpulse-alerts` | ✅ created in `eu-north-1`, `DisplayName = FloodPulse Alerts` |
+| `sns:Publish` for the Lambda role | ⛔ **blocked**: `iam:PutRolePolicy` is denied for the `cloud-project` user, so the operator must attach `FloodPulseSnsPublish` (documented below) |
+| Lambda code, `GET /incidents` route, dashboard upload | ⏳ **not deployed**: the deploy is deliberately held until that policy exists, so the milestone is verified in one pass instead of shipping unverifiable alerting |
+| Email/SMS subscription | ⏳ **pending**: the topic has 0 subscriptions, so publishing (once allowed) proves the publish path only |
+
+Operator step required before the deploy (one command, granted on this topic only):
+
+```powershell
+# the policy document is written by infra/deploy.ps1 (and is already at build/iam-sns-publish.json):
+#   { "Action": "sns:Publish", "Resource": "arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts" }
+aws iam put-role-policy --role-name floodpulse-lambda-role --policy-name FloodPulseSnsPublish `
+  --policy-document file://build/iam-sns-publish.json --profile cloud-project --region eu-north-1
+```
+
+Then the whole milestone is deployed and verified with one idempotent command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1
+# creates/uses the SNS topic, adds FLOODPULSE_SNS_TOPIC_ARN + FLOODPULSE_ALERT_COOLDOWN_SECONDS to the
+# gitignored env file (values never printed), adds the GET /incidents route, uploads the dashboard
+```
+
+### M3 limitations (known, deliberate)
+
+* Alerting is publish-proof only until somebody subscribes an email address to the topic.
+* No retry queue: a publish that fails is logged on the incident and retried at the *next* escalation,
+  not immediately.
+* Incidents are per zone; there is no cross-zone "event" that groups simultaneous incidents.
+* No incident acknowledgement, assignment or operator notes (read-only log by design).
 
 ### Local shell notes (Windows, verified)
 
@@ -225,13 +317,17 @@ web/
 tests/
   test_risk.py                scoring, bands, contributions, hysteresis (fixed vectors)
   test_validation.py          accepted/rejected payload matrix
-  test_storage.py             item shapes + store behaviour
+  test_storage.py             item shapes + store behaviour (readings, incidents, markers)
   test_dynamodb_store.py      key/expression builders + fake-table store tests (offline)
+  test_incidents.py           incident lifecycle: open, escalate, no duplicates, close, alerts, cooldown
+  test_incidents_api.py       GET /incidents contract + incident/alert fields on POST /readings
+  test_notify.py              SNS notifier: subject hygiene, message content, failure redaction
   test_handler.py             routes, error codes, API Gateway v1/v2 adapter
   test_auth.py                ingestion key: env/header handling, 401/503, reads stay open
   test_simulator.py           determinism, ranges, phase/clock behaviour
   test_end_to_end.py          simulator -> validation -> risk -> store -> API, in-process
   test_tools.py               secret handling (never printed) + live simulator request shape
+  support.py                  shared test helpers (recording notifier, scenario driver)
 tools/
   local_demo.py               CLI: prints a risk timeline, no AWS calls
   live_simulator.py           drives the deployed API with simulated readings
@@ -246,12 +342,13 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (181 tests, no AWS calls)
+# full test suite (250 tests, no AWS calls)
 python -m unittest discover -s tests -t .
 
-# dashboard checks: pure helpers, rendering from a real payload, site safety (node)
+# dashboard checks: pure helpers, rendering from a real payload, incidents, site safety (node)
 node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-live.json --history build/history-live.json
+node tools/dashboard_check.mjs --payload build/zones-live.json --incidents build/incidents-live.json
 
 # local demo: risk timeline for all three zones
 python tools/local_demo.py --steps 40
@@ -308,7 +405,8 @@ not calibration against measured data.
   water level 0–6 m · flow rate 0–50 m³/s
 * body limit 4 KB; rejections return HTTP 400 with `field` and `detail`
 * `POST /readings` additionally requires the `x-fp-key` header (see **M2 live dashboard**); the read
-  routes are public and never require or reveal the secret
+  routes (`GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents`) are public and never
+  require or reveal the secret
 
 ## Risk model (`heuristic-v1`)
 
@@ -342,8 +440,9 @@ rise_fraction = clamp((water_level_now_raw − water_level_5min_ago_raw) / 1.0 m
 * **explainability**: every result carries per-variable `value`, `sub_score`, `weight`,
   `contribution`, plus `base_score`, `trend`, `top_drivers` and a one-line `explanation`
 
-Deliberately **not** implemented yet: time-to-threshold (no extrapolation is faked),
-SNS alerts, incidents.
+Deliberately **not** implemented yet: time-to-threshold (no extrapolation is faked). Incident
+creation and SNS alerting are implemented (see the M3 section); the incident lifecycle is driven by
+this **effective** class, so the hysteresis streaks above govern both opening and closing.
 
 ## Simulator
 
@@ -359,8 +458,8 @@ constant so tests never depend on the wall clock.
 | M0 | Local foundation: simulator, validation, risk engine, store, handler, tests | ✅ done |
 | M1 | AWS: DynamoDB table, single Lambda + one execution role, HTTP API routes, DynamoDB-backed store | ✅ **done and verified** |
 | M2 | Live dashboard (S3 static site polling `GET /zones`) + protected ingestion + restricted CORS — first live demo | ✅ **done and verified** |
-| M3 | Historical chart polish, session trends, zone drill-down | ⛔ |
-| M4 | Incidents + SNS alerts | ⛔ |
+| M3 | Flood incidents + SNS alerts + incident log in the dashboard | ✅ implemented and tested locally; ⏳ AWS deploy held pending one IAM grant (see M3 section) |
+| M4 | Historical chart polish, session trends, zone drill-down | ⛔ |
 | M5 | Time-to-threshold, CloudWatch alarm | ⛔ |
 | M6 | Demo hardening, deterministic run-book, scheduled simulator | ⛔ |
 
@@ -369,9 +468,12 @@ constant so tests never depend on the wall clock.
 * profile `cloud-project`, region `eu-north-1`, identity `arn:aws:iam::725934295966:user/cloud-project-dev`
 * created by this project, and nothing else: DynamoDB table `floodpulse`, Lambda `floodpulse-api`
   (+ its invoke permission), HTTP API `floodpulse-api` (`2rg2u8quzd`), log group
-  `/aws/lambda/floodpulse-api`, S3 bucket `floodpulse-dashboard-725934295966` (M2)
-* the execution role `floodpulse-lambda-role` was created by the project owner, not by this repository
-* no EC2, RDS, SNS, CloudFront, VPC, NAT gateway, ECS/EKS or OpenSearch resource exists for this project
+  `/aws/lambda/floodpulse-api`, S3 bucket `floodpulse-dashboard-725934295966` (M2), SNS topic
+  `floodpulse-alerts` (M3, `DisplayName = FloodPulse Alerts`, **0 subscriptions**)
+* the execution role `floodpulse-lambda-role` was created by the project owner, not by this repository;
+  adding the M3 `sns:Publish` policy is an operator action because `iam:PutRolePolicy` is denied here
+  (exact error recorded in the M3 section)
+* no EC2, RDS, CloudFront, VPC, NAT gateway, ECS/EKS or OpenSearch resource exists for this project
 * `cloudformation:*` is **denied** for this profile (verified earlier: `ListStacks`, `DescribeStacks`,
   `ValidateTemplate`) → SAM/CDK/`cfn deploy` are unusable; deployment is per-service AWS CLI calls
 * the unrelated role `Video2Product-EC2-SSM-Role` exists in the account and was not touched
@@ -379,10 +481,11 @@ constant so tests never depend on the wall clock.
 ## Cost posture
 
 Live now: DynamoDB on-demand + Lambda (free tier) + HTTP API ($1 per million requests) + 7-day log
-retention + one S3 bucket holding ~72 KB (a few cents at most per month). No NAT gateway,
-CloudFront, IoT Core, EC2, RDS or OpenSearch. Estimated cost while the stack sits idle: effectively
-$0 (all on-demand/free-tier, log retention bounded at 7 days); a demo day of thousands of API
-requests and tens of thousands of DynamoDB writes stays far below $0.05.
+retention + one S3 bucket holding ~85 KB (a few cents at most per month) + one SNS topic with no
+subscriptions (idle topics cost nothing). No NAT gateway, CloudFront, IoT Core, EC2, RDS or
+OpenSearch. Estimated cost while the stack sits idle: effectively $0 (all on-demand/free-tier, log
+retention bounded at 7 days); a demo day of thousands of API requests, tens of thousands of DynamoDB
+writes and a handful of SNS publishes stays far below $0.05.
 
 ## Engineering rules
 

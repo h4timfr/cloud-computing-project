@@ -1,0 +1,353 @@
+"""Flood incident tracking (M3).
+
+An *incident* is a bookkeeping record derived from a zone's **effective** risk class
+(the hysteresis-filtered one). The rules are deliberately small and explainable:
+
+* a zone opens an incident when it reaches ``WARNING`` or ``CRITICAL``;
+* only one incident per zone can be open at a time, so a zone cannot "spam" incidents
+  while the same event is running;
+* reaching ``CRITICAL`` while the open incident is ``WARNING`` *escalates* that incident
+  (it is raised, not duplicated);
+* the open incident closes only when the zone's effective class returns to ``NORMAL``,
+  which already implies the configured de-escalation streak has been satisfied;
+* closed incidents are kept as history.
+
+Everything here is pure and AWS-free: the caller supplies the current item and the new
+observation, and gets back the item to store. ``notify.py`` handles the SNS side.
+
+An incident is *not* a hydrological statement: it records that the heuristic crossed a
+band, nothing more.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Mapping
+
+from .config import (
+    ALERT_MARKER_SORT_KEY,
+    ALERT_SEVERITIES,
+    INCIDENT_CLOSING_CLASS,
+    INCIDENT_OPEN_SEVERITIES,
+    INCIDENT_PREFIX,
+    INCIDENT_STATUS_CLOSED,
+    INCIDENT_STATUS_OPEN,
+    METRIC_LABELS,
+    RISK_MODEL_ID,
+    RISK_ORDER,
+    zone_definition,
+)
+from .storage import build_zone_pk, sort_incident_items
+
+ACTION_OPENED = "opened"
+ACTION_ESCALATED = "escalated"
+ACTION_OBSERVED = "observed"
+ACTION_CLOSED = "closed"
+ACTION_NONE = "none"
+
+
+def iso_utc(epoch: float) -> str:
+    """Second-resolution ISO-8601 UTC, matching the timestamp format used elsewhere."""
+    return (
+        datetime.fromtimestamp(float(epoch), tz=timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def incident_sort_key(opened_ts_epoch: float) -> str:
+    """Sort key for an incident (lexicographic order == chronological order)."""
+    return f"{INCIDENT_PREFIX}{iso_utc(opened_ts_epoch)}"
+
+
+def incident_id_for(zone_id: str, opened_ts_epoch: float) -> str:
+    """Deterministic, readable incident id: ``inc-<zone>-<UTC timestamp>``."""
+    stamp = iso_utc(opened_ts_epoch).replace("-", "").replace(":", "")
+    return f"inc-{zone_id.replace('zone-', '')}-{stamp}"
+
+
+def metric_label(metric: str | None) -> str | None:
+    """Display name for a metric key (``None`` stays ``None``)."""
+    if not metric:
+        return None
+    return METRIC_LABELS.get(str(metric), str(metric))
+
+
+def severity_rank(name: Any) -> int:
+    """NORMAL 0 … CRITICAL 3; -1 for anything unrecognised."""
+    return RISK_ORDER.get(str(name), -1)
+
+
+def build_incident_item(
+    *,
+    zone_id: str,
+    severity: str,
+    risk_score: float,
+    risk_class: str,
+    top_driver: str | None,
+    opened_ts_epoch: float,
+    now_epoch: float,
+) -> dict[str, Any]:
+    """Build a brand-new OPEN incident item."""
+    zone = zone_definition(zone_id)
+    return {
+        "pk": build_zone_pk(zone_id),
+        "sk": incident_sort_key(opened_ts_epoch),
+        "record_type": "INCIDENT",
+        "incident_id": incident_id_for(zone_id, opened_ts_epoch),
+        "zone_id": zone_id,
+        "zone_name": zone["name"],
+        "severity": severity,
+        "severity_at_open": severity,
+        "current_status": INCIDENT_STATUS_OPEN,
+        "opened_at": iso_utc(opened_ts_epoch),
+        "opened_ts_epoch": int(opened_ts_epoch),
+        "closed_at": None,
+        "closed_ts_epoch": None,
+        "duration_seconds": None,
+        "risk_score_at_open": float(risk_score),
+        "risk_class_at_open": risk_class,
+        "risk_score_peak": float(risk_score),
+        "last_risk_score": float(risk_score),
+        "last_risk_class": risk_class,
+        "top_driver": top_driver,
+        "top_driver_label": metric_label(top_driver),
+        "reading_count": 1,
+        "alert_count": 0,
+        "alert_severities": [],
+        "alerts": [],
+        "severity_changes": [],
+        "close_reason": None,
+        "created_ts_epoch": int(now_epoch),
+        "updated_at": iso_utc(now_epoch),
+        "updated_ts_epoch": int(now_epoch),
+        "model": RISK_MODEL_ID,
+        "simulated": True,
+        "data_classification": "simulated",
+    }
+
+
+@dataclass(frozen=True)
+class Transition:
+    """Outcome of feeding one scored reading into the incident rules."""
+
+    action: str
+    incident: dict[str, Any] | None
+    #: Severity to alert on (``None`` means "nothing worth alerting about").
+    alert_severity: str | None = None
+    reason: str = ""
+
+
+def decide_transition(
+    *,
+    zone_id: str,
+    active: Mapping[str, Any] | None,
+    risk_class: str,
+    risk_score: float,
+    top_driver: str | None,
+    observed_ts_epoch: float,
+    now_epoch: float,
+) -> Transition:
+    """Apply the incident rules to one observation.
+
+    ``active`` is the zone's newest incident record (open or closed), or ``None``.
+    ``risk_class`` must be the *effective* class so the existing hysteresis streak
+    requirement governs both opening and closing.
+    """
+    open_incident = active if (active and active.get("current_status") == INCIDENT_STATUS_OPEN) else None
+
+    if open_incident is None:
+        if risk_class not in INCIDENT_OPEN_SEVERITIES:
+            return Transition(ACTION_NONE, None, None, "no open incident and below the incident threshold")
+        item = build_incident_item(
+            zone_id=zone_id,
+            severity=risk_class,
+            risk_score=risk_score,
+            risk_class=risk_class,
+            top_driver=top_driver,
+            opened_ts_epoch=observed_ts_epoch,
+            now_epoch=now_epoch,
+        )
+        return Transition(ACTION_OPENED, item, risk_class, f"zone reached {risk_class}")
+
+    updated = dict(open_incident)
+    updated["last_risk_score"] = float(risk_score)
+    updated["last_risk_class"] = risk_class
+    updated["reading_count"] = int(updated.get("reading_count") or 0) + 1
+    updated["risk_score_peak"] = max(float(updated.get("risk_score_peak") or 0.0), float(risk_score))
+    updated["updated_at"] = iso_utc(now_epoch)
+    updated["updated_ts_epoch"] = int(now_epoch)
+    if top_driver:
+        updated["top_driver"] = top_driver
+        updated["top_driver_label"] = metric_label(top_driver)
+
+    if risk_class == INCIDENT_CLOSING_CLASS:
+        closed_epoch = int(observed_ts_epoch)
+        updated["current_status"] = INCIDENT_STATUS_CLOSED
+        updated["closed_at"] = iso_utc(observed_ts_epoch)
+        updated["closed_ts_epoch"] = closed_epoch
+        updated["duration_seconds"] = max(0, closed_epoch - int(updated["opened_ts_epoch"]))
+        updated["close_reason"] = f"zone returned to {INCIDENT_CLOSING_CLASS}"
+        return Transition(ACTION_CLOSED, updated, None, updated["close_reason"])
+
+    if severity_rank(risk_class) > severity_rank(updated.get("severity")):
+        changes = list(updated.get("severity_changes") or [])
+        changes.append(
+            {
+                "from": updated.get("severity"),
+                "to": risk_class,
+                "at": iso_utc(observed_ts_epoch),
+                "ts_epoch": int(observed_ts_epoch),
+                "risk_score": float(risk_score),
+            }
+        )
+        updated["severity_changes"] = changes
+        updated["severity"] = risk_class
+        return Transition(ACTION_ESCALATED, updated, risk_class, f"incident escalated to {risk_class}")
+
+    return Transition(ACTION_OBSERVED, updated, None, "still elevated, incident stays open")
+
+
+def cooldown_remaining_seconds(
+    marker: Mapping[str, Any] | None,
+    severity: str,
+    now_epoch: float,
+    cooldown_seconds: int,
+) -> int:
+    """Seconds still to wait before ``severity`` may alert again for this zone."""
+    if not marker or cooldown_seconds <= 0:
+        return 0
+    per_severity = marker.get("last_alert_by_severity") or {}
+    entry = per_severity.get(severity) if isinstance(per_severity, Mapping) else None
+    if not entry:
+        return 0
+    try:
+        last = int(entry.get("ts_epoch"))
+    except (TypeError, ValueError):
+        return 0
+    remaining = int(cooldown_seconds) - (int(now_epoch) - last)
+    return max(0, remaining)
+
+
+def build_alert_marker(
+    *,
+    zone_id: str,
+    severity: str,
+    now_epoch: float,
+    previous: Mapping[str, Any] | None = None,
+    message_id: str | None = None,
+) -> dict[str, Any]:
+    """Per-zone ``ALERT#COOLDOWN`` marker recording the last alert per severity.
+
+    Kept outside the incident so the cooldown also survives close/reopen cycles
+    (a repeated simulator run must not re-alert the same subscribers).
+    """
+    per_severity = dict((previous or {}).get("last_alert_by_severity") or {})
+    per_severity[severity] = {
+        "ts_epoch": int(now_epoch),
+        "at": iso_utc(now_epoch),
+        "message_id": message_id,
+    }
+    return {
+        "pk": build_zone_pk(zone_id),
+        "sk": ALERT_MARKER_SORT_KEY,
+        "record_type": "ALERT_MARKER",
+        "zone_id": zone_id,
+        "simulated": True,
+        "data_classification": "simulated",
+        "last_alert_by_severity": per_severity,
+        "updated_at": iso_utc(now_epoch),
+        "updated_ts_epoch": int(now_epoch),
+    }
+
+
+def build_alert_entry(
+    *,
+    severity: str,
+    now_epoch: float,
+    published: bool,
+    reason: str = "",
+    message_id: str | None = None,
+) -> dict[str, Any]:
+    """One line in an incident's alert log (never contains the topic ARN)."""
+    return {
+        "severity": severity,
+        "at": iso_utc(now_epoch),
+        "ts_epoch": int(now_epoch),
+        "published": bool(published),
+        "reason": reason,
+        "message_id": message_id,
+    }
+
+
+def record_alert(incident: Mapping[str, Any], entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``incident`` with one alert attempt appended."""
+    updated = dict(incident)
+    alerts = list(updated.get("alerts") or [])
+    alerts.append(dict(entry))
+    updated["alerts"] = alerts
+    if entry.get("published"):
+        updated["alert_count"] = int(updated.get("alert_count") or 0) + 1
+        severities = list(updated.get("alert_severities") or [])
+        if entry.get("severity") not in severities:
+            severities.append(entry.get("severity"))
+        updated["alert_severities"] = severities
+    return updated
+
+
+def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
+    """Client-facing projection of an incident item (durations computed server-side)."""
+    opened = int(item["opened_ts_epoch"])
+    is_open = item.get("current_status") == INCIDENT_STATUS_OPEN
+    closed_epoch = item.get("closed_ts_epoch")
+    if is_open:
+        duration = max(0, int(now_epoch) - opened)
+    elif closed_epoch is not None:
+        duration = max(0, int(closed_epoch) - opened)
+    else:
+        duration = None
+    return {
+        "incident_id": item.get("incident_id"),
+        "zone_id": item.get("zone_id"),
+        "zone_name": item.get("zone_name"),
+        "severity": item.get("severity"),
+        "severity_at_open": item.get("severity_at_open"),
+        "current_status": item.get("current_status"),
+        "is_open": is_open,
+        "opened_at": item.get("opened_at"),
+        "opened_ts_epoch": opened,
+        "closed_at": item.get("closed_at"),
+        "closed_ts_epoch": closed_epoch,
+        "duration_seconds": duration,
+        "risk_score_at_open": item.get("risk_score_at_open"),
+        "risk_class_at_open": item.get("risk_class_at_open"),
+        "risk_score_peak": item.get("risk_score_peak"),
+        "last_risk_score": item.get("last_risk_score"),
+        "last_risk_class": item.get("last_risk_class"),
+        "top_driver": item.get("top_driver"),
+        "top_driver_label": item.get("top_driver_label"),
+        "reading_count": item.get("reading_count"),
+        "alert_count": item.get("alert_count"),
+        "alert_severities": list(item.get("alert_severities") or []),
+        "escalation_count": len(item.get("severity_changes") or []),
+        "close_reason": item.get("close_reason"),
+        "model": item.get("model", RISK_MODEL_ID),
+        "simulated": True,
+        "data_classification": item.get("data_classification", "simulated"),
+    }
+
+
+def sort_incidents_desc(items: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Newest first; the tie-break lives in ``storage`` so both stores agree exactly."""
+    return sort_incident_items(list(items))
+
+
+def alerting_view(enabled: bool, cooldown_seconds: int) -> dict[str, Any]:
+    """Alert state for the dashboard. Deliberately excludes the topic ARN."""
+    return {
+        "enabled": bool(enabled),
+        "severities": list(ALERT_SEVERITIES),
+        "cooldown_seconds": int(cooldown_seconds),
+    }

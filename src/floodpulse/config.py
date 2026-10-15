@@ -35,6 +35,15 @@ METRICS: dict[str, dict[str, Any]] = {
     "flow_rate_m3_s": {"unit": "m3/s", "min": 0.0, "max": 50.0},
 }
 
+#: Human-readable names for the same metrics (alerts, incident records, dashboard).
+METRIC_LABELS: dict[str, str] = {
+    "rainfall_mm_per_hr": "Rainfall intensity",
+    "drain_level_m": "Drain level",
+    "soil_saturation_pct": "Soil saturation",
+    "water_level_m": "Water level",
+    "flow_rate_m3_s": "Flow rate",
+}
+
 #: Weights sum to 1.00. Hand-set from the project plan; not fitted to any dataset.
 METRIC_WEIGHTS: dict[str, float] = {
     "rainfall_mm_per_hr": 0.30,
@@ -138,14 +147,46 @@ MAX_HISTORY_POINTS = 600
 HISTORY_DEFAULT_MINUTES = 60
 HISTORY_MAX_MINUTES = 1440
 
+# --------------------------------------------------------------------------- #
+# Incidents and alerts (M3)
+# --------------------------------------------------------------------------- #
+# An incident is a bookkeeping record derived from the *effective* (hysteresis-
+# filtered) risk class. It is not a hydrological forecast and carries no more
+# authority than the heuristic score that opened it.
+
+#: A zone opens an incident on reaching one of these classes.
+INCIDENT_OPEN_SEVERITIES: tuple[str, ...] = ("WARNING", "CRITICAL")
+
+#: The only class that closes an open incident. Because this is the *effective*
+#: class, the existing DEESCALATION_STREAK requirement must already be satisfied.
+INCIDENT_CLOSING_CLASS = "NORMAL"
+
+INCIDENT_STATUS_OPEN = "OPEN"
+INCIDENT_STATUS_CLOSED = "CLOSED"
+INCIDENT_STATUSES: tuple[str, ...] = (INCIDENT_STATUS_OPEN, INCIDENT_STATUS_CLOSED)
+
+#: Incidents are kept indefinitely (they are small and are the historical record).
+INCIDENT_PREFIX = "INCIDENT#"
+ALERT_MARKER_SORT_KEY = "ALERT#COOLDOWN"
+
+#: Severities that are worth an SNS alert at all.
+ALERT_SEVERITIES: tuple[str, ...] = ("WARNING", "CRITICAL")
+
+#: Per-zone, per-severity cooldown: the same zone cannot alert twice with the same
+#: severity inside this window, so a repeated simulator run cannot spam subscribers.
+ALERT_COOLDOWN_SECONDS = 600
+ALERT_COOLDOWN_ENV = "FLOODPULSE_ALERT_COOLDOWN_SECONDS"
+ALERT_COOLDOWN_MIN_SECONDS = 0
+ALERT_COOLDOWN_MAX_SECONDS = 24 * 60 * 60
+
+#: Read from the environment; never returned to a client.
+SNS_TOPIC_ENV = "FLOODPULSE_SNS_TOPIC_ARN"
+
+INCIDENT_DEFAULT_LIMIT = 50
+INCIDENT_MAX_LIMIT = 200
+
 #: Documented in API responses so the dashboard can be honest about what exists.
-DEFERRED_FEATURES: tuple[str, ...] = (
-    "time_to_threshold",
-    "automated_alerts_sns",
-    "incident_creation",
-    "web_dashboard",
-    "aws_deployment",
-)
+DEFERRED_FEATURES: tuple[str, ...] = ("time_to_threshold",)
 
 SIMULATION_DISCLAIMER = (
     "All FloodPulse sensor data is SIMULATED. Risk scores come from the "

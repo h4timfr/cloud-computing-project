@@ -14,12 +14,16 @@ from copy import deepcopy
 from decimal import Decimal
 
 import floodpulse.dynamodb_store as ddb_module
-from floodpulse.config import HISTORY_TTL_SECONDS, METRIC_ORDER, thresholds_for
+from floodpulse.config import ALERT_MARKER_SORT_KEY, HISTORY_TTL_SECONDS, METRIC_ORDER, thresholds_for
 from floodpulse.dynamodb_store import (
     DynamoDbStore,
+    alert_marker_get_params,
+    alert_marker_key,
     history_count_params,
     history_query_params,
     history_sk,
+    incident_count_params,
+    incident_query_params,
     is_conditional_check_failure,
     iso_utc_from_epoch,
     latest_get_params,
@@ -27,6 +31,7 @@ from floodpulse.dynamodb_store import (
     plain,
     to_storable,
 )
+from floodpulse.incidents import build_alert_marker, build_incident_item
 from floodpulse.risk import apply_hysteresis, score_zone
 from floodpulse.storage import LATEST_SORT_KEY, LocalStore, build_zone_pk
 
@@ -199,6 +204,35 @@ class PureHelperTests(unittest.TestCase):
         self.assertEqual(params["Select"], "COUNT")
         self.assertEqual(params["ExpressionAttributeValues"][":pk"], build_zone_pk(ZONE))
 
+    def test_incident_query_params(self) -> None:
+        params = incident_query_params(ZONE)
+        self.assertEqual(params["KeyConditionExpression"], "pk = :pk AND begins_with(sk, :prefix)")
+        self.assertEqual(
+            params["ExpressionAttributeValues"],
+            {":pk": build_zone_pk(ZONE), ":prefix": "INCIDENT#"},
+        )
+        # newest first, and a pure key-condition query: no filter, no scan, no GSI
+        self.assertFalse(params["ScanIndexForward"])
+        self.assertNotIn("FilterExpression", params)
+        self.assertNotIn("IndexName", params)
+        self.assertNotIn("Limit", params)
+        self.assertEqual(incident_query_params(ZONE, limit=1)["Limit"], 1)
+
+    def test_incident_count_params(self) -> None:
+        params = incident_count_params(ZONE)
+        self.assertEqual(params["Select"], "COUNT")
+        self.assertEqual(params["ExpressionAttributeValues"][":prefix"], "INCIDENT#")
+        self.assertEqual(params["ExpressionAttributeValues"][":pk"], build_zone_pk(ZONE))
+        self.assertNotIn("FilterExpression", params)
+
+    def test_alert_marker_key(self) -> None:
+        self.assertEqual(
+            alert_marker_key(ZONE),
+            {"pk": build_zone_pk(ZONE), "sk": ALERT_MARKER_SORT_KEY},
+        )
+        self.assertEqual(alert_marker_key(ZONE)["sk"], "ALERT#COOLDOWN")
+        self.assertTrue(alert_marker_get_params(ZONE)["ConsistentRead"])
+
     def test_plain_converts_decimals(self) -> None:
         raw = {
             "ts_epoch": Decimal("1771064100"),
@@ -344,6 +378,129 @@ class DynamoDbStoreTests(unittest.TestCase):
         self.assertIsInstance(latest["readings"]["rainfall_mm_per_hr"], float)
 
 
+class IncidentStoreTests(unittest.TestCase):
+    """Incident and cooldown-marker storage against the fake DynamoDB table."""
+
+    def setUp(self) -> None:
+        self.table = FakeTable()
+        self.store = DynamoDbStore("floodpulse", table=self.table)
+
+    def incident(self, zone_id: str = ZONE, ts_epoch: int = BASE_EPOCH, severity: str = "WARNING") -> dict:
+        return build_incident_item(
+            zone_id=zone_id,
+            severity=severity,
+            risk_score=0.66,
+            risk_class=severity,
+            top_driver="water_level_m",
+            opened_ts_epoch=ts_epoch,
+            now_epoch=ts_epoch,
+        )
+
+    def test_create_incident_is_conditional(self) -> None:
+        item = self.incident()
+        self.assertTrue(self.store.create_incident(item))
+        self.assertFalse(self.store.create_incident(item), "the same incident must not be created twice")
+        self.assertEqual(self.store.incident_count(ZONE), 1)
+        self.assertIn("put_item", self.table.calls)
+
+        # a different incident for the same zone is still allowed
+        later = self.incident(ts_epoch=BASE_EPOCH + 600)
+        self.assertTrue(self.store.create_incident(later))
+        self.assertEqual(self.store.incident_count(ZONE), 2)
+
+    def test_incident_keys_are_unique_and_ordered(self) -> None:
+        first, second = self.incident(ts_epoch=BASE_EPOCH), self.incident(ts_epoch=BASE_EPOCH + 600)
+        self.assertNotEqual(first["sk"], second["sk"])
+        self.assertLess(first["sk"], second["sk"])
+        self.assertTrue(first["sk"].startswith("INCIDENT#"))
+        self.assertNotIn("ttl", first, "incidents are retained as history, not expired")
+
+    def test_latest_incident_returns_the_newest(self) -> None:
+        self.store.create_incident(self.incident(ts_epoch=BASE_EPOCH))
+        self.store.create_incident(self.incident(ts_epoch=BASE_EPOCH + 600))
+        latest = self.store.latest_incident(ZONE)
+        self.assertEqual(latest["opened_ts_epoch"], BASE_EPOCH + 600)
+        self.assertEqual(latest["current_status"], "OPEN")
+        self.assertIsNone(self.store.latest_incident(OTHER_ZONE))
+
+    def test_put_incident_updates_in_place(self) -> None:
+        item = self.incident()
+        self.store.create_incident(item)
+        closed = dict(item, current_status="CLOSED", closed_ts_epoch=BASE_EPOCH + 300, duration_seconds=300)
+        self.store.put_incident(closed)
+        self.assertEqual(self.store.incident_count(ZONE), 1, "updating must not create a second record")
+        stored = self.store.latest_incident(ZONE)
+        self.assertEqual(stored["current_status"], "CLOSED")
+        self.assertEqual(stored["duration_seconds"], 300)
+
+    def test_list_incidents_is_newest_first_and_capped(self) -> None:
+        for offset in (0, 600, 1200):
+            self.store.create_incident(self.incident(ts_epoch=BASE_EPOCH + offset))
+        self.store.create_incident(self.incident(zone_id=OTHER_ZONE, ts_epoch=BASE_EPOCH + 300))
+
+        everything = self.store.list_incidents()
+        self.assertEqual(len(everything), 4)
+        epochs = [item["opened_ts_epoch"] for item in everything]
+        self.assertEqual(epochs, sorted(epochs, reverse=True))
+
+        self.assertEqual(len(self.store.list_incidents(limit=2)), 2)
+        self.assertEqual([item["opened_ts_epoch"] for item in self.store.list_incidents(limit=2)], [BASE_EPOCH + 1200, BASE_EPOCH + 600])
+
+        zone_only = self.store.list_incidents(zone_id=ZONE)
+        self.assertEqual(len(zone_only), 3)
+        self.assertTrue(all(item["zone_id"] == ZONE for item in zone_only))
+
+        # the newest incident overall still wins when a limit is applied
+        self.assertEqual(self.store.list_incidents(limit=1)[0]["opened_ts_epoch"], BASE_EPOCH + 1200)
+
+    def test_incident_count_per_zone_and_total(self) -> None:
+        self.store.create_incident(self.incident())
+        self.store.create_incident(self.incident(zone_id=OTHER_ZONE))
+        self.assertEqual(self.store.incident_count(ZONE), 1)
+        self.assertEqual(self.store.incident_count(OTHER_ZONE), 1)
+        self.assertEqual(self.store.incident_count(), 2)
+
+    def test_incident_numbers_round_trip_as_plain_floats(self) -> None:
+        item = self.incident()
+        self.store.create_incident(item)
+        stored = self.store.latest_incident(ZONE)
+        self.assertIsInstance(stored["risk_score_at_open"], float)
+        self.assertEqual(stored["risk_score_at_open"], 0.66)
+        json.dumps(stored, sort_keys=True)  # must be JSON serialisable for the API
+
+    def test_incident_write_rejects_python_floats(self) -> None:
+        """The fake table mirrors boto3: a float must have been converted first."""
+        item = dict(self.incident(), risk_score_at_open=0.66)
+        self.store.create_incident(item)  # no TypeError -> to_storable() did its job
+
+    def test_alert_marker_round_trip(self) -> None:
+        self.assertIsNone(self.store.get_alert_marker(ZONE))
+        marker = build_alert_marker(zone_id=ZONE, severity="WARNING", now_epoch=BASE_EPOCH, message_id="m1")
+        self.store.put_alert_marker(marker)
+
+        stored = self.store.get_alert_marker(ZONE)
+        self.assertEqual(stored["last_alert_by_severity"]["WARNING"]["message_id"], "m1")
+        self.assertEqual(stored["last_alert_by_severity"]["WARNING"]["ts_epoch"], BASE_EPOCH)
+        self.assertEqual(stored["record_type"], "ALERT_MARKER")
+
+        # merging a second severity keeps the first entry
+        second = build_alert_marker(
+            zone_id=ZONE, severity="CRITICAL", now_epoch=BASE_EPOCH + 60, previous=stored, message_id="m2"
+        )
+        self.store.put_alert_marker(second)
+        merged = self.store.get_alert_marker(ZONE)
+        self.assertEqual(set(merged["last_alert_by_severity"]), {"WARNING", "CRITICAL"})
+        self.assertEqual(merged["last_alert_by_severity"]["WARNING"]["message_id"], "m1")
+
+    def test_item_count_includes_incidents_and_markers(self) -> None:
+        reading = make_reading()
+        put(self.store, reading)
+        self.store.create_incident(self.incident())
+        self.store.put_alert_marker(build_alert_marker(zone_id=ZONE, severity="WARNING", now_epoch=BASE_EPOCH))
+        # 1 latest + 1 history + 1 incident + 1 marker
+        self.assertEqual(self.store.item_count(), 4)
+
+
 class LocalVsDynamoEquivalenceTests(unittest.TestCase):
     """The DynamoDB store must behave like the M0 store for the same input."""
 
@@ -378,6 +535,47 @@ class LocalVsDynamoEquivalenceTests(unittest.TestCase):
         )
         self.assertEqual(self.remote.history_count(ZONE), self.local.history_count(ZONE))
         self.assertEqual(self.remote.all_latest(), self.local.all_latest())
+        self.assertEqual(self.remote.item_count(), self.local.item_count())
+
+    def test_same_incident_sequence_produces_the_same_records(self) -> None:
+        epochs = (BASE_EPOCH, BASE_EPOCH + 600, BASE_EPOCH + 1200)
+        for index, epoch in enumerate(epochs):
+            for store in (self.local, self.remote):
+                created = store.create_incident(
+                    build_incident_item(
+                        zone_id=ZONE,
+                        severity="WARNING" if index == 0 else "CRITICAL",
+                        risk_score=0.7 + index / 100,
+                        risk_class="WARNING",
+                        top_driver="water_level_m",
+                        opened_ts_epoch=epoch,
+                        now_epoch=epoch,
+                    )
+                )
+                self.assertTrue(created)
+                store.put_alert_marker(
+                    build_alert_marker(zone_id=ZONE, severity="WARNING", now_epoch=epoch, message_id=f"m{index}")
+                )
+
+        self.assertEqual(self.remote.incident_count(ZONE), self.local.incident_count(ZONE))
+        self.assertEqual(self.remote.incident_count(), self.local.incident_count())
+        self.assertEqual(self.remote.latest_incident(ZONE), self.local.latest_incident(ZONE))
+        self.assertEqual(self.remote.list_incidents(ZONE), self.local.list_incidents(ZONE))
+        self.assertEqual(self.remote.list_incidents(limit=2), self.local.list_incidents(limit=2))
+        self.assertEqual(self.remote.get_alert_marker(ZONE), self.local.get_alert_marker(ZONE))
+
+        # duplicates are refused identically by both stores
+        duplicate = build_incident_item(
+            zone_id=ZONE,
+            severity="WARNING",
+            risk_score=0.9,
+            risk_class="WARNING",
+            top_driver="water_level_m",
+            opened_ts_epoch=epochs[0],
+            now_epoch=epochs[0],
+        )
+        self.assertFalse(self.local.create_incident(duplicate))
+        self.assertFalse(self.remote.create_incident(duplicate))
         self.assertEqual(self.remote.item_count(), self.local.item_count())
 
 

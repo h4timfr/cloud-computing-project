@@ -14,6 +14,8 @@
 
   var POLL_MS = 5000;
   var HISTORY_REFRESH_MS = 30000;
+  var INCIDENTS_REFRESH_MS = 10000;
+  var INCIDENTS_LIMIT = 20;
   var FETCH_TIMEOUT_MS = 9000;
   var SESSION_POINTS = 60;
   var BAND_EDGES = [0.35, 0.60, 0.80]; // heuristic-v1 band boundaries (see README)
@@ -43,7 +45,11 @@
     userSelected: false,
     historyMinutes: 60,
     inFlight: false,
-    hoverIndex: null
+    hoverIndex: null,
+    incidents: null,
+    incidentsSignature: null,
+    incidentsMs: null,
+    incidentsError: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -52,7 +58,8 @@
     [
       'conn-badge', 'conn-detail', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
       'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
-      'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count'
+      'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
+      'incidents', 'incidents-meta', 'incidents-alerting'
     ].forEach(function (id) { el[id] = $(id); });
   }
 
@@ -92,6 +99,10 @@
       state.lastSuccessMs = Date.now();
       state.payload = payload;
       applyPayload(payload);
+      var nowMs = Date.now();
+      if (state.incidentsMs === null || nowMs - state.incidentsMs >= INCIDENTS_REFRESH_MS) {
+        loadIncidents();
+      }
     }).catch(function (error) {
       state.inFlight = false;
       state.lastError = true;
@@ -534,6 +545,66 @@
 
   /* ----------------------------------------------------------------- wiring --- */
 
+  /* ------------------------------------------------------------- incidents --- */
+
+  /* The incident log is read-only and comes straight from GET /incidents: this page
+   * never invents or edits an incident, and the SNS topic is never exposed to it. */
+  function loadIncidents() {
+    state.incidentsMs = Date.now();
+    getJson('/incidents?limit=' + INCIDENTS_LIMIT).then(function (payload) {
+      state.incidents = payload;
+      state.incidentsError = null;
+      renderIncidentsPanel();
+    }).catch(function (error) {
+      state.incidentsError = error.message;
+      // keep the last good list rather than blanking the panel or inventing history
+      renderIncidentsPanel();
+    });
+  }
+
+  function renderIncidentsPanel() {
+    if (!el.incidents) return;
+    var payload = state.incidents;
+    var signature = FP.incidentsSignature(payload);
+    if (signature !== state.incidentsSignature) {
+      state.incidentsSignature = signature;
+      el.incidents.innerHTML = FP.renderIncidents(payload, Date.now());
+    } else {
+      tickIncidentDurations();
+    }
+    if (el['incidents-meta']) {
+      el['incidents-meta'].textContent = state.incidentsError
+        ? 'incidents unavailable (' + state.incidentsError + ') — showing the last loaded list'
+        : FP.incidentsMeta(payload);
+    }
+    if (el['incidents-alerting']) {
+      el['incidents-alerting'].textContent = FP.alertingNote(payload ? payload.alerting : null);
+      el['incidents-alerting'].setAttribute(
+        'data-alerting',
+        payload && payload.alerting && payload.alerting.enabled ? 'armed' : 'off'
+      );
+    }
+  }
+
+  /* Open incidents keep counting between polls; only the duration text is patched so
+     the rest of the list (and any text selection) is left alone. */
+  function tickIncidentDurations() {
+    if (!el.incidents || !state.incidents) return;
+    var rows = el.incidents.querySelectorAll('[data-incident][data-status="OPEN"]');
+    var nowMs = Date.now();
+    Array.prototype.forEach.call(rows, function (row) {
+      var incidentId = row.getAttribute('data-incident');
+      var incident = (state.incidents.incidents || []).filter(function (candidate) {
+        return candidate.incident_id === incidentId;
+      })[0];
+      if (!incident) return;
+      var node = row.querySelector('[data-f="duration"]');
+      if (node) {
+        node.textContent = FP.formatDuration(FP.incidentDurationSeconds(incident, nowMs)) + ' and counting';
+      }
+    });
+  }
+
   function bind() {
     el['history-zone'].addEventListener('click', function (event) {
       var button = event.target.closest('[data-zone-pick]');
@@ -572,6 +643,7 @@
       if (!document.hidden) {
         poll();
         loadHistory();
+        loadIncidents();
       }
     });
   }
@@ -585,13 +657,18 @@
     }
     refreshConnection();
     poll();
+    loadIncidents();
     setInterval(function () {
       if (!document.hidden) poll();
     }, POLL_MS);
     setInterval(function () {
       if (!document.hidden) loadHistory();
     }, HISTORY_REFRESH_MS);
+    setInterval(function () {
+      if (!document.hidden) loadIncidents();
+    }, INCIDENTS_REFRESH_MS);
     setInterval(refreshConnection, 1000);
+    setInterval(tickIncidentDurations, 1000);
     setInterval(function () {
       var total = Object.keys(state.series).reduce(function (sum, key) { return sum + state.series[key].length; }, 0);
       el['poll-count'].textContent = total + ' live samples buffered';
