@@ -710,8 +710,23 @@ if (incidentsPath) {
       assert.ok(!isNaN(new Date(incident.opened_at).getTime()), `incident ${index} opened_at is unparseable`);
       assert.equal(typeof incident.duration_seconds, 'number', `incident ${index} duration missing`);
       assert.ok(incident.risk_score_at_open >= 0.6, `incident ${index} opened below WARNING`);
-      assert.equal(incident.simulated, true, `incident ${index} is not marked simulated`);
+      // An incident inherits the provenance of the reading that opened it: the two flags it
+      // carries must agree, and a live incident must not be served as fully simulated.
+      assert.ok(['simulated', 'mixed'].includes(incident.data_classification),
+        `incident ${index} has an unknown classification ${incident.data_classification}`);
+      assert.equal(incident.simulated, incident.data_classification === 'simulated',
+        `incident ${index} contradicts itself: simulated=${incident.simulated} but ${incident.data_classification}`);
+      if (live.data_classification === 'mixed') {
+        assert.equal(incident.simulated, false, `incident ${index} of a live fleet claims to be simulated`);
+      }
     });
+    assert.equal(live.simulated, live.data_classification === 'simulated',
+      `the list contradicts itself: simulated=${live.simulated} but ${live.data_classification}`);
+    if (live.zone_mode === 'live_weather') {
+      assert.equal(live.data_classification, 'mixed', 'a live fleet incident list must not claim to be simulated');
+      assert.ok(live.notes.some((note) => /open-meteo/i.test(note)),
+        'the live incident list does not attribute the provider data');
+    }
     const html = FP.renderIncidents(live, Date.now());
     assert.ok(!html.includes('undefined'), 'live incident markup contains undefined');
     assert.ok(!html.includes('NaN'), 'live incident markup contains NaN');
@@ -742,6 +757,21 @@ if (historyPath) {
     const shape = FP.sparklinePath(series.values, 900, 220, 10);
     assert.equal(shape.points.length, history.points.length);
     assert.ok(shape.max >= shape.min, 'axis range inverted');
+  });
+
+  check(`the history window from ${historyPath} reports the provenance it holds`, () => {
+    assert.ok(['simulated', 'mixed'].includes(history.data_classification),
+      `unknown classification ${history.data_classification}`);
+    assert.equal(history.simulated, history.data_classification === 'simulated',
+      `the window contradicts itself: simulated=${history.simulated} but ${history.data_classification}`);
+    if (history.zone_mode === 'live_weather') {
+      assert.equal(history.data_classification, 'mixed',
+        'a live city window must not be served as fully simulated');
+      assert.equal(history.metric_sources.rainfall_mm_per_hr, 'REAL',
+        'the live window does not carry the live metric sources');
+      assert.equal(history.metric_sources.water_level_m, 'SIMULATED',
+        'the live window does not say which metrics are simulated');
+    }
   });
 }
 

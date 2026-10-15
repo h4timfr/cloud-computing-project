@@ -30,6 +30,8 @@ from floodpulse.simulator import SensorSimulator  # noqa: E402
 KEY_ENV = "FLOODPULSE_INGEST_KEY"
 KEY_HEADER = "x-fp-key"
 DEFAULT_KEY_FILE = ".floodpulse-key"
+# the API refuses readings more than 300 s off its clock; warn well before that
+DRIFT_WARN_SECONDS = 120.0
 
 
 def resolve_key(key_file: Path, explicit: str | None) -> str:
@@ -64,6 +66,19 @@ def post_reading(url: str, key: str, payload: dict, timeout: float) -> tuple[int
             return exc.code, {"error": "non_json_response", "detail": raw[:200]}
     except urllib.error.URLError as exc:
         return 0, {"error": "connection_failed", "detail": str(exc.reason)}
+
+
+def clock_drift(elapsed_seconds: float, steps_done: int, interval: float) -> float:
+    """How far the simulated clock has moved from real time, in seconds (signed).
+
+    A reading carries a timestamp advanced by ``interval`` per step, and the API refuses
+    anything more than a few minutes off its own clock. Sleeping ``interval`` *on top of* the
+    time a step takes makes the simulated clock fall behind by the work time of every step,
+    so the loop below sleeps only the remainder of the cadence and this measures what is left.
+    Positive means behind real time, negative means ahead.
+    """
+    simulated_span = max(0, steps_done - 1) * float(interval)
+    return float(elapsed_seconds) - simulated_span
 
 
 def main() -> int:
@@ -107,6 +122,7 @@ def main() -> int:
 
     for index in range(args.steps):
         line = []
+        step_started = time.time()
         for zone in zones:
             reading = simulators[zone].step()
             status, payload = post_reading(args.url, key, reading, args.timeout)
@@ -130,14 +146,27 @@ def main() -> int:
                 if first_error is None:
                     first_error = {"status": status, "payload": payload, "zone": zone, "step": index}
                 line.append(f"{zone.split('-')[-1]}=HTTP {status}")
+        drift = clock_drift(time.time() - started, index + 1, args.interval)
+        if abs(drift) > DRIFT_WARN_SECONDS:
+            where = "behind" if drift > 0 else "ahead of"
+            line.append(f"simulated clock {abs(drift):.0f}s {where} real time")
         if not args.quiet:
             phase = simulators[zones[0]].phase_at(index)
             print(f"[{index + 1:>3}/{args.steps}] {phase:<12} " + "  ".join(line))
+        elif abs(drift) > DRIFT_WARN_SECONDS:
+            print(f"warning: the simulated clock is {abs(drift):.0f}s "
+                  f"{'behind' if drift > 0 else 'ahead of'} real time after {index + 1} steps; "
+                  f"the API refuses readings beyond its clock-skew guard. Each step costs about "
+                  f"{(time.time() - started) / (index + 1):.1f}s for {len(zones)} zone(s); use a "
+                  f"cadence at least that long.")
         if reached:
             print(f"stop-at reached: {reached} reported {args.stop_at}")
             break
         if index + 1 < args.steps:
-            time.sleep(max(0.0, args.interval))
+            # sleep only the remainder of the cadence: the step itself already took time,
+            # and sleeping the whole interval on top of it would walk the simulated clock
+            # away from real time until the API starts refusing readings
+            time.sleep(max(0.0, args.interval - (time.time() - step_started)))
 
     elapsed = time.time() - started
     print("\nsummary")
@@ -151,7 +180,6 @@ def main() -> int:
         print(f"  first error    : HTTP {first_error['status']} on {first_error['zone']} "
               f"(step {first_error['step'] + 1}) {json.dumps(first_error['payload'])[:200]}")
     return 1 if failures else 0
-
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

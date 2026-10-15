@@ -38,6 +38,8 @@ from .config import (
     ALERT_COOLDOWN_MAX_SECONDS,
     ALERT_COOLDOWN_MIN_SECONDS,
     ALERT_COOLDOWN_SECONDS,
+    DATA_CLASSIFICATION_MIXED,
+    DATA_CLASSIFICATION_SIMULATED,
     DEFERRED_FEATURES,
     HISTORY_DEFAULT_MINUTES,
     HISTORY_MAX_MINUTES,
@@ -61,6 +63,7 @@ from .config import (
     WEATHER_REFRESH_SECONDS,
     ZONE_DEFINITIONS,
     ZONE_IDS,
+    ZONE_MODE_DEMO,
     ZONE_MODE_LIVE,
     data_classification_for_mode,
     thresholds_for,
@@ -224,6 +227,7 @@ def _maybe_alert(
     alert_severity: str | None,
     now_epoch: float,
     cooldown_seconds: int,
+    data_classification: str = DATA_CLASSIFICATION_SIMULATED,
 ) -> dict[str, Any]:
     """Publish one alert when the rules allow it.
 
@@ -284,6 +288,7 @@ def _maybe_alert(
                 now_epoch=now_epoch,
                 previous=marker,
                 message_id=result.get("message_id"),
+                data_classification=data_classification,
             )
         )
     else:
@@ -304,11 +309,14 @@ def _track_incident(
     observed_ts_epoch: float,
     now_epoch: float,
     cooldown_seconds: int,
+    data_classification: str = DATA_CLASSIFICATION_SIMULATED,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Apply the incident rules for one scored reading and alert if required.
 
     ``risk_class`` must be the *effective* class, so the existing hysteresis streaks
-    govern both opening and closing.
+    govern both opening and closing. ``data_classification`` is the provenance of the
+    reading, stored on the incident so a live-weather incident is never served as if the
+    whole fleet were simulated.
     """
     plan = decide_transition(
         zone_id=zone_id,
@@ -318,6 +326,7 @@ def _track_incident(
         top_driver=top_driver,
         observed_ts_epoch=observed_ts_epoch,
         now_epoch=now_epoch,
+        data_classification=data_classification,
     )
     if plan.incident is None:
         return _no_incident_summary(plan.reason), {
@@ -356,6 +365,7 @@ def _track_incident(
         alert_severity=alert_severity,
         now_epoch=now_epoch,
         cooldown_seconds=cooldown_seconds,
+        data_classification=data_classification,
     )
     if alert.get("evaluated"):
         incident = record_alert(
@@ -456,6 +466,7 @@ def _ingest_record(
             observed_ts_epoch=int(reading["ts_epoch"]),
             now_epoch=now_epoch,
             cooldown_seconds=int(cooldown_seconds),
+            data_classification=str(reading.get("data_classification") or DATA_CLASSIFICATION_SIMULATED),
         )
     except Exception:  # noqa: BLE001 - never lose an accepted reading
         LOGGER.exception("incident tracking failed for zone %s", zone_id)
@@ -826,12 +837,29 @@ def _parse_minutes(raw: Any) -> int:
     return minutes
 
 
+def provenance_of_records(records: Iterable[Mapping[str, Any]], fallback: str) -> str:
+    """The provenance a response may claim for the records it is about to serve.
+
+    Records of one provenance report it; records of several are reported as ``mixed``; an
+    empty selection falls back to the classification of the active fleet. Records written
+    before provenance was stored are ignored rather than guessed at.
+    """
+    seen = {str(record.get("data_classification") or "") for record in records}
+    seen.discard("")
+    if len(seen) == 1:
+        return seen.pop()
+    if seen:
+        return DATA_CLASSIFICATION_MIXED
+    return fallback
+
+
 def _handle_history(
     store: LocalStore,
     zone_id: str,
     now_epoch: float,
     query: Mapping[str, Any],
     zone_ids: Iterable[str] | None = None,
+    active_mode: str = ZONE_MODE_DEMO,
 ) -> tuple[int, dict[str, Any]]:
     allowed = tuple(zone_ids) if zone_ids is not None else ZONE_IDS
     if zone_id not in allowed:
@@ -850,6 +878,8 @@ def _handle_history(
 
     stride = max(1, math.ceil(len(records) / MAX_HISTORY_POINTS))
     sampled = records[::stride]
+
+    classification = provenance_of_records(sampled, data_classification_for_mode(active_mode))
 
     points = [
         {
@@ -872,8 +902,15 @@ def _handle_history(
         "point_count": len(points),
         "downsampled": stride > 1,
         "stride": stride,
-        "simulated": True,
-        "data_classification": "simulated",
+        # The window reports what its own records are, not what the fleet happens to be
+        # now: a live city's history holds provider-derived rainfall, and calling that
+        # "simulated" (as this route used to) understates where the numbers came from.
+        "simulated": classification == DATA_CLASSIFICATION_SIMULATED,
+        "data_classification": classification,
+        "zone_mode": active_mode,
+        "metric_sources": dict(
+            METRIC_SOURCES_LIVE if active_mode == ZONE_MODE_LIVE else METRIC_SOURCES_SIMULATED
+        ),
         "model": RISK_MODEL_ID,
         "points": points,
     }
@@ -908,6 +945,7 @@ def _handle_incidents(
     cooldown_seconds: int = 0,
     zone_ids: Iterable[str] | None = None,
     env: Mapping[str, str] | None = None,
+    active_mode: str = ZONE_MODE_DEMO,
 ) -> tuple[int, dict[str, Any]]:
     allowed = tuple(zone_ids) if zone_ids is not None else ZONE_IDS
     raw_zone = query.get("zone_id")
@@ -928,10 +966,20 @@ def _handle_incidents(
     incidents = [incident_view(item, now_epoch) for item in store.list_incidents(zone_id=zone_id, limit=limit)]
     open_count = sum(1 for view in incidents if view["is_open"])
 
+    # The list reports the provenance of the incidents it is showing (each incident keeps the
+    # provenance of the reading that opened it); with nothing to show it reports the fleet's.
+    classification = provenance_of_records(incidents, data_classification_for_mode(active_mode))
+    notes = [MIXED_DATA_DISCLAIMER if classification == DATA_CLASSIFICATION_MIXED else SIMULATION_DISCLAIMER]
+    notes.append(
+        "Incidents record heuristic band crossings: a zone opens one on reaching "
+        "WARNING or CRITICAL and it closes once the zone returns to NORMAL."
+    )
+
     return 200, {
         "generated_at": _utc_iso(now_epoch),
-        "simulated": True,
-        "data_classification": "simulated",
+        "simulated": classification == DATA_CLASSIFICATION_SIMULATED,
+        "data_classification": classification,
+        "zone_mode": active_mode,
         "model": RISK_MODEL_ID,
         "model_note": MODEL_NOTE,
         "zone_id": zone_id,
@@ -941,11 +989,7 @@ def _handle_incidents(
         "closed_count": len(incidents) - open_count,
         "alerting": alerting_view(notifier is not None and getattr(notifier, "enabled", False), cooldown_seconds),
         "incidents": incidents,
-        "notes": [
-            SIMULATION_DISCLAIMER,
-            "Incidents record heuristic band crossings: a zone opens one on reaching "
-            "WARNING or CRITICAL and it closes once the zone returns to NORMAL.",
-        ],
+        "notes": notes,
         "deferred_features": list(DEFERRED_FEATURES),
     }
 
@@ -1032,6 +1076,7 @@ def dispatch(
             alert_cooldown_seconds() if cooldown_seconds is None else int(cooldown_seconds),
             zone_ids=active_zone_ids,
             env=environment,
+            active_mode=mode,
         )
 
     if route.startswith("/zones/"):
@@ -1039,7 +1084,9 @@ def dispatch(
         if len(parts) == 3 and parts[2] == "history":
             if method != "GET":
                 return 405, {"error": "method_not_allowed", "allowed": ["GET"], "path": route}
-            return _handle_history(store, parts[1], now_epoch, query, zone_ids=active_zone_ids)
+            return _handle_history(
+                store, parts[1], now_epoch, query, zone_ids=active_zone_ids, active_mode=mode
+            )
         return 404, {"error": "not_found", "path": route}
 
     return 404, {"error": "not_found", "path": route}

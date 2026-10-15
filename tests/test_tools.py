@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools.init_ingest_key import ENV_VAR, fingerprint, main as init_main, read_key, write_lambda_env
-from tools.live_simulator import KEY_HEADER, post_reading, resolve_key
+from tools.live_simulator import DRIFT_WARN_SECONDS, KEY_HEADER, clock_drift, post_reading, resolve_key
 from tools.storm_demo import STAGES, band_counts, export_story, main as storm_main, run_arc, verify_arc
 
 SECRET = "0123456789abcdef" * 4
@@ -251,6 +251,32 @@ class StormDemoTests(unittest.TestCase):
         self.assertEqual(list(document["stages"]), list(STAGES))
         self.assertTrue(document["problems"])
         self.assertIsNone(document["stages"]["CRITICAL"])
+
+
+class ClockDriftTests(unittest.TestCase):
+    """The simulator's simulated clock must not creep past the API's skew guard."""
+
+    def test_on_cadence_means_no_drift(self) -> None:
+        # one step per interval: the simulated clock tracks real time exactly
+        self.assertEqual(clock_drift(elapsed_seconds=40.0, steps_done=9, interval=5.0), 0.0)
+
+    def test_a_step_slower_than_the_cadence_reports_how_far_behind_it_is(self) -> None:
+        # 10 steps in 110 s at a 5 s cadence: 45 s of simulated span, so 65 s behind
+        self.assertAlmostEqual(clock_drift(elapsed_seconds=110.0, steps_done=10, interval=5.0), 65.0, places=6)
+
+    def test_drift_is_signed_so_a_clock_ahead_is_visible_too(self) -> None:
+        self.assertAlmostEqual(clock_drift(elapsed_seconds=10.0, steps_done=10, interval=5.0), -35.0, places=6)
+
+    def test_the_first_reading_cannot_drift(self) -> None:
+        self.assertEqual(clock_drift(elapsed_seconds=1.5, steps_done=1, interval=5.0), 1.5)
+
+    def test_the_warning_threshold_leaves_room_before_the_api_refuses(self) -> None:
+        self.assertLess(DRIFT_WARN_SECONDS, 300.0)
+
+    def test_the_loop_sleeps_only_the_remainder_of_the_cadence(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "tools" / "live_simulator.py").read_text(encoding="utf-8")
+        self.assertIn("args.interval - (time.time() - step_started)", source,
+                      "the loop must not sleep the whole cadence on top of the work it just did")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -28,6 +28,7 @@ from typing import Any, Mapping
 from .config import (
     ALERT_MARKER_SORT_KEY,
     ALERT_SEVERITIES,
+    DATA_CLASSIFICATION_SIMULATED,
     INCIDENT_CLOSING_CLASS,
     INCIDENT_OPEN_SEVERITIES,
     INCIDENT_PREFIX,
@@ -89,8 +90,14 @@ def build_incident_item(
     top_driver: str | None,
     opened_ts_epoch: float,
     now_epoch: float,
+    data_classification: str = DATA_CLASSIFICATION_SIMULATED,
 ) -> dict[str, Any]:
-    """Build a brand-new OPEN incident item."""
+    """Build a brand-new OPEN incident item.
+
+    ``data_classification`` is the provenance of the reading that opened the incident, so an
+    incident on a live-weather city is never stored (or later served) as if the fleet were
+    fully simulated.
+    """
     zone = zone_definition(zone_id)
     return {
         "pk": build_zone_pk(zone_id),
@@ -124,8 +131,8 @@ def build_incident_item(
         "updated_at": iso_utc(now_epoch),
         "updated_ts_epoch": int(now_epoch),
         "model": RISK_MODEL_ID,
-        "simulated": True,
-        "data_classification": "simulated",
+        "simulated": data_classification == DATA_CLASSIFICATION_SIMULATED,
+        "data_classification": data_classification,
     }
 
 
@@ -149,6 +156,7 @@ def decide_transition(
     top_driver: str | None,
     observed_ts_epoch: float,
     now_epoch: float,
+    data_classification: str = DATA_CLASSIFICATION_SIMULATED,
 ) -> Transition:
     """Apply the incident rules to one observation.
 
@@ -169,6 +177,7 @@ def decide_transition(
             top_driver=top_driver,
             opened_ts_epoch=observed_ts_epoch,
             now_epoch=now_epoch,
+            data_classification=data_classification,
         )
         return Transition(ACTION_OPENED, item, risk_class, f"zone reached {risk_class}")
 
@@ -238,6 +247,7 @@ def build_alert_marker(
     now_epoch: float,
     previous: Mapping[str, Any] | None = None,
     message_id: str | None = None,
+    data_classification: str = DATA_CLASSIFICATION_SIMULATED,
 ) -> dict[str, Any]:
     """Per-zone ``ALERT#COOLDOWN`` marker recording the last alert per severity.
 
@@ -255,8 +265,8 @@ def build_alert_marker(
         "sk": ALERT_MARKER_SORT_KEY,
         "record_type": "ALERT_MARKER",
         "zone_id": zone_id,
-        "simulated": True,
-        "data_classification": "simulated",
+        "simulated": data_classification == DATA_CLASSIFICATION_SIMULATED,
+        "data_classification": data_classification,
         "last_alert_by_severity": per_severity,
         "updated_at": iso_utc(now_epoch),
         "updated_ts_epoch": int(now_epoch),
@@ -301,6 +311,7 @@ def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
     """Client-facing projection of an incident item (durations computed server-side)."""
     opened = int(item["opened_ts_epoch"])
     is_open = item.get("current_status") == INCIDENT_STATUS_OPEN
+    classification = str(item.get("data_classification") or DATA_CLASSIFICATION_SIMULATED)
     closed_epoch = item.get("closed_ts_epoch")
     if is_open:
         duration = max(0, int(now_epoch) - opened)
@@ -334,8 +345,10 @@ def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
         "escalation_count": len(item.get("severity_changes") or []),
         "close_reason": item.get("close_reason"),
         "model": item.get("model", RISK_MODEL_ID),
-        "simulated": True,
-        "data_classification": item.get("data_classification", "simulated"),
+        # Both flags come from the stored record: a live-weather incident must never be
+        # served with a "simulated" flag next to a "mixed" classification.
+        "simulated": classification == DATA_CLASSIFICATION_SIMULATED,
+        "data_classification": classification,
     }
 
 
