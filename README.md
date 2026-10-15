@@ -2,7 +2,9 @@
 
 Live AWS-based flash-flood early-warning and risk-prediction system (cloud computing project).
 
-**Current milestone: M0 — local foundation only. Nothing is deployed to AWS yet.**
+**Current milestone: M1 — a real AWS vertical slice is live and verified end to end.**
+A local simulated reading → API Gateway HTTP API → one Lambda → DynamoDB → read back through
+the API works against the real account. No dashboard yet (M2).
 
 All sensor data produced by this repository is **SIMULATED**. Risk scores come from
 `heuristic-v1`, a deterministic and explainable **heuristic** — it is *not* a validated
@@ -17,12 +19,12 @@ Every stored record and every API response carries `simulated: true` and
 | Layer | Component | Status |
 |---|---|---|
 | Simulator | Deterministic phase-driven sensor simulator | ✅ implemented (`src/floodpulse/simulator.py`) |
-| Ingest | Single Lambda handler, `POST /readings` | ✅ implemented (runs locally, **not deployed**) |
+| Ingest | Single Lambda handler, `POST /readings` | ✅ **live** on API Gateway |
 | Validation | Strict payload validation, server-side epoch/TTL | ✅ implemented |
 | Risk engine | Deterministic `heuristic-v1` + explainability + hysteresis | ✅ implemented |
-| Storage | In-memory store + DynamoDB-shaped item builders | ✅ local only (no boto3, no table) |
-| API | `GET /zones`, `GET /zones/{zone_id}/history` | ✅ implemented in the same handler |
-| AWS deployment | DynamoDB / Lambda / HTTP API / S3 | ⛔ **not created** (M1) |
+| Storage | In-memory store + DynamoDB store (same interface) | ✅ **live** against table `floodpulse` |
+| API | `GET /zones`, `GET /zones/{zone_id}/history` | ✅ **live** in the same handler |
+| AWS deployment | DynamoDB / Lambda / HTTP API | ✅ **deployed and verified** (`infra/deploy.ps1`) |
 | Dashboard | Web UI | ⛔ not built (M2, after live API) |
 | Time-to-threshold | Estimate time to a threshold | ⛔ **deferred until after the live dashboard** |
 | Alerts | SNS email/SMS notifications | ⛔ **deferred until after the live dashboard** |
@@ -34,6 +36,73 @@ Locked MVP decisions reflected in the code: **one** Lambda handling all routes,
 plus timestamped history records), client payload carries `timestamp` only, `sensor_node_id`
 (not `device_id`).
 
+## M1 AWS slice (deployed, verified)
+
+Deployed resources (profile `cloud-project`, region `eu-north-1`, account `725934295966`):
+
+| Resource | Identifier | Configuration |
+|---|---|---|
+| DynamoDB table | `floodpulse` | `pk`(S) HASH + `sk`(S) RANGE, `PAY_PER_REQUEST`, TTL ENABLED on `ttl` |
+| Lambda function | `floodpulse-api` | python3.13, 256 MB, 10 s, handler `floodpulse.handler.lambda_handler`, env `FLOODPULSE_STORE=dynamodb`, `FLOODPULSE_TABLE=floodpulse` |
+| Lambda execution role | `floodpulse-lambda-role` | trust `lambda.amazonaws.com`; `AWSLambdaBasicExecutionRole`; inline `FloodPulseDynamoDBAccess` = `dynamodb:GetItem/PutItem/UpdateItem/Query` on `table/floodpulse` only. **Created by the project owner**; the deploy script never creates or edits IAM |
+| HTTP API | `floodpulse-api` (`2rg2u8quzd`) | `$default` stage, auto-deploy, integration `tcdtda1` (AWS_PROXY, payload format 2.0) |
+| Routes | | `POST /readings`, `GET /zones`, `GET /zones/{zone_id}/history` |
+| CORS | | origins `*`, methods `GET,POST,OPTIONS`, headers `content-type,x-fp-key`, max age 300 |
+| Invoke permission | `floodpulse-apigateway-invoke` | `apigateway.amazonaws.com`, scoped to `arn:aws:execute-api:eu-north-1:725934295966:2rg2u8quzd/*/*` |
+| CloudWatch Logs | `/aws/lambda/floodpulse-api` | retention **7 days** |
+
+Live endpoint: `https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com`
+
+Item model (one table, no GSI, no scan — `LATEST` per zone plus append-only history):
+
+| `sk` | purpose | TTL |
+|---|---|---|
+| `LATEST` | newest reading + risk for a zone, overwritten each time | none |
+| `H#<iso timestamp>` | history point; duplicate timestamps get `#2`, `#3`, … via a conditional write | 7 days (`ttl`) |
+
+### Verified acceptance run
+
+| Check | Result |
+|---|---|
+| Local test suite | `python -m unittest discover -s tests -t .` → **153 tests, OK** |
+| `POST /readings` (simulated calm reading) over real HTTPS | **202** — `risk_score 0.1703`, `risk_class NORMAL`, `sequence 1`, `stored.latest_sk LATEST`, `stored.history_sk H#2026-10-15T07:37:23Z`, full `explanation` |
+| `GET /zones` after that write | **200** — `zone-riverside-north` `live`, `age_seconds 0`, drivers + explanation; other two zones `no_data`; `highest_risk_zone` populated |
+| `GET /zones/zone-riverside-north/history?minutes=60` | **200** — 1 point, served from DynamoDB |
+| AWS CLI `get-item` / `query` (independent of the API) | `LATEST` + `H#2026-10-15T07:37:23Z` both stored, numbers as DynamoDB numbers, `simulated: true`, `ttl` set |
+| `POST /readings` with `rainfall_mm_per_hr = 999` | **400** `{"error":"invalid_payload","field":"readings.rainfall_mm_per_hr", …}` |
+| `POST /readings` with `simulated: false` | **400** `{"error":"invalid_payload","field":"simulated", …}` |
+| `GET /zones/zone-atlantis/history` | **404** `{"error":"unknown_zone", …}` plus the known zone list |
+
+### Deploying / re-deploying
+
+```powershell
+# idempotent: creates only what is missing, never deletes, IAM stays read-only
+powershell -ExecutionPolicy Bypass -File infra/deploy.ps1
+```
+
+The script needs the execution role to exist (it never creates or edits IAM). It builds
+`build/floodpulse-api.zip`, so deploying a code change is simply a re-run. Re-running it against the
+current stack was verified as a no-op: every resource reported as already present.
+
+### Known M1 limitations (deliberate, tracked for M2)
+
+* `POST /readings` is **not yet authenticated** — a shared-secret header (`x-fp-key`) is planned for
+  M2. Contained for now: payloads are strictly validated, only `simulated: true` data is accepted,
+  and the endpoint can only store what a simulator already produces.
+* CORS is `*` so the not-yet-written dashboard can call it from anywhere; it will be narrowed to the
+  real dashboard origin in M2.
+* Every response and stored record stays labelled `simulated`.
+
+### Local shell notes (Windows, verified)
+
+* `pwsh` is **not** installed here; the shell is Windows PowerShell 5.1, whose execution policy
+  blocks unsigned scripts → use the process-scoped `-ExecutionPolicy Bypass` shown above.
+* PowerShell's `Invoke-WebRequest` cannot complete the TLS handshake with API Gateway on this machine
+  ("connection was closed… on a receive", even with TLS 1.2 forced) → use `curl.exe` or Python's
+  `urllib` for HTTPS checks. The AWS CLI is unaffected.
+* In PowerShell 5.1, pass DynamoDB JSON via `--key file://…` / `--expression-attribute-values
+  file://…` rather than inline quoted JSON.
+
 ## Repository layout
 
 ```
@@ -44,16 +113,19 @@ src/floodpulse/
   risk.py                     deterministic heuristic-v1 scorer + explanation + hysteresis
   validation.py               strict payload validation (server-derived ts_epoch/ttl)
   storage.py                  DynamoDB-shaped item builders + in-memory LocalStore
+  dynamodb_store.py           DynamoDbStore: same interface, boto3 imported lazily
   handler.py                  the single Lambda handler: dispatch() + lambda_handler()
   simulator.py                deterministic phase-driven simulator
 tests/
   test_risk.py                scoring, bands, contributions, hysteresis (fixed vectors)
   test_validation.py          accepted/rejected payload matrix
   test_storage.py             item shapes + store behaviour
+  test_dynamodb_store.py      key/expression builders + fake-table store tests (offline)
   test_handler.py             routes, error codes, API Gateway v1/v2 adapter
   test_simulator.py           determinism, ranges, phase/clock behaviour
   test_end_to_end.py          simulator -> validation -> risk -> store -> API, in-process
 tools/local_demo.py           CLI: prints a risk timeline, no AWS calls
+infra/deploy.ps1              idempotent M1 deployment (table + Lambda + HTTP API)
 ```
 
 ## Running it locally
@@ -61,14 +133,17 @@ tools/local_demo.py           CLI: prints a risk timeline, no AWS calls
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (131 tests)
-python -m unittest discover -s tests -t . -v
+# full test suite (153 tests, no AWS calls)
+python -m unittest discover -s tests -t .
 
 # local demo: risk timeline for all three zones
 python tools/local_demo.py --steps 40
 
 # full scenario arc (calm -> flash flood -> recession) and final GET /zones payload
 python tools/local_demo.py --steps 100 --json
+
+# against the deployed API instead of in-process
+curl.exe -s -o - -w "HTTP %{http_code}" https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com/zones
 ```
 
 `tools/local_demo.py` pushes simulated readings through the real handler in-process,
@@ -160,29 +235,30 @@ constant so tests never depend on the wall clock.
 | # | Slice | Status |
 |---|---|---|
 | M0 | Local foundation: simulator, validation, risk engine, store, handler, tests | ✅ done |
-| M1 | AWS: DynamoDB table, deploy the single Lambda with one execution role, HTTP API routes, DynamoDB-backed store | ⛔ next |
-| M2 | Live dashboard (S3 static site polling `GET /zones`) — first live demo | ⛔ |
+| M1 | AWS: DynamoDB table, single Lambda + one execution role, HTTP API routes, DynamoDB-backed store | ✅ **done and verified** |
+| M2 | Live dashboard (S3 static site polling `GET /zones`) — first live demo | ⛔ next |
 | M3 | Multi-zone tuning, ranking polish, historical chart | ⛔ |
 | M4 | Incidents + SNS alerts (after the dashboard works) | ⛔ |
-| M5 | Time-to-threshold, log retention, CloudWatch alarm | ⛔ |
+| M5 | Time-to-threshold, CloudWatch alarm | ⛔ |
 | M6 | Demo hardening, deterministic run-book | ⛔ |
 
-## AWS readiness notes (verified, read-only)
+## AWS state (verified)
 
 * profile `cloud-project`, region `eu-north-1`, identity `arn:aws:iam::725934295966:user/cloud-project-dev`
-* account currently has **0** buckets, DynamoDB tables, Lambdas, SNS topics and HTTP APIs
-* `cloudformation:*` is **denied** for this profile (verified: `ListStacks`, `DescribeStacks`,
-  `ValidateTemplate`) → SAM/CDK/`cfn deploy` are unusable; M1 must deploy with per-service
-  AWS CLI calls
-* no Lambda-capable IAM role exists yet; `iam:CreateRole`/`PassRole` are unverified and are
-  the first thing M1 must prove
-* **no AWS resource has been created by this repository**
+* created by M1, and nothing else: DynamoDB table `floodpulse`, Lambda `floodpulse-api` (+ its invoke
+  permission), HTTP API `floodpulse-api` (`2rg2u8quzd`), log group `/aws/lambda/floodpulse-api`
+* the execution role `floodpulse-lambda-role` was created by the project owner, not by this repository
+* no EC2, RDS, S3, SNS, VPC, NAT gateway, ECS/EKS or OpenSearch resource exists for this project
+* `cloudformation:*` is **denied** for this profile (verified earlier: `ListStacks`, `DescribeStacks`,
+  `ValidateTemplate`) → SAM/CDK/`cfn deploy` are unusable; deployment is per-service AWS CLI calls
+* the unrelated role `Video2Product-EC2-SSM-Role` exists in the account and was not touched
 
 ## Cost posture
 
-Planned M1+ services stay within DynamoDB on-demand + Lambda + HTTP API + S3 + SNS +
-CloudWatch free/low tiers (well under $0.10 for a demo day). No NAT gateway, CloudFront,
-IoT Core, EC2, RDS or OpenSearch.
+Live now: DynamoDB on-demand + Lambda (free tier) + HTTP API ($1 per million requests) + 7-day log
+retention. No NAT gateway, CloudFront, IoT Core, EC2, RDS or OpenSearch. Estimated cost while the
+stack sits idle: effectively $0 (all on-demand/free-tier, log retention bounded at 7 days); a demo
+day of thousands of requests and tens of thousands of writes stays far below $0.05.
 
 ## Engineering rules
 

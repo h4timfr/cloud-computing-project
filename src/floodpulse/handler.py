@@ -20,6 +20,7 @@ import binascii
 import json
 import logging
 import math
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -45,19 +46,33 @@ from .validation import ValidationError, validate_body_size, validate_reading
 
 LOGGER = logging.getLogger("floodpulse.handler")
 
-_STORE: LocalStore | None = None
+_STORE: Any = None
 
 
-def get_store() -> LocalStore:
-    """Process-wide store (an in-memory store at M0; swapped for DynamoDB at M1)."""
+def get_store():
+    """Process-wide store.
+
+    Defaults to the in-memory store (M0 behaviour, and what local tests use).
+    Set ``FLOODPULSE_STORE=dynamodb`` to persist into the ``floodpulse`` table;
+    ``FLOODPULSE_TABLE`` overrides the table name.
+    """
     global _STORE
     if _STORE is None:
-        _STORE = LocalStore()
+        _STORE = _build_store()
     return _STORE
 
 
-def set_store(store: LocalStore | None) -> None:
-    """Replace the process-wide store (used by tests and, later, by M1 wiring)."""
+def _build_store():
+    """Choose the store from the environment without importing boto3 unless needed."""
+    if os.environ.get("FLOODPULSE_STORE", "local").strip().lower() == "dynamodb":
+        from .dynamodb_store import DynamoDbStore
+
+        return DynamoDbStore(os.environ.get("FLOODPULSE_TABLE", "floodpulse"))
+    return LocalStore()
+
+
+def set_store(store: Any) -> None:
+    """Replace the process-wide store (used by tests)."""
     global _STORE
     _STORE = store
 
@@ -322,7 +337,7 @@ def dispatch(
     method: str,
     path: str,
     body: str | None = None,
-    store: LocalStore | None = None,
+    store: Any = None,
     now_epoch: float | None = None,
     query: Mapping[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
