@@ -28,8 +28,9 @@ import logging
 import math
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .auth import check_ingest
 from .config import (
@@ -40,20 +41,41 @@ from .config import (
     DEFERRED_FEATURES,
     HISTORY_DEFAULT_MINUTES,
     HISTORY_MAX_MINUTES,
+    HYDRAULICS_NOTE,
     INCIDENT_DEFAULT_LIMIT,
     INCIDENT_MAX_LIMIT,
     INCIDENT_STATUS_OPEN,
     MAX_HISTORY_POINTS,
+    METRIC_SOURCES_LIVE,
+    METRIC_SOURCES_SIMULATED,
+    MIXED_DATA_DISCLAIMER,
     RISK_MODEL_ID,
     SIMULATION_DISCLAIMER,
     SMOOTHING_WINDOW,
     TREND_LOOKBACK_SECONDS,
     TREND_LOOKBACK_TOLERANCE_SECONDS,
+    WEATHER_PROVIDER,
+    WEATHER_REFRESH_ENV,
+    WEATHER_REFRESH_MAX_SECONDS,
+    WEATHER_REFRESH_MIN_SECONDS,
+    WEATHER_REFRESH_SECONDS,
     ZONE_DEFINITIONS,
     ZONE_IDS,
+    ZONE_MODE_LIVE,
+    data_classification_for_mode,
     thresholds_for,
     zone_definition,
+    zone_definitions_for_mode,
+    zone_mode_for_env,
 )
+from .live_weather import (
+    RefreshOutcome,
+    attempt_age_seconds,
+    cache_age_seconds,
+    refresh_live_weather,
+    weather_view,
+)
+from .live_weather import weather_zones as live_weather_zones
 from .incidents import (
     ACTION_CLOSED,
     ACTION_ESCALATED,
@@ -80,6 +102,23 @@ from .storage import LocalStore
 from .validation import ValidationError, validate_body_size, validate_reading
 
 LOGGER = logging.getLogger("floodpulse.handler")
+
+
+def _configure_logging(logger: logging.Logger = LOGGER) -> None:
+    """Make this module's INFO lines visible in CloudWatch.
+
+    Lambda leaves the root logger at WARNING, so ``LOGGER.info`` would be dropped silently
+    and a successful weather refresh would leave no trace in the logs. The handler is added
+    only when the logger has none, and propagation is switched off so a line is never
+    written twice.
+    """
+    if not logger.handlers:
+        logger.addHandler(logging.StreamHandler())
+        logger.propagate = False
+    logger.setLevel(logging.INFO)
+
+
+_configure_logging()
 
 _STORE: Any = None
 _NOTIFIER: Any = None
@@ -359,28 +398,31 @@ def _water_level_lookback(store: LocalStore, zone_id: str, ts_epoch: int) -> flo
     return float(best["readings"]["water_level_m"])
 
 
-def _handle_reading(
-    body: str | None,
+@dataclass(frozen=True)
+class IngestResult:
+    """Everything one accepted reading produced (shared by both ingestion paths)."""
+
+    latest: dict[str, Any]
+    history: dict[str, Any]
+    incident: dict[str, Any]
+    alert: dict[str, Any]
+    risk: dict[str, Any]
+    hysteresis: dict[str, Any]
+
+
+def _ingest_record(
     store: LocalStore,
+    reading: Mapping[str, Any],
     now_epoch: float,
-    notifier: Any = None,
-    cooldown_seconds: int = 0,
-) -> tuple[int, dict[str, Any]]:
-    try:
-        validate_body_size(body)
-    except ValidationError as exc:
-        return 400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason}
+    notifier: Any,
+    cooldown_seconds: int,
+) -> IngestResult:
+    """Score one validated reading, store it and run incident/alert tracking.
 
-    try:
-        payload = json.loads(body)  # type: ignore[arg-type]
-    except (json.JSONDecodeError, ValueError) as exc:
-        return 400, {"error": "malformed_json", "field": "body", "detail": str(exc)}
-
-    try:
-        reading = validate_reading(payload, now_epoch, ZONE_IDS)
-    except ValidationError as exc:
-        return 400, {"error": "invalid_payload", "field": exc.field, "detail": exc.reason}
-
+    Shared by ``POST /readings`` (simulated client payloads) and the M4 live-weather
+    ingestion, so a real-weather reading travels exactly the same pipeline as a
+    simulated one: same scoring, same hysteresis, same incidents, same SNS alerts.
+    """
     zone_id = str(reading["zone_id"])
     previous = store.recent_readings(zone_id, SMOOTHING_WINDOW - 1)
     series = [dict(item["readings"]) for item in previous] + [dict(reading["readings"])]
@@ -425,6 +467,47 @@ def _handle_reading(
         }
         alert_summary = {"evaluated": False, "published": False, "severity": None, "reason": "tracking_failed"}
 
+    return IngestResult(
+        latest=latest,
+        history=history,
+        incident=incident_summary,
+        alert=alert_summary,
+        risk=risk,
+        hysteresis=hysteresis,
+    )
+
+
+def _handle_reading(
+    body: str | None,
+    store: LocalStore,
+    now_epoch: float,
+    notifier: Any = None,
+    cooldown_seconds: int = 0,
+    zone_ids: Iterable[str] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    try:
+        validate_body_size(body)
+    except ValidationError as exc:
+        return 400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason}
+
+    try:
+        payload = json.loads(body)  # type: ignore[arg-type]
+    except (json.JSONDecodeError, ValueError) as exc:
+        return 400, {"error": "malformed_json", "field": "body", "detail": str(exc)}
+
+    try:
+        reading = validate_reading(payload, now_epoch, zone_ids if zone_ids is not None else ZONE_IDS)
+    except ValidationError as exc:
+        return 400, {"error": "invalid_payload", "field": exc.field, "detail": exc.reason}
+
+    zone_id = str(reading["zone_id"])
+    result = _ingest_record(store, reading, now_epoch, notifier, cooldown_seconds)
+    latest = result.latest
+    incident_summary = result.incident
+    alert_summary = result.alert
+    risk = result.risk
+    hysteresis = result.hysteresis
+
     return 202, {
         "status": "accepted",
         "simulated": True,
@@ -450,7 +533,7 @@ def _handle_reading(
         "alert": alert_summary,
         "stored": {
             "latest_sk": latest["sk"],
-            "history_sk": history["sk"],
+            "history_sk": result.history["sk"],
             "history_records": store.history_count(zone_id),
         },
         "model_note": MODEL_NOTE,
@@ -463,7 +546,16 @@ def _handle_reading(
 # --------------------------------------------------------------------------- #
 
 
-def _zone_view(zone: Mapping[str, Any], latest: Mapping[str, Any] | None, now_epoch: float) -> dict[str, Any]:
+def _zone_view(
+    zone: Mapping[str, Any],
+    latest: Mapping[str, Any] | None,
+    now_epoch: float,
+    *,
+    mode: str | None = None,
+    weather_cache: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved_mode = zone_mode_for_env({}) if mode is None else mode
+    sources = METRIC_SOURCES_LIVE if resolved_mode == ZONE_MODE_LIVE else METRIC_SOURCES_SIMULATED
     view: dict[str, Any] = {
         "zone_id": zone["zone_id"],
         "name": zone["name"],
@@ -472,15 +564,45 @@ def _zone_view(zone: Mapping[str, Any], latest: Mapping[str, Any] | None, now_ep
         "description": zone["description"],
         "thresholds": thresholds_for(str(zone["zone_id"])),
         "status": "no_data" if latest is None else "live",
+        "zone_mode": resolved_mode,
+        "metric_sources": dict(sources),
         "latest": None,
     }
+    if zone.get("country"):
+        view["country"] = zone["country"]
+    if weather_cache is not None:
+        age = cache_age_seconds(weather_cache, now_epoch)
+        attempt = attempt_age_seconds(weather_cache, now_epoch)
+        view["weather"] = {
+            "provider": weather_cache.get("provider", WEATHER_PROVIDER),
+            "observed_at": weather_cache.get("observed_at"),
+            "provider_current_time": weather_cache.get("provider_current_time"),
+            "fetched_at": weather_cache.get("fetched_at"),
+            "cache_age_seconds": None if age is None else int(age),
+            # bookkeeping for the last attempt: a failed fetch is reported per zone, and the
+            # age of the failed attempt explains why a poll did not call the provider again
+            "last_attempt_at": weather_cache.get("last_attempt_at"),
+            "last_attempt_age_seconds": None if attempt is None else int(attempt),
+            "last_attempt_ok": weather_cache.get("last_attempt_ok"),
+            "last_attempt_error": weather_cache.get("last_attempt_error"),
+            "rainfall_mm_per_hr": weather_cache.get("rainfall_mm_per_hr"),
+            "soil_moisture_m3m3": weather_cache.get("soil_moisture_m3m3"),
+            "soil_saturation_pct": weather_cache.get("soil_saturation_pct"),
+            "metric_sources": dict(weather_cache.get("metric_sources") or sources),
+        }
     if latest is None:
         return view
 
     detail = latest.get("risk_detail", {})
     view["latest"] = {
-        "simulated": True,
+        "simulated": bool(latest.get("simulated", True)),
         "data_classification": latest["data_classification"],
+        "source": latest.get("source", "simulated"),
+        # A reading's own tags win: only live-weather ingestion writes them, and client
+        # payloads are locked to ``simulated: true`` by validation, so the fallback is
+        # always accurate rather than optimistic.
+        "metric_sources": dict(latest.get("metric_sources") or METRIC_SOURCES_SIMULATED),
+        "provider_observed_at": latest.get("provider_observed_at"),
         "sensor_node_id": latest["sensor_node_id"],
         "timestamp": latest["timestamp"],
         "ts_epoch": latest["ts_epoch"],
@@ -500,8 +622,139 @@ def _zone_view(zone: Mapping[str, Any], latest: Mapping[str, Any] | None, now_ep
     return view
 
 
-def _handle_zones(store: LocalStore, now_epoch: float) -> tuple[int, dict[str, Any]]:
-    views = [_zone_view(zone, store.get_latest(str(zone["zone_id"])), now_epoch) for zone in ZONE_DEFINITIONS]
+def _apply_zone_mode(store: Any, env: Mapping[str, str] | None) -> tuple[str, tuple[dict[str, Any], ...]]:
+    """Resolve the active fleet from the environment and point the store at it.
+
+    ``FLOODPULSE_ZONE_MODE=live`` selects the five live-weather Indian cities;
+    anything else (or nothing) keeps the three simulated demo zones.
+    """
+    mode = zone_mode_for_env(env)
+    definitions = zone_definitions_for_mode(mode)
+    zone_ids = tuple(str(zone["zone_id"]) for zone in definitions)
+    if getattr(store, "zone_ids", None) != zone_ids:
+        store.zone_ids = zone_ids
+    return mode, definitions
+
+
+def _weather_refresh_seconds(env: Mapping[str, str] | None) -> int:
+    """Cache age before external weather may be fetched again (default 10 minutes)."""
+    raw = ({} if env is None else env).get(WEATHER_REFRESH_ENV)
+    if raw is None or str(raw).strip() == "":
+        return WEATHER_REFRESH_SECONDS
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        LOGGER.warning("ignoring invalid %s value", WEATHER_REFRESH_ENV)
+        return WEATHER_REFRESH_SECONDS
+    if not WEATHER_REFRESH_MIN_SECONDS <= seconds <= WEATHER_REFRESH_MAX_SECONDS:
+        LOGGER.warning("clamping %s to the allowed range", WEATHER_REFRESH_ENV)
+        return WEATHER_REFRESH_SECONDS
+    return seconds
+
+
+def _refresh_weather(
+    store: Any,
+    *,
+    mode: str,
+    env: Mapping[str, str] | None,
+    now_epoch: float,
+    notifier: Any,
+    cooldown_seconds: int,
+    weather_client: Any = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Refresh stale live-zone weather and ingest it through the normal pipeline.
+
+    Live readings are scored, stored and tracked exactly like simulated ones, so real
+    rainfall can open incidents and raise SNS alerts. Any failure is reported, never
+    raised: a provider outage must not break the dashboard.
+    """
+    refresh_seconds = _weather_refresh_seconds(env)
+    caches: dict[str, Any] = {}
+    outcome = None
+
+    def ingest(record: dict[str, Any], observation: Any) -> None:
+        """Score, store and track a live reading exactly like an accepted client reading."""
+        _ingest_record(store, record, now_epoch, notifier, cooldown_seconds)
+
+    try:
+        outcome = refresh_live_weather(
+            store,
+            mode=mode,
+            env=env,
+            now_epoch=now_epoch,
+            ingest=ingest,
+            client=weather_client,
+            refresh_seconds=refresh_seconds,
+        )
+    except Exception:  # noqa: BLE001 - the dashboard must survive any weather failure
+        LOGGER.exception("live weather refresh failed")
+        outcome = RefreshOutcome(enabled=True, attempted=True, error="refresh_failed")
+
+    if outcome is not None and (outcome.attempted or outcome.error or outcome.failed):
+        # one structured line per attempt so a provider problem is diagnosable in CloudWatch
+        # even after the response that reported it has scrolled away. No secret, no user data,
+        # and the provider URL is public.
+        summary = {
+            "event": "weather_refresh",
+            "mode": mode,
+            "attempted": outcome.attempted,
+            "refreshed": list(outcome.refreshed),
+            "already_fresh": list(outcome.skipped_fresh),
+            "failed": list(outcome.failed),
+            "error": outcome.error,
+            "reason": outcome.reason,
+            "refresh_seconds": refresh_seconds,
+        }
+        if outcome.failed or outcome.error:
+            LOGGER.warning("weather refresh outcome: %s", json.dumps(summary, sort_keys=True))
+        else:
+            LOGGER.info("weather refresh outcome: %s", json.dumps(summary, sort_keys=True))
+
+    try:
+        caches = {
+            str(zone["zone_id"]): store.get_weather_cache(str(zone["zone_id"]))
+            for zone in live_weather_zones(mode, env)
+        }
+    except Exception:  # noqa: BLE001 - never fail the whole response for a cache read
+        LOGGER.exception("weather cache read failed")
+
+    return outcome, caches
+
+
+def _handle_zones(
+    store: LocalStore,
+    now_epoch: float,
+    *,
+    zones: tuple[dict[str, Any], ...] | None = None,
+    mode: str | None = None,
+    env: Mapping[str, str] | None = None,
+    notifier: Any = None,
+    cooldown_seconds: int = 0,
+    weather_client: Any = None,
+) -> tuple[int, dict[str, Any]]:
+    definitions = zones if zones is not None else ZONE_DEFINITIONS
+    active_mode = mode if mode is not None else zone_mode_for_env(env)
+
+    outcome, caches = _refresh_weather(
+        store,
+        mode=active_mode,
+        env=env,
+        now_epoch=now_epoch,
+        notifier=notifier,
+        cooldown_seconds=cooldown_seconds,
+        weather_client=weather_client,
+    )
+
+    views = [
+        _zone_view(
+            zone,
+            store.get_latest(str(zone["zone_id"])),
+            now_epoch,
+            mode=active_mode,
+            weather_cache=caches.get(str(zone["zone_id"])),
+        )
+        for zone in definitions
+    ]
     with_data = [view for view in views if view["latest"] is not None]
     without_data = [view for view in views if view["latest"] is None]
 
@@ -519,16 +772,31 @@ def _handle_zones(store: LocalStore, now_epoch: float) -> tuple[int, dict[str, A
             "timestamp": top["latest"]["timestamp"],
         }
 
+    classification = data_classification_for_mode(active_mode)
+    notes = [MIXED_DATA_DISCLAIMER if classification == "mixed" else SIMULATION_DISCLAIMER]
+    if classification == "mixed":
+        notes.append(HYDRAULICS_NOTE)
+    notes.append("Time-to-threshold is not implemented yet (deferred until after the live dashboard).")
+
     return 200, {
         "generated_at": _utc_iso(now_epoch),
-        "simulated": True,
-        "data_classification": "simulated",
+        "simulated": classification == "simulated",
+        "data_classification": classification,
+        "zone_mode": active_mode,
+        "metric_sources": dict(
+            METRIC_SOURCES_LIVE if active_mode == ZONE_MODE_LIVE else METRIC_SOURCES_SIMULATED
+        ),
         "model": RISK_MODEL_ID,
         "model_note": MODEL_NOTE,
-        "notes": [
-            SIMULATION_DISCLAIMER,
-            "Time-to-threshold is not implemented yet (deferred until after the live dashboard).",
-        ],
+        "notes": notes,
+        "weather": weather_view(
+            mode=active_mode,
+            outcome=outcome,
+            caches=caches,
+            env=env,
+            now_epoch=now_epoch,
+            refresh_seconds=_weather_refresh_seconds(env),
+        ),
         "highest_risk_zone": highest,
         "zone_ranking": ranking,
         "zone_count": len(views),
@@ -559,13 +827,18 @@ def _parse_minutes(raw: Any) -> int:
 
 
 def _handle_history(
-    store: LocalStore, zone_id: str, now_epoch: float, query: Mapping[str, Any]
+    store: LocalStore,
+    zone_id: str,
+    now_epoch: float,
+    query: Mapping[str, Any],
+    zone_ids: Iterable[str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    if zone_id not in ZONE_IDS:
+    allowed = tuple(zone_ids) if zone_ids is not None else ZONE_IDS
+    if zone_id not in allowed:
         return 404, {
             "error": "unknown_zone",
             "detail": f"unknown zone_id {zone_id!r}",
-            "known_zones": list(ZONE_IDS),
+            "known_zones": list(allowed),
         }
     try:
         minutes = _parse_minutes(query.get("minutes"))
@@ -633,16 +906,19 @@ def _handle_incidents(
     query: Mapping[str, Any],
     notifier: Any = None,
     cooldown_seconds: int = 0,
+    zone_ids: Iterable[str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
+    allowed = tuple(zone_ids) if zone_ids is not None else ZONE_IDS
     raw_zone = query.get("zone_id")
     zone_id: str | None = None
     if raw_zone is not None and str(raw_zone).strip() != "":
         zone_id = str(raw_zone).strip()
-        if zone_id not in ZONE_IDS:
+        if zone_id not in allowed:
             return 404, {
                 "error": "unknown_zone",
                 "detail": f"unknown zone_id {zone_id!r}",
-                "known_zones": list(ZONE_IDS),
+                "known_zones": list(allowed),
             }
     try:
         limit = _parse_limit(query.get("limit"))
@@ -696,17 +972,25 @@ def dispatch(
     headers: Mapping[str, Any] | None = None,
     notifier: Any = None,
     cooldown_seconds: int | None = None,
+    env: Mapping[str, str] | None = None,
+    weather_client: Any = None,
 ) -> tuple[int, dict[str, Any]]:
     """Route one request without touching AWS. Returns ``(status_code, payload)``.
 
     ``headers`` is only consulted for ``POST /readings`` (the ingestion secret).
     ``notifier`` and ``cooldown_seconds`` default to the environment configuration.
+    ``env`` (default: the process environment) selects the active zone fleet and the
+    weather configuration; ``weather_client`` injects a weather provider for tests so
+    the test suite never performs a network call.
     """
     store = store if store is not None else get_store()
     now_epoch = time.time() if now_epoch is None else float(now_epoch)
     query = query or {}
     method = (method or "").upper()
     route = _normalise_path(path or "/")
+    environment: Mapping[str, str] = os.environ if env is None else env
+    mode, definitions = _apply_zone_mode(store, environment)
+    active_zone_ids = tuple(str(zone["zone_id"]) for zone in definitions)
 
     if route == "/readings":
         if method != "POST":
@@ -720,12 +1004,22 @@ def dispatch(
             now_epoch,
             notifier if notifier is not None else get_notifier(),
             alert_cooldown_seconds() if cooldown_seconds is None else int(cooldown_seconds),
+            zone_ids=active_zone_ids,
         )
 
     if route == "/zones":
         if method != "GET":
             return 405, {"error": "method_not_allowed", "allowed": ["GET"], "path": route}
-        return _handle_zones(store, now_epoch)
+        return _handle_zones(
+            store,
+            now_epoch,
+            zones=definitions,
+            mode=mode,
+            env=environment,
+            notifier=notifier if notifier is not None else get_notifier(),
+            cooldown_seconds=alert_cooldown_seconds() if cooldown_seconds is None else int(cooldown_seconds),
+            weather_client=weather_client,
+        )
 
     if route == "/incidents":
         if method != "GET":
@@ -736,6 +1030,8 @@ def dispatch(
             query,
             notifier if notifier is not None else get_notifier(),
             alert_cooldown_seconds() if cooldown_seconds is None else int(cooldown_seconds),
+            zone_ids=active_zone_ids,
+            env=environment,
         )
 
     if route.startswith("/zones/"):
@@ -743,7 +1039,7 @@ def dispatch(
         if len(parts) == 3 and parts[2] == "history":
             if method != "GET":
                 return 405, {"error": "method_not_allowed", "allowed": ["GET"], "path": route}
-            return _handle_history(store, parts[1], now_epoch, query)
+            return _handle_history(store, parts[1], now_epoch, query, zone_ids=active_zone_ids)
         return 404, {"error": "not_found", "path": route}
 
     return 404, {"error": "not_found", "path": route}
