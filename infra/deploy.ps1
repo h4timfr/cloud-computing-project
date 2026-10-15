@@ -49,13 +49,17 @@ param(
     [string]$StageName = '$default',
     [string]$Runtime = 'python3.13',
     [int]$MemorySize = 256,
-    [int]$TimeoutSeconds = 10,
+    [int]$TimeoutSeconds = 15,
     [int]$LogRetentionDays = 7,
     [string]$DashboardBucket = 'floodpulse-dashboard-725934295966',
     [string]$IngestKeyFile = '.floodpulse-key',
     [string]$LocalDevOrigin = 'http://localhost:8000',
     [string]$AlertTopicName = 'floodpulse-alerts',
     [int]$AlertCooldownSeconds = 600,
+    [string]$ZoneMode = 'live',
+    [string]$WeatherMode = 'open-meteo',
+    [int]$WeatherRefreshSeconds = 600,
+    [double]$WeatherTimeoutSeconds = 4.0,
     [switch]$SkipDashboard,
     [switch]$SkipAlerts
 )
@@ -235,6 +239,24 @@ if (-not $SkipAlerts) {
     $envVariables = (Get-Content -Raw -Path $envPath | ConvertFrom-Json).Variables
     $envNames = @($envVariables.PSObject.Properties.Name)
 }
+
+# ------------------------------------------------------- M4: zones and live weather ------------------------------------------------------- #
+# The zone mode decides which fleet is live: 'live' = the five Indian city zones fed by
+# Open-Meteo, 'demo' = the three simulated zones. The weather switch is a kill switch:
+# 'off' makes the Lambda serve cached/simulated data only and never calls the network.
+# These are merged after the SNS step so they are always present, whatever is skipped.
+
+Write-Step "Zone mode and external weather ($ZoneMode / $WeatherMode)"
+$envDocument = Get-Content -Raw -Path $envPath | ConvertFrom-Json
+$envDocument.Variables | Add-Member -Force -NotePropertyName 'FLOODPULSE_ZONE_MODE' -NotePropertyValue "$ZoneMode"
+$envDocument.Variables | Add-Member -Force -NotePropertyName 'FLOODPULSE_WEATHER' -NotePropertyValue "$WeatherMode"
+$envDocument.Variables | Add-Member -Force -NotePropertyName 'FLOODPULSE_WEATHER_REFRESH_SECONDS' -NotePropertyValue "$WeatherRefreshSeconds"
+$envDocument.Variables | Add-Member -Force -NotePropertyName 'FLOODPULSE_WEATHER_TIMEOUT_SECONDS' -NotePropertyValue "$WeatherTimeoutSeconds"
+Write-JsonFile $envPath ($envDocument | ConvertTo-Json -Depth 6)
+$envVariables = (Get-Content -Raw -Path $envPath | ConvertFrom-Json).Variables
+$envNames = @($envVariables.PSObject.Properties.Name)
+Write-Ok "environment file updated: $($envNames -join ', ') (values not displayed)"
+Write-Info "zone mode '$ZoneMode' + weather '$WeatherMode' at most every ${WeatherRefreshSeconds}s; no new AWS resources are created"
 
 # --------------------------------------------------------------------------- cors --------------------------------------------------------------------------- #
 
@@ -484,17 +506,25 @@ if ($alertTopicArn) {
     Write-Host "  alert topic   : $alertTopicArn ($alertState)"
 }
 if ($dashboardReady) { Write-Host "  dashboard     : $dashboardUrl" }
+Write-Host "  zones         : mode '$ZoneMode' (live = Chennai, Mumbai, Bengaluru, Hyderabad, Kochi)"
+Write-Host "  weather       : $WeatherMode, refresh every ${WeatherRefreshSeconds}s, timeout ${WeatherTimeoutSeconds}s"
 Write-Host @"
 
 Acceptance checks (no secrets involved):
 
   curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/zones
   curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/incidents?limit=20
-  curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/zones/zone-riverside-north/history?minutes=60
-  node tools/dashboard_check.mjs --payload build/zones-live.json --incidents build/incidents-live.json
+  curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/zones/city-chennai/history?minutes=60
+
+  python tools/weather_probe.py
+  # ^ reads the live Open-Meteo feed directly (read-only, no AWS credentials)
+
+  node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
+  node tools/dashboard_run.mjs --site $dashboardUrl --api $endpoint
 
   python tools/live_simulator.py --url $endpoint --steps 60 --interval 1.0
   # ^ reads the secret from $IngestKeyFile (or FLOODPULSE_INGEST_KEY) and never prints it
+  #   demo mode only: the simulator's zone ids are not part of the live fleet
 
   aws dynamodb get-item --table-name $TableName --profile $Profile --region $Region --key file://build/key-latest.json
   aws dynamodb query --table-name $TableName --profile $Profile --region $Region ``
@@ -508,7 +538,15 @@ Incidents live in the same table as extra items (sk INCIDENT#... retained as his
 sk ALERT#COOLDOWN per zone). Alerts publish only on a WARNING/CRITICAL escalation and are
 rate-limited per zone and severity; the topic ARN is never returned to the dashboard.
 
-All FloodPulse sensor data is SIMULATED; risk scores come from the heuristic-v1
-heuristic, not a validated prediction model. The ingestion secret lives only in
+Live zones: rainfall intensity and soil saturation come from the external Open-Meteo
+service (REAL / MODEL-derived) and are cached in the same table under sk WEATHER#CACHE,
+refreshed at most every ${WeatherRefreshSeconds}s. Drain level, water level and flow rate are
+SIMULATED by a deterministic hydraulic response to that real rainfall, because FloodPulse
+has no real drain or flow sensors. Risk scores always come from the heuristic-v1 heuristic:
+not a validated hydrological model, not calibrated for these cities, not an official
+warning. Weather data by Open-Meteo.com (CC BY 4.0).
+
+Demo mode: re-run with -ZoneMode demo (and -WeatherMode off to forbid any network call) to
+serve the three simulated zones instead. The ingestion secret lives only in
 $IngestKeyFile and build\env-prod.json (both gitignored) - never in source control.
 "@

@@ -2,20 +2,27 @@
 
 Live AWS-based flash-flood early-warning and risk-prediction system (cloud computing project).
 
-**Current milestone: M3 — flood incidents and SNS alerts are deployed and verified live.**
-M2 remains live: a simulated reading → API Gateway HTTP API → one Lambda → DynamoDB → read back
-through the API → **an S3-hosted dashboard that polls the live API every 5 seconds**, which never
-invents risk values. M3 adds automatic incident records (`GET /incidents`), escalation-only SNS
-alerts with a per-zone cooldown, and an incident log panel in the dashboard.
+**Current milestone: M4 — India live-weather integration is deployed and verified live.**
+M2 remains live: a reading → API Gateway HTTP API → one Lambda → DynamoDB → read back through the
+API → **an S3-hosted dashboard that polls the live API every 5 seconds**, which never invents risk
+values. M3 added automatic incident records (`GET /incidents`), escalation-only SNS alerts with a
+per-zone cooldown, and an incident log panel. M4 adds five **live-weather zones** (Chennai, Mumbai,
+Bengaluru, Hyderabad, Kochi) fed by the external Open-Meteo service, keeps the simulator as the
+demo/fallback fleet, and tags **every metric** as `REAL`, `MODEL_DERIVED` or `SIMULATED`.
 
 **Dashboard: <http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com>**
 **API: <https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com>**
 
-All sensor data produced by this repository is **SIMULATED**. Risk scores come from
-`heuristic-v1`, a deterministic and explainable **heuristic** — it is *not* a validated
-hydrological model, *not* a statistical forecast and *not* a machine-learning prediction.
-Every stored record and every API response carries `simulated: true` and
-`data_classification: "simulated"`.
+Two honesty rules run through the whole project:
+
+* **Measured vs simulated is never blurred.** In `demo` mode every reading is synthetic and every
+  record says `simulated: true` / `data_classification: "simulated"`. In `live` mode rainfall and soil
+  saturation are the weather provider's values (`REAL` / `MODEL_DERIVED`) while drain level, water
+  level and flow rate stay `SIMULATED`, because no real sensor for them exists; those responses are
+  `data_classification: "mixed"` and carry a per-metric `metric_sources` map.
+* **Risk scores are always a heuristic.** `heuristic-v1` is deterministic and explainable — *not* a
+  validated hydrological model, *not* a forecast and *not* machine learning, and it is not calibrated
+  for the Indian cities. It is never presented as an official flood warning.
 
 ---
 
@@ -23,17 +30,19 @@ Every stored record and every API response carries `simulated: true` and
 
 | Layer | Component | Status |
 |---|---|---|
-| Simulator | Deterministic phase-driven sensor simulator | ✅ implemented (`src/floodpulse/simulator.py`) |
+| Simulator | Deterministic phase-driven sensor simulator (demo fleet) | ✅ implemented (`src/floodpulse/simulator.py`) |
+| Live weather | Open-Meteo client: one request for all 5 Indian cities, DynamoDB cache, 10-minute refresh rule | ✅ **live** (`src/floodpulse/weather.py`, `live_weather.py`) |
+| Provenance | Per-metric `REAL` / `MODEL_DERIVED` / `SIMULATED` tags in storage, API and dashboard | ✅ **live and verified** |
 | Ingest | Single Lambda handler, `POST /readings`, shared-secret protected | ✅ **live** on API Gateway |
 | Validation | Strict payload validation, server-side epoch/TTL | ✅ implemented |
 | Risk engine | Deterministic `heuristic-v1` + explainability + hysteresis | ✅ implemented |
 | Storage | In-memory store + DynamoDB store (same interface) | ✅ **live** against table `floodpulse` |
 | API | `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (public reads) | ✅ **live** in the same handler |
 | AWS deployment | DynamoDB / Lambda / HTTP API / S3 site / SNS topic | ✅ **deployed and verified** (`infra/deploy.ps1`) |
-| Dashboard | S3-hosted static UI polling the live API, plus the incident log panel | ✅ **live and verified** (`web/`) |
+| Dashboard | S3-hosted static UI polling the live API, incident log panel, provenance chips | ✅ **live and verified** (`web/`) |
 | Incidents | Automatic incident records + lifecycle (open/escalate/close) | ✅ **live and verified** |
 | Alerts | One SNS topic, escalation-only publishing with a per-zone cooldown | ✅ **live and verified** (publish proof; no subscriber yet) |
-| Time-to-threshold | Estimate time to a threshold | ⛔ **deferred until after M3** |
+| Time-to-threshold | Estimate time to a threshold | ⛔ **deferred** (still reported as a deferred feature, never faked) |
 | ML | Any learned model | ⛔ out of scope until the deterministic system works end to end |
 
 Locked MVP decisions reflected in the code: **one** Lambda handling all routes,
@@ -48,7 +57,7 @@ Deployed resources (profile `cloud-project`, region `eu-north-1`, account `72593
 | Resource | Identifier | Configuration |
 |---|---|---|
 | DynamoDB table | `floodpulse` | `pk`(S) HASH + `sk`(S) RANGE, `PAY_PER_REQUEST`, TTL ENABLED on `ttl` |
-| Lambda function | `floodpulse-api` | python3.13, 256 MB, 10 s, handler `floodpulse.handler.lambda_handler`, env `FLOODPULSE_STORE=dynamodb`, `FLOODPULSE_TABLE=floodpulse`, `FLOODPULSE_INGEST_KEY` (set, never displayed) |
+| Lambda function | `floodpulse-api` | python3.13, 256 MB, **15 s** (raised from 10 s in M4: a weather fetch plus five ingests measured 2.9-6.9 s), handler `floodpulse.handler.lambda_handler`, env `FLOODPULSE_STORE=dynamodb`, `FLOODPULSE_TABLE=floodpulse`, `FLOODPULSE_INGEST_KEY` (set, never displayed), `FLOODPULSE_SNS_TOPIC_ARN`, `FLOODPULSE_ALERT_COOLDOWN_SECONDS=600`, and the M4 vars `FLOODPULSE_ZONE_MODE=live`, `FLOODPULSE_WEATHER=open-meteo`, `FLOODPULSE_WEATHER_REFRESH_SECONDS=600`, `FLOODPULSE_WEATHER_TIMEOUT_SECONDS=4`. **`VpcConfig` is empty** (no VPC), so the function already has outbound HTTPS egress for the weather provider |
 | Lambda execution role | `floodpulse-lambda-role` | trust `lambda.amazonaws.com`; `AWSLambdaBasicExecutionRole`; inline `FloodPulseDynamoDBAccess` = `dynamodb:GetItem/PutItem/UpdateItem/Query` on `table/floodpulse` only; inline `FloodPulseSnsPublish` (M3) = `sns:Publish` on the one alert topic ARN only. **Created and edited by the project owner** (`iam:PutRolePolicy` is denied for the `cloud-project` user); the deploy script only *reads* the role's policy list |
 | HTTP API | `floodpulse-api` (`2rg2u8quzd`) | `$default` stage, auto-deploy, integration `tcdtda1` (AWS_PROXY, payload format 2.0) |
 | Routes | | `POST /readings` (requires `x-fp-key`), `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (M3) |
@@ -252,7 +261,7 @@ severity every 10 min"). No part of the storm-blue design was changed.
 | Item | State |
 |---|---|
 | Incident engine, storage, API route, notifier, dashboard panel | ✅ implemented and covered by unit tests |
-| Local test suite | ✅ **250 tests** pass (`python -m unittest discover -s tests -t .`) |
+| Local test suite | ✅ **250 tests** pass (`python -m unittest discover -s tests -t .`) — the pre-M4 baseline, unchanged by M4 (it is 333 after M4) |
 | Dashboard harness | ✅ **36 + 7 checks** pass against the live payloads (`tools/dashboard_check.mjs` for the sources, `tools/dashboard_run.mjs` for actually running them) |
 | SNS topic `floodpulse-alerts` | ✅ live in `eu-north-1`, `DisplayName = FloodPulse Alerts` |
 | `sns:Publish` for the Lambda role | ✅ inline `FloodPulseSnsPublish` attached by the project owner, scoped to that one topic ARN |
@@ -323,6 +332,182 @@ substitute for a human opening the page in a real browser.
 * Incidents are per zone; there is no cross-zone "event" that groups simultaneous incidents.
 * No incident acknowledgement, assignment or operator notes (read-only log by design).
 
+## M4 live weather for Indian cities (deployed, verified)
+
+M4 adds a second kind of zone: five **Indian cities** whose rainfall and soil moisture come from a
+real external provider (Open-Meteo). The simulator is still there — it is now the *fallback/demo*
+fleet, selected with one environment variable.
+
+### Zone modes
+
+| `FLOODPULSE_ZONE_MODE` | Fleet | Metrics |
+| --- | --- | --- |
+| `live` (aliases: `live_weather`) | Chennai, Mumbai, Bengaluru, Hyderabad, Kochi | rainfall + soil moisture **REAL/MODEL-derived**, hydraulics **SIMULATED** |
+| `demo` (aliases: `simulated`) | `zone-riverside-north`, `zone-old-town-canal`, `zone-harbor-east` | everything **SIMULATED** |
+
+`demo` is also the library default, so every pre-M4 caller and test keeps its exact behaviour; only
+the deployment switches to `live`. An unknown or misspelled value falls back to `demo`, so a typo can
+never point the deployment at the network by accident.
+
+| Zone | Coordinates | Country |
+| --- | --- | --- |
+| `city-chennai` | 13.0827, 80.2707 | IN |
+| `city-mumbai` | 19.0760, 72.8777 | IN |
+| `city-bengaluru` | 12.9716, 77.5946 | IN |
+| `city-hyderabad` | 17.3850, 78.4867 | IN |
+| `city-kochi` | 9.9312, 76.2673 | IN |
+
+### What is real and what is not (per metric)
+
+Every metric of every reading carries a provenance tag, and the dashboard renders it as a chip:
+
+| Metric | Tag | Origin |
+| --- | --- | --- |
+| `rainfall_mm_per_hr` | `REAL` | Open-Meteo hourly precipitation, passed through unchanged |
+| `soil_saturation_pct` | `MODEL_DERIVED` | Open-Meteo soil moisture (m³/m³) converted by FloodPulse to a 0-100 % saturation figure |
+| `drain_level_m` | `SIMULATED` | deterministic first-order hydraulic response to the real rainfall + soil moisture |
+| `water_level_m` | `SIMULATED` | same response (coupled to the drain level) |
+| `flow_rate_m3_s` | `SIMULATED` | same response (coupled to the water level + rainfall) |
+
+`REAL` means "the external provider's value, passed through as delivered", **not** "certified
+measurement": Open-Meteo precipitation is a model/observation blend at a grid point, and its hourly
+figure covers the preceding hour, so it can be up to ~60 minutes old. There is no rain gauge, drain
+sensor, water-level sensor or flow meter anywhere in this project, and the five Indian cities have no
+FloodPulse hardware at all.
+
+Hydraulics are deterministic and explainable (no randomness), so a demo replays identically:
+
+```
+target_drain = 0.15 + 2.35 * clamp(rain / 45 mm/h, 0, 1) + 0.80 * soil_fraction
+drain_now    = drain_prev + (target_drain - drain_prev) * (1 - exp(-dt / 900 s))
+water_now    = clamp(1.15 * drain_now + 0.25 * soil_fraction)
+flow_now     = clamp(2.00 * water_now + 0.05 * rain)
+```
+
+Constants live in `config.py` (`HYDRAULICS_*`) and are reported in the API as `hydraulics_note`.
+
+### Caching and the "at most every 10 minutes" rule
+
+* One HTTP request covers **all five** cities (comma-separated coordinates), so a provider blip
+  affects all five zones at once and never just one.
+* Each zone's provider snapshot is cached in the **existing** table at `sk = WEATHER#CACHE`
+  (overwritten, no TTL, no GSI, no new table).
+* `GET /zones` refreshes only the zones whose cache is missing or whose **last provider attempt** was
+  at least `FLOODPULSE_WEATHER_REFRESH_SECONDS` (default **600 s**) ago. Every other poll is served
+  from the cache, so refreshing is bounded by time, not by how often the dashboard polls.
+* The window is anchored on the *attempt*, not on success: a failed fetch writes a small marker
+  (`last_attempt_epoch`, `last_attempt_ok`, `last_attempt_error`) that keeps the provider values
+  untouched while moving the anchor forward. A provider outage therefore costs **one call per
+  10 minutes**, not one call per dashboard poll — verified live, and covered by a test that runs 119
+  polls inside one window and asserts a single call.
+* `FLOODPULSE_WEATHER=off` is a kill switch: the Lambda then never calls the provider.
+
+| `sk` | purpose | TTL |
+| --- | --- | --- |
+| `WEATHER#CACHE` | newest provider snapshot for a zone: rainfall, soil moisture, observation time, fetch time, derived metrics, plus last-attempt bookkeeping | none (overwritten) |
+
+Degradation is explicit and never invents data: a provider failure is reported in
+`weather.last_refresh.error` and per zone in `weather.last_attempt_error`, cached values keep being
+served with their true `cache_age_seconds`, the zone card shows `fetch failed`, and a zone that has
+never had a successful fetch reports `status: no_data`. Each attempt also writes one structured line
+to CloudWatch (`event: weather_refresh`) so a provider problem stays diagnosable after the response
+that reported it has scrolled away.
+
+### Live readings use the existing pipeline
+
+A live-weather reading is ingested through the same validation → scoring → storage → incident →
+alerting path as a simulated one, so hysteresis, incidents, SNS alerts, history and the dashboard all
+work unchanged. The reading is timestamped when FloodPulse sampled it, while the provider's own
+observation time is kept alongside it (`provider_observed_at`), and `data_classification` becomes
+`mixed` once a fleet contains real data.
+
+### Configuration
+
+| Lambda environment variable | Default | Meaning |
+| --- | --- | --- |
+| `FLOODPULSE_ZONE_MODE` | `demo` (`live` when deployed) | which fleet is active |
+| `FLOODPULSE_WEATHER` | `open-meteo` | `open-meteo` or `off` (kill switch) |
+| `FLOODPULSE_WEATHER_REFRESH_SECONDS` | `600` | minimum gap between provider attempts per zone; clamped to 60-86400 |
+| `FLOODPULSE_WEATHER_TIMEOUT_SECONDS` | `4.0` | provider HTTP timeout; clamped to 1-8 s (the Lambda itself runs with a 15 s timeout, raised from 10 s so a slow provider fetch plus the five ingests cannot hit the limit) |
+
+No API key is required, and none is stored: Open-Meteo's free tier is key-less. Attribution
+(CC BY 4.0) is required and is included in the API response (`weather.attribution`), in the dashboard
+footer and in this document.
+
+### AWS changes for M4
+
+* Lambda **code** + four new environment variables (same function, same role, same table).
+* DynamoDB: a new **data-only** item type `sk = WEATHER#CACHE` in the existing `floodpulse` table —
+  no schema change, no GSI, no TTL change, no new permissions needed.
+* **No new AWS resources**: no VPC, no NAT, no EC2, no RDS, no IoT Core, no ML, no new database.
+* The function has no VPC configuration, so it already has outbound internet egress for HTTPS.
+* IAM untouched: `dynamodb:GetItem/PutItem` on the existing table and `sns:Publish` on the one alert
+  topic were already enough.
+* Cost: ≤1 provider request per 10 min (~144/day, free tier, no key), ~1,440 tiny DynamoDB writes/day
+  (~$0), Lambda shape unchanged (256 MB, 10 s) → effectively **$0/month**; the added latency is one
+  HTTPS call per 10 minutes.
+
+### Verified M4 acceptance run (live, 2026-10-15)
+
+| Check | Result |
+| --- | --- |
+| Real provider feed (read-only probe, no AWS) | `python tools/weather_probe.py` → **1 request for all 5 cities**, HTTP 200, no API key: Chennai 0.4 mm/h + 64.8 % soil, Mumbai 0.0 + 16.8 %, Bengaluru 0.4 + 60.6 %, Hyderabad 0.0 + 15.6 %, Kochi 0.3 + 28.0 % |
+| Local test suite | `python -m unittest discover -s tests -t .` → **333 tests, OK** (250 pre-M4 + 83 new), no network access |
+| Dashboard static checks | `node tools/dashboard_check.mjs` → **44 checks pass** on the demo payload and on the live payload (provenance, mode-driven banner, "never upgrade to REAL", feed age/failure notes, site safety) |
+| Dashboard runtime checks | `node tools/dashboard_run.mjs` → **8 checks pass** in both modes, including the provenance check |
+| Deployment | `infra/deploy.ps1` re-run: code updated, environment applied with the 4 new variables, timeout corrected 10 s → **15 s**, every other resource reported "already exists" — **no new AWS resources**, IAM untouched |
+| `GET /zones` after deploy | **200**, `zone_mode: live_weather`, `data_classification: mixed`, `simulated: false`, `zone_count: 5`, ranking covers all five cities in descending risk |
+| Live weather actually ingested | all five zones `status: live` with scored readings: Chennai 0.2245 NORMAL (1.1 mm/h), Kochi 0.1824 (3.1 mm/h), Bengaluru 0.1683, Mumbai 0.0677, Hyderabad 0.0654 — **different real values per city**, not one shared figure |
+| Provenance in the API | every reading: `rainfall_mm_per_hr … REAL`, `soil_saturation_pct … MODEL_DERIVED`, `drain_level_m`/`water_level_m`/`flow_rate_m3_s … SIMULATED`; `weather.attribution` present |
+| Provenance in DynamoDB (independent `get-item`) | `ZONE#city-chennai / WEATHER#CACHE`: `record_type WEATHER_CACHE`, `provider open-meteo`, grid point `13.110721, 80.2459` (nearest cell, not the requested coordinate), `observed_at 2026-10-15T18:00:00Z`, `rainfall_mm_per_hr 0.4`, `soil_moisture_m3m3 0.324`, derived metrics, full `metric_sources` map |
+| Same for the reading itself | `ZONE#city-chennai / LATEST`: `simulated false`, `data_classification mixed`, `source open-meteo-live`, `provider_observed_at 2026-10-15T18:00:00Z`, `sensor_node_id open-meteo-chennai`, `risk_class NORMAL`, `ttl` set |
+| Caching rule (inside the window) | a second `GET /zones` seconds later: `attempted: false`, `reason: cache_fresh`, `already_fresh: 5`, `refreshed: 0` → **no provider call**, per-zone `cache_age_seconds` and `last_attempt_age_seconds` reported |
+| Caching rule (window expiry) | a live poll loop over ~10 minutes: **19 polls** (30 s apart) served from cache with no provider call, then the first poll past 600 s: `attempted: true`, `refreshed: 5`, `failed: 0`, cache ages reset to 0, attempt bookkeeping present with `last_attempt_ok: true`, and the very next poll back to `cache_fresh` — **40/40 live checks passed** |
+| Degradation is bounded, not a retry storm | unit test drives **119 polls inside one window against a failing provider and asserts exactly 1 provider call**; live-shaped endpoint test asserts each poll after that reports `cache_fresh` with the recorded `last_attempt_error` |
+| `FLOODPULSE_WEATHER=off` kill switch | live check: `weather.enabled: false`, `last_refresh.attempted: false`, `reason: "disabled"`, no provider call, and the five zones **still serve their last real readings** (`status: live`) |
+| Refresh is traceable in CloudWatch | one structured line per attempt, verified live: `weather refresh outcome: {"attempted": true, "event": "weather_refresh", "failed": [], "mode": "live_weather", "refreshed": [five zone ids], …}` — no secret, no credentials |
+| Deployed dashboard vs live API | `node tools/dashboard_run.mjs --site <s3 website> --api <endpoint>` → **8/8**, badge `LIVE`, ranking ordered, provenance chips + banner + feed note match the live payload, no panel error |
+| Deployed assets match the repo | `index.html`, `styles.css`, `lib.js`, `app.js` served from S3 are **byte-identical** (sha256) to `web/` |
+| Existing routes preserved | `GET /zones/city-chennai/history?minutes=60` **200** (points accumulate at one per 10 min), `GET /incidents?limit=20` **200**, alerting block unchanged, no ARN, key or provider URL in any body |
+| Demo fleet still isolated | `GET /zones/zone-riverside-north/history` in live mode → **404** `unknown_zone` + the live zone list |
+| Incident/SNS pipeline | unchanged: the 250 pre-M4 tests still pass, and live readings enter the same scoring/hysteresis/incident/alert path (`source: open-meteo-live`) |
+
+### A failure found by that run, and what changed
+
+The live window check caught something the local tests could not: one refresh attempt observed
+`attempted: true` with **nothing refreshed and no new cache value** — a single failed provider
+request (one HTTP call covers all five cities, so all five zones fail together). The initial design
+left the cache stale on failure, which meant a *sustained* outage would have re-attempted the
+provider on every 5-second dashboard poll, and the CloudWatch trail showed nothing but durations.
+
+Three changes followed, each verified live afterwards:
+
+1. the refresh window is anchored on the **last attempt**, not the last success, and a failed attempt
+   writes a marker that keeps the old values and their true age (outage = 1 call per 10 minutes);
+2. every attempt writes one structured CloudWatch line, and the module now configures its logger for
+   INFO — Lambda leaves the root logger at WARNING, so the success line had been dropped silently;
+3. the Lambda timeout went 10 s → 15 s, since a provider fetch plus five ingests measured
+   2.9-6.9 s against the old 10 s limit.
+
+The dashboard text was corrected at the same time: with the provider switched off, a live fleet still
+shows previously fetched **real** values, so it must not be described as "every metric is simulated".
+
+### M4 limitations (known, deliberate)
+
+* Rainfall comes from a provider **grid point**, not a gauge: it is a model/observation blend and its
+  hourly value can be up to ~60 minutes old, so a live "storm" on this dashboard is a real regional
+  rainfall figure, not street-level measurement.
+* The 5-minute trend term is usually **unavailable** for live zones: samples arrive every 10 minutes,
+  so no reading falls inside `TREND_LOOKBACK_SECONDS ± tolerance` and `trend` reports "no lookback".
+* Refreshing is **lazy** (triggered by `GET /zones`) — a scheduled EventBridge refresh is deliberately
+  deferred, so the feed only advances while somebody is looking at the dashboard.
+* Thresholds are the hand-set heuristic defaults: **not** calibrated for these cities, and not
+  official warning thresholds. Risk classes for Indian cities are illustrative, not advisory.
+* No provider redundancy: if Open-Meteo is unavailable for longer than the TTL of the cached values,
+  live zones go `no_data` (they never fall back to fabricated rainfall).
+* The demo zones' M3 data remains in the table (nothing is ever deleted without instruction); it is
+  simply not part of the live fleet while `FLOODPULSE_ZONE_MODE=live`.
+
 ### Local shell notes (Windows, verified)
 
 * `pwsh` is **not** installed here; the shell is Windows PowerShell 5.1, whose execution policy
@@ -343,18 +528,20 @@ substitute for a human opening the page in a real browser.
 AGENTS.md                     project rules for agents
 README.md                     this file
 src/floodpulse/
-  config.py                   3 fixed zones, thresholds, weights, bands, hysteresis, limits
+  config.py                   3 demo zones + 5 live city zones, thresholds, weights, bands, sources
   risk.py                     deterministic heuristic-v1 scorer + explanation + hysteresis
   validation.py               strict payload validation (server-derived ts_epoch/ttl)
   auth.py                     x-fp-key ingestion guard (fail closed in cloud mode)
+  weather.py                  Open-Meteo client: one request for all cities, injectable transport
+  live_weather.py             deterministic hydraulics, weather cache item, 10-minute refresh rule
   storage.py                  DynamoDB-shaped item builders + in-memory LocalStore
   dynamodb_store.py           DynamoDbStore: same interface, boto3 imported lazily
   handler.py                  the single Lambda handler: dispatch() + lambda_handler()
-  simulator.py                deterministic phase-driven simulator
+  simulator.py                deterministic phase-driven simulator (demo fleet)
 web/
-  index.html                  dashboard layout + permanent simulated-data banner
-  styles.css                  storm command-centre theme, glass cards, band colours
-  lib.js                      pure render/format helpers (browser + node)
+  index.html                  dashboard layout + mode-driven provenance banner and legend
+  styles.css                  storm command-centre theme, glass cards, band colours, source chips
+  lib.js                      pure render/format helpers + provenance rendering (browser + node)
   app.js                      5 s polling controller, patching, sparkline, history chart
   bg-storm.webp               locally generated backdrop (13.3 KB)
 tests/
@@ -370,10 +557,13 @@ tests/
   test_simulator.py           determinism, ranges, phase/clock behaviour
   test_end_to_end.py          simulator -> validation -> risk -> store -> API, in-process
   test_tools.py               secret handling (never printed) + live simulator request shape
+  test_weather.py             Open-Meteo client: URL, parsing, mismatches, failures (offline)
+  test_live_weather.py        hydraulics, provenance tags, cache rule, live-mode /zones contract
   support.py                  shared test helpers (recording notifier, scenario driver)
 tools/
   local_demo.py               CLI: prints a risk timeline, no AWS calls
   live_simulator.py           drives the deployed API with simulated readings
+  weather_probe.py            read-only probe of the live Open-Meteo feed (no AWS credentials)
   init_ingest_key.py          creates the local secret + Lambda env file (never prints it)
   dashboard_check.mjs         static checks on the dashboard sources (node, no browser)
   dashboard_run.mjs           executes lib.js + app.js in a fake DOM against a real payload (node)
@@ -386,20 +576,23 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (250 tests, no AWS calls)
+# full test suite (333 tests, no AWS calls, no network)
 python -m unittest discover -s tests -t .
 
-# dashboard checks: pure helpers, rendering from a real payload, incidents, site safety (node)
+# live weather probe: one real Open-Meteo request for all five cities, read-only
+python tools/weather_probe.py
+
+# dashboard checks: pure helpers, rendering from a real payload, provenance, site safety (node)
 node tools/dashboard_check.mjs
-node tools/dashboard_check.mjs --payload build/zones-live.json --history build/history-live.json
-node tools/dashboard_check.mjs --payload build/zones-live.json --incidents build/incidents-live.json
+node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
+node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
 
 # dashboard runtime check: runs the real lib.js + app.js in a fake DOM and drives the poller
-node tools/dashboard_run.mjs --payload build/zones-live.json --history build/history-live.json --incidents build/incidents-live.json
+node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
 
-# local demo: risk timeline for all three zones
+# local demo: risk timeline for all three simulated zones (demo fleet)
 python tools/local_demo.py --steps 40
 
 # full scenario arc (calm -> flash flood -> recession) and final GET /zones payload
@@ -426,6 +619,11 @@ touching AWS.
 
 Overrides represent different local drainage capacity. They are hand-set tuning values,
 not calibration against measured data.
+
+`demo` mode uses exactly these three zones (that is the library default). `live` mode uses the five
+M4 city zones listed under **M4 live weather for Indian cities**; their thresholds are the same
+heuristic defaults, which are **not** calibrated for those cities and are not official warning
+thresholds.
 
 ## Sensor payload (`POST /readings`)
 
@@ -508,9 +706,10 @@ constant so tests never depend on the wall clock.
 | M1 | AWS: DynamoDB table, single Lambda + one execution role, HTTP API routes, DynamoDB-backed store | ✅ **done and verified** |
 | M2 | Live dashboard (S3 static site polling `GET /zones`) + protected ingestion + restricted CORS — first live demo | ✅ **done and verified** |
 | M3 | Flood incidents + SNS alerts + incident log in the dashboard | ✅ **done and verified live** |
-| M4 | Historical chart polish, session trends, zone drill-down | ⛔ |
-| M5 | Time-to-threshold, CloudWatch alarm | ⛔ |
-| M6 | Demo hardening, deterministic run-book, scheduled simulator | ⛔ |
+| M4 | India live-weather integration: 5 city zones on real rainfall/soil moisture, per-metric provenance, cached external feed, simulator kept as demo/fallback | ✅ **done and verified live** |
+| M5 | Historical chart polish, session trends, zone drill-down | ⛔ |
+| M6 | Time-to-threshold, CloudWatch alarm | ⛔ |
+| M7 | Demo hardening, deterministic run-book, scheduled refresh (EventBridge) | ⛔ |
 
 ## AWS state (verified)
 
@@ -531,12 +730,13 @@ constant so tests never depend on the wall clock.
 ## Cost posture
 
 Live now: DynamoDB on-demand + Lambda (free tier) + HTTP API ($1 per million requests) + 7-day log
-retention + one S3 bucket holding ~85 KB (a few cents at most per month) + one SNS topic with no
-subscriptions (idle topics and 6 publishes cost nothing; SNS's first 1M publishes/month are free).
-No NAT gateway, CloudFront, IoT Core, EC2, RDS or OpenSearch. Estimated cost while the stack sits
-idle: effectively $0 (all on-demand/free-tier, log retention bounded at 7 days); a demo day of
-thousands of API requests, tens of thousands of DynamoDB writes and a handful of SNS publishes stays
-far below $0.05.
+retention + one S3 bucket holding ~95 KB (a few cents at most per month) + one SNS topic with no
+subscriptions (idle topics and 6 publishes cost nothing; SNS's first 1M publishes/month are free) +
+the M4 weather cache (~1,440 extra tiny writes/day, ~$0) + at most 144 external weather requests/day
+on a free, key-less tier. No NAT gateway, CloudFront, IoT Core, EC2, RDS or OpenSearch. Estimated
+cost while the stack sits idle: effectively $0 (all on-demand/free-tier, log retention bounded at
+7 days); a demo day of thousands of API requests, tens of thousands of DynamoDB writes and a handful
+of SNS publishes stays far below $0.05.
 
 ## Engineering rules
 
