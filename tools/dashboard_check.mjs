@@ -716,16 +716,29 @@ if (incidentsPath) {
         `incident ${index} has an unknown classification ${incident.data_classification}`);
       assert.equal(incident.simulated, incident.data_classification === 'simulated',
         `incident ${index} contradicts itself: simulated=${incident.simulated} but ${incident.data_classification}`);
-      if (live.data_classification === 'mixed') {
-        assert.equal(incident.simulated, false, `incident ${index} of a live fleet claims to be simulated`);
-      }
     });
     assert.equal(live.simulated, live.data_classification === 'simulated',
       `the list contradicts itself: simulated=${live.simulated} but ${live.data_classification}`);
-    if (live.zone_mode === 'live_weather') {
-      assert.equal(live.data_classification, 'mixed', 'a live fleet incident list must not claim to be simulated');
+    // The list must report the provenance of the records it actually holds: one provenance
+    // reports itself, several report "mixed", and an empty list falls back to the fleet. A
+    // live-weather fleet can legitimately serve "simulated" - every incident in it may have
+    // been opened by a reading a client posted, which is always simulated.
+    if (live.incidents.length === 0) {
+      assert.ok(['simulated', 'mixed'].includes(live.data_classification),
+        'an empty live incident list claims an unknown provenance');
+    } else {
+      const held = new Set(live.incidents.map((incident) => incident.data_classification));
+      const expected = held.size === 1 ? [...held][0] : 'mixed';
+      assert.equal(live.data_classification, expected,
+        `the list says ${live.data_classification} but holds ${[...held].join(' + ')}`);
+    }
+    if (live.data_classification === 'mixed') {
       assert.ok(live.notes.some((note) => /open-meteo/i.test(note)),
-        'the live incident list does not attribute the provider data');
+        'a mixed incident list does not attribute the provider data');
+    } else if (live.zone_mode === 'live_weather' && live.incidents.length) {
+      // a live fleet serving all-simulated incidents must say so in its own disclaimer
+      assert.ok(live.notes.some((note) => /simulated/i.test(note)),
+        'an all-simulated incident list does not carry its simulation disclaimer');
     }
     const html = FP.renderIncidents(live, Date.now());
     assert.ok(!html.includes('undefined'), 'live incident markup contains undefined');
@@ -1135,6 +1148,42 @@ check('the page pins the fleet strip and headings to the payload', () => {
   const listBody = /<ul id="band-strip"[\s\S]*?<\/ul>/.exec(htmlSource);
   assert.ok(listBody && !listBody[0].includes('band-strip-label'),
     'the strip label must not be inside the element whose innerHTML is replaced');
+});
+
+group('Accessibility contract');
+
+check('state changes are announced, not just coloured', () => {
+  // the connection badge changes silently every poll: it has to be a live region
+  const connBlock = /<div class="conn"[^>]*>[\s\S]*?conn-detail[\s\S]*?<\/div>/.exec(htmlSource);
+  assert.ok(connBlock, 'the connection block was not found');
+  assert.match(connBlock[0], /role="status"/, 'the connection state is not a live region');
+  assert.match(connBlock[0], /aria-live="polite"/, 'the connection state is not announced politely');
+  assert.match(htmlSource, /id="zones"[^>]*aria-live="polite"/, 'the zone grid does not announce updates');
+  assert.match(htmlSource, /id="incidents"[^>]*aria-live="polite"/, 'the incident list does not announce updates');
+  assert.match(htmlSource, /id="band-strip-label"[^>]*role="status"/, 'the strip summary is not announced');
+});
+
+check('the chart is exposed as an image with a label', () => {
+  const canvas = /<canvas id="history-canvas"[^>]*>/.exec(htmlSource);
+  assert.ok(canvas, 'the history canvas was not found');
+  assert.match(canvas[0], /role="img"/, 'the canvas is not exposed as an image');
+  assert.match(canvas[0], /aria-label="[^"]+"/, 'the canvas has no accessible label');
+});
+
+check('controls are real controls and decoration is hidden from assistive tech', () => {
+  assert.match(appSource + libSource, /<button/, 'the history controls are not real buttons');
+  assert.match(appSource, /addEventListener\('click'/, 'nothing handles clicks explicitly');
+  assert.ok(!/onclick\s*=/i.test(htmlSource + appSource + libSource), 'a click handler is inlined in markup');
+  assert.match(htmlSource, /class="bg-layer" aria-hidden="true"/, 'the backdrop is not hidden from assistive tech');
+  assert.match(htmlSource, /class="incident-head" aria-hidden="true"/, 'the incident table header is read out');
+  assert.match(htmlSource, /<noscript/, 'there is no no-script fallback');
+});
+
+check('every interactive element can be reached and seen when focused', () => {
+  assert.match(cssSource, /:focus-visible\s*\{[^}]*outline:\s*2px solid/, 'there is no visible focus ring');
+  assert.ok(!/outline:\s*(none|0)\s*;/.test(cssSource.replace(/:focus-visible[^}]*\{[^}]*\}/g, '')),
+    'focus outlines are removed without a :focus-visible replacement');
+  assert.match(cssSource, /@media \(prefers-reduced-motion: reduce\)/, 'motion is never reduced');
 });
 
 /* ------------------------------------------------------------------ report --- */

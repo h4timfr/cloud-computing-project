@@ -34,7 +34,7 @@
   </div>
 
   <div class="topbar-status">
-    <div class="conn">
+    <div class="conn" role="status" aria-live="polite">
       <span id="conn-badge" class="conn-badge conn-connecting">CONNECTING</span>
       <span id="conn-detail" class="conn-detail">waiting for the first successful poll</span>
     </div>
@@ -59,7 +59,7 @@
       <li class="band-tile is-zero band-critical"><span class="band-count" data-f="count-critical">–</span><span class="band-name band-critical">Critical</span></li>
       <li class="band-tile is-zero band-unknown"><span class="band-count" data-f="count-unknown">–</span><span class="band-name band-unknown">No reading</span></li>
     </ul>
-    <p id="band-strip-label" class="band-strip-label">loading fleet…</p>
+    <p id="band-strip-label" class="band-strip-label" role="status" aria-live="polite">loading fleet…</p>
   </section>
 
   <section class="hero-row">
@@ -142,7 +142,7 @@
       </div>
     </header>
     <div class="chart-wrap">
-      <canvas id="history-canvas" height="220" aria-label="Risk score history chart"></canvas>
+      <canvas id="history-canvas" height="220" role="img" aria-label="Risk score history chart"></canvas>
       <div id="history-tooltip" class="chart-tooltip" hidden></div>
     </div>
     <p class="muted small">

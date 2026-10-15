@@ -508,6 +508,105 @@ shows previously fetched **real** values, so it must not be described as "every 
 * The demo zones' M3 data remains in the table (nothing is ever deleted without instruction); it is
   simply not part of the live fleet while `FLOODPULSE_ZONE_MODE=live`.
 
+## M5 dashboard hardening and demo rehearsal (deployed, verified)
+
+The slice that makes the existing system trustworthy in front of an audience: nothing in the AWS
+architecture changed (same table, same Lambda, same routes, same bucket), and no new resource was
+created. What changed is the dashboard, the verification tooling and the honesty of two API fields.
+
+### What the dashboard now does that it did not
+
+* **Fleet risk distribution strip** — five tiles (NORMAL / WATCH / WARNING / CRITICAL / unscored)
+  counted from the payload's *effective* class, with a label ("3 of 5 cities scored in this
+  snapshot"). A zone with no reading is never counted as NORMAL: it is counted as *unscored*.
+* **Honest failure states** — `CONNECTING` (with the last request error appended), `LIVE`, `STALE`
+  (elapsed time keeps moving between polls), `DISCONNECTED`, `is-feed-off` (kill switch) and
+  `is-feed-degraded` (provider outage while cached values are served). Stale data is never displayed
+  as if it were fresh, and a stale banner says so in words.
+* **A documented colour system** — one role per hue (cyan = live/fresh/REAL/NORMAL, amber =
+  WATCH/stale/simulated, orange = WARNING, red = CRITICAL/error, slate = unknown) with separate
+  `-text` tokens for small text, so 4.5:1 is met against the real glass surface, and band colours
+  keep 3:1 against it. Threshold ticks mark the WATCH and CRITICAL cut-offs on every metric bar.
+* **History that explains itself** — the tooltip names the five channels it has values for, or says
+  plainly that no sensor readings are stored for that point; the chart reports when the API
+  downsampled the window.
+* **State that is announced, not only coloured** — the connection badge is a polite live region, the
+  zone grid and incident list are `aria-live`, the chart is exposed as a labelled image, decorative
+  layers are `aria-hidden`, every control is a real `<button>`, and the stylesheet is checked for a
+  `:focus-visible` ring (no `outline: none` without one) and a reduced-motion guard. Five checks in
+  `dashboard_check.mjs` hold this in place.
+
+### Honesty fix found by the hardening pass (P1)
+
+`GET /zones/{zone_id}/history` and `GET /incidents` used to hard-code `data_classification:
+"simulated"` for every fleet, and each incident record was stored (and re-served) with
+`simulated: true`, whatever the reading behind it was. While `FLOODPULSE_ZONE_MODE=live` that meant a
+live city's chart and incident list *understated* their provenance: the board said "LIVE WEATHER"
+while the JSON said everything was simulated.
+
+Now the provenance travels with the data: an incident stores the classification of the reading that
+opened it, the history window reports the provenance of the records it actually holds (mixed when a
+window holds both, the fleet's when it holds none), both routes carry `zone_mode` and
+`metric_sources`, and `provenance_of_records()` is the single rule behind it. A payload that claims
+`data_classification`/`metric_sources` from the client is still rejected by validation, so provenance
+cannot be spoofed through `POST /readings` (verified live: a simulated reading posted for a live city
+is stored and served as `simulated`, never as REAL).
+
+### Demo mode, rehearsed rather than improvised
+
+* `tools/storm_demo.py` drives the demo fleet through the whole arc in-process, **verifies** that
+  every stage happened (NORMAL → WATCH → WARNING → CRITICAL → recovery → closure) and exits non-zero
+  if it did not. `--export` writes the exact `GET /zones`, `GET /incidents` and history payloads the
+  API served at each stage.
+* `tools/story_check.mjs` renders those payloads through the real `lib.js` and asserts the story is
+  intact from the dashboard's point of view: strip counts, incident rows, simulated labelling, chart
+  shape, and that all six stages are the same three-zone fleet (the demo and live fleets can never be
+  mixed in one window).
+* See `DEMO_RUNBOOK.md` for the minute-by-minute run.
+
+### Demo track, rehearsed against the deployed stack
+
+`build/demo_mode_roundtrip.py` (scratch, not part of the suite) runs the whole demo track on the
+deployed API with the same commands the runbook gives an operator, and asserts the fleet switch, the
+storm, the incident lifecycle, the closure and the return to the live fleet: **18 checks, 0 failed**.
+Measured: switching fleets ~78 s (the deploy script re-verifies every resource), the full 100-reading
+arc 498 s, the fast track to CRITICAL ~150 s, and incidents opened and closed again.
+
+That rehearsal found a real bug in `tools/live_simulator.py`: the loop slept the whole cadence *on top
+of* the time each step took, so the simulator's clock fell ~3.7 s behind real time per step (three
+zones ≈ 4 s of requests) and the API's ±300 s guard would start refusing readings after ~80 steps. It
+now sleeps only the remainder of the cadence and reports the drift, so a demo behaves the same at step
+1 and step 100.
+
+### Verification for this pass (all commands listed in "Running it locally")
+
+| Check | Result |
+|---|---|
+| `python -m unittest discover -s tests -t .` | **363 tests, OK** (1.7 s, no AWS, no network) |
+| `node tools/dashboard_check.mjs` (demo, live, all six story stages) | **57 checks, 0 failed** |
+| `node tools/dashboard_run.mjs` (real `lib.js` + `app.js` in a fake DOM) | **8 checks, 0 failed** |
+| `node tools/dashboard_scenarios.mjs` (33 failure/edge scenarios) | **33 checks, 0 failed** |
+| `node tools/story_check.mjs` (demo arc end to end) | **29 checks, 0 failed** |
+| `python build/live_acceptance_hardening.py` (deployed API, read-only) | **35 checks, 0 failed** |
+| `python build/live_incident_check.py` (deployed API, incident provenance) | **18 checks, 0 failed** |
+| `python build/demo_mode_roundtrip.py` (deployed API, whole demo track and back) | **18 checks, 0 failed** |
+
+No browser was available on this machine, so every visual claim above is checked at the DOM/CSS level
+(computed contrast ratios, emitted-class coverage, layout contracts) and never by pixels.
+
+### M5 limitations (known, deliberate)
+
+* Escalation still needs `ESCALATION_STREAK` consecutive readings *of the same candidate class*, so a
+  zone that jumps three bands in one step needs several readings to reach CRITICAL and open an
+  incident. At the live cadence (one reading per 10 minutes) that is up to ~40 minutes. Retuning it
+  is a product decision, not a polish decision, so it was deliberately left alone.
+* Anyone holding the ingestion key can post a reading for a live city; it replaces that city's
+  `LATEST` until the next weather refresh. It is always labelled `simulated`, but a live board can
+  therefore show a fabricated score for up to 10 minutes. Rejecting simulator posts in live mode
+  would change the documented ingest contract, so it is reported rather than changed.
+* `time_to_threshold` is still reported as deferred rather than guessed.
+* The live fleet has no EventBridge schedule: the feed advances only while `GET /zones` is called.
+
 ### Local shell notes (Windows, verified)
 
 * `pwsh` is **not** installed here; the shell is Windows PowerShell 5.1, whose execution policy
@@ -542,8 +641,9 @@ web/
   index.html                  dashboard layout + mode-driven provenance banner and legend
   styles.css                  storm command-centre theme, glass cards, band colours, source chips
   lib.js                      pure render/format helpers + provenance rendering (browser + node)
-  app.js                      5 s polling controller, patching, sparkline, history chart
+  app.js                      5 s polling controller, patching, sparkline, history chart, band strip
   bg-storm.webp               locally generated backdrop (13.3 KB)
+DEMO_RUNBOOK.md               rehearsed demo: what to open, when to say what, how to recover
 tests/
   test_risk.py                scoring, bands, contributions, hysteresis (fixed vectors)
   test_validation.py          accepted/rejected payload matrix
@@ -559,14 +659,19 @@ tests/
   test_tools.py               secret handling (never printed) + live simulator request shape
   test_weather.py             Open-Meteo client: URL, parsing, mismatches, failures (offline)
   test_live_weather.py        hydraulics, provenance tags, cache rule, live-mode /zones contract
+  test_provenance_labels.py   every route reports the provenance of the data it actually serves
   support.py                  shared test helpers (recording notifier, scenario driver)
 tools/
   local_demo.py               CLI: prints a risk timeline, no AWS calls
   live_simulator.py           drives the deployed API with simulated readings
+  storm_demo.py               one-command storm demo; verifies the arc and exports story payloads
+  story_check.mjs             replays the exported story through lib.js and asserts it holds up
   weather_probe.py            read-only probe of the live Open-Meteo feed (no AWS credentials)
   init_ingest_key.py          creates the local secret + Lambda env file (never prints it)
   dashboard_check.mjs         static checks on the dashboard sources (node, no browser)
   dashboard_run.mjs           executes lib.js + app.js in a fake DOM against a real payload (node)
+  dashboard_scenarios.mjs     failure/edge scenarios through the real poller in a fake DOM (node)
+  dashboard_dom.mjs           the fake DOM + fetch runtime the two harnesses above share
   make_background.py          generates web/bg-storm.webp + WCAG contrast report
 infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API + S3 dashboard)
 ```
@@ -576,8 +681,12 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (333 tests, no AWS calls, no network)
+# full test suite (363 tests, no AWS calls, no network)
 python -m unittest discover -s tests -t .
+
+# the demo story, rehearsed end to end: drives the arc, verifies it, exports what the API served
+python tools/storm_demo.py --export build/story
+node tools/story_check.mjs --dir build/story
 
 # live weather probe: one real Open-Meteo request for all five cities, read-only
 python tools/weather_probe.py
@@ -586,6 +695,10 @@ python tools/weather_probe.py
 node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
 node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
+
+# dashboard scenario harness: 33 failure and edge cases (first-poll failure, 500s, stale feed,
+# hung requests, mode switching, history backoff...) driven through the real poller in a fake DOM
+node tools/dashboard_scenarios.mjs
 
 # dashboard runtime check: runs the real lib.js + app.js in a fake DOM and drives the poller
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
@@ -707,9 +820,9 @@ constant so tests never depend on the wall clock.
 | M2 | Live dashboard (S3 static site polling `GET /zones`) + protected ingestion + restricted CORS — first live demo | ✅ **done and verified** |
 | M3 | Flood incidents + SNS alerts + incident log in the dashboard | ✅ **done and verified live** |
 | M4 | India live-weather integration: 5 city zones on real rainfall/soil moisture, per-metric provenance, cached external feed, simulator kept as demo/fallback | ✅ **done and verified live** |
-| M5 | Historical chart polish, session trends, zone drill-down | ⛔ |
-| M6 | Time-to-threshold, CloudWatch alarm | ⛔ |
-| M7 | Demo hardening, deterministic run-book, scheduled refresh (EventBridge) | ⛔ |
+| M5 | Dashboard hardening: fleet risk strip, documented colour system, honest failure/stale states, provenance fix on `/history` + `/incidents`, one-command verified storm demo | ✅ **done and verified live** |
+| M6 | Historical chart polish, session trends, zone drill-down | ⛔ |
+| M7 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ |
 
 ## AWS state (verified)
 

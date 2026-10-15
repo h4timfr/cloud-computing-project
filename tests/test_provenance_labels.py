@@ -8,11 +8,16 @@ system were simulated, and a simulated fleet may never be upgraded to a live cla
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import unittest
+from datetime import datetime, timezone
+from unittest import mock
 
 sys.path.insert(0, "src")
 
+from floodpulse.auth import INGEST_KEY_ENV, INGEST_KEY_HEADER
 from floodpulse.config import (
     DATA_CLASSIFICATION_MIXED,
     DATA_CLASSIFICATION_SIMULATED,
@@ -47,6 +52,31 @@ def observation(zone_id: str, rain: float, soil_saturation_pct: float) -> Observ
         latitude=13.0827,
         longitude=80.2707,
         error=None,
+    )
+
+
+def storm_reading(zone_id: str, step: int, *, rain: float = 60.0) -> str:
+    """One externally posted reading for a zone, in the shape the ingest route accepts.
+
+    Posted readings are always simulated (validation refuses to accept a client's own
+    provenance claim), which is exactly what this helper exists to exercise.
+    """
+    ts = datetime.fromtimestamp(NOW + step * 30, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return json.dumps(
+        {
+            "schema_version": "1.0",
+            "simulated": True,
+            "zone_id": zone_id,
+            "sensor_node_id": "field-kit",
+            "timestamp": ts,
+            "readings": {
+                "rainfall_mm_per_hr": rain,
+                "drain_level_m": 0.9,
+                "soil_saturation_pct": 96.0,
+                "water_level_m": 2.8,
+                "flow_rate_m3_s": 9.0,
+            },
+        }
     )
 
 
@@ -182,6 +212,34 @@ class IncidentProvenanceTest(unittest.TestCase):
         self.assertEqual(payload["data_classification"], DATA_CLASSIFICATION_SIMULATED)
         self.assertTrue(payload["simulated"])
         self.assertTrue(all(row["simulated"] for row in payload["incidents"]))
+
+    def test_a_live_fleet_serving_only_posted_incidents_says_simulated(self) -> None:
+        """A live fleet can honestly hold nothing but simulated incidents.
+
+        Incidents opened by a reading a client posted are simulated whatever the fleet's own
+        mode is, so the list must report "simulated" - and must not borrow the fleet's "mixed"
+        label, which would overstate where those incidents came from.
+        """
+        store = LocalStore()
+        ingest_key = "test-ingest-key"
+        with mock.patch.dict(os.environ, {INGEST_KEY_ENV: ingest_key}):
+            for step in range(4):
+                status, payload = dispatch(
+                    "POST", "/readings", storm_reading(CITY, step), store=store, now_epoch=NOW + step * 30,
+                    query={}, headers={INGEST_KEY_HEADER: ingest_key}, env=dict(LIVE_ENV),
+                )
+                self.assertEqual(status, 202, payload)
+        status, payload = dispatch(
+            "GET", "/incidents", store=store, now_epoch=NOW + 600, query={},
+            env=dict(LIVE_ENV), notifier=NoopNotifier(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["zone_mode"], ZONE_MODE_LIVE)
+        self.assertGreaterEqual(payload["count"], 1, "the posted readings opened no incident")
+        self.assertEqual(payload["data_classification"], DATA_CLASSIFICATION_SIMULATED)
+        self.assertTrue(payload["simulated"])
+        self.assertTrue(any("simulated" in note.lower() for note in payload["notes"]),
+                        "an all-simulated list on a live fleet must carry its simulation disclaimer")
 
     def test_an_empty_list_reports_the_fleet_it_belongs_to(self) -> None:
         for env, expected in ((dict(LIVE_ENV), DATA_CLASSIFICATION_MIXED), (dict(DEMO_ENV), DATA_CLASSIFICATION_SIMULATED)):
