@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Idempotent FloodPulse M1 deployment: one DynamoDB table, one Lambda, one HTTP API.
+  Idempotent FloodPulse deployment: one DynamoDB table, one Lambda, one HTTP API,
+  one S3 static dashboard.
 
 .DESCRIPTION
   Creates or updates exactly these resources, and nothing else:
@@ -9,6 +10,7 @@
     * API Gateway HTTP API with POST /readings, GET /zones, GET /zones/{zone_id}/history + CORS
     * the API -> Lambda invoke permission, scoped to that API
     * CloudWatch log retention for the function's log group
+    * S3 bucket for the static dashboard (website hosting, public read of objects only)
 
   Properties of this script:
     * additive only: it never deletes, replaces or force-updates a resource
@@ -16,11 +18,17 @@
     * IAM is read-only here: the execution role is managed by the project owner and is
       only looked up (create it as "floodpulse-lambda-role" with lambda.amazonaws.com
       trust plus logs:* and dynamodb:PutItem/GetItem/Query on the FloodPulse table)
+    * the ingestion secret is NEVER printed: this script reads it from a gitignored file
+      (.floodpulse-key, created by tools/init_ingest_key.py) and passes it to the Lambda
+      through a gitignored environment file; only the *names* of the variables are shown
+    * CORS is restricted to the dashboard website origin (plus an optional dev origin);
+      the wildcard is never written
     * no credentials are created, printed or stored
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File infra\deploy.ps1
   powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -RoleName floodpulse-lambda-role
+  powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -SkipDashboard
 
 .NOTES
   Requires AWS CLI v2 and a configured profile (-Profile, default cloud-project).
@@ -42,21 +50,40 @@ param(
     [string]$Runtime = 'python3.13',
     [int]$MemorySize = 256,
     [int]$TimeoutSeconds = 10,
-    [int]$LogRetentionDays = 7
+    [int]$LogRetentionDays = 7,
+    [string]$DashboardBucket = 'floodpulse-dashboard-725934295966',
+    [string]$IngestKeyFile = '.floodpulse-key',
+    [string]$LocalDevOrigin = 'http://localhost:8000',
+    [switch]$SkipDashboard
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $buildDir = Join-Path $repoRoot 'build'
 $zipPath = Join-Path $buildDir 'floodpulse-api.zip'
-$envPath = Join-Path $buildDir 'env.json'
+$envPath = Join-Path $buildDir 'env-prod.json'
 $corsPath = Join-Path $buildDir 'cors.json'
+$policyPath = Join-Path $buildDir 'bucket-policy.json'
+$websitePath = Join-Path $buildDir 'website.json'
 $srcDir = Join-Path $repoRoot 'src'
+$webDir = Join-Path $repoRoot 'web'
+$keyFilePath = Join-Path $repoRoot $IngestKeyFile
 
 function Write-Step { param([string]$Message) Write-Host "`n=== $Message ===" -ForegroundColor Cyan }
 function Write-Ok { param([string]$Message) Write-Host "  [ok]   $Message" -ForegroundColor Green }
 function Write-Info { param([string]$Message) Write-Host "  [info] $Message" }
 function Write-Warn2 { param([string]$Message) Write-Host "  [warn] $Message" -ForegroundColor Yellow }
+
+function Write-JsonFile {
+    <#
+      Writes a JSON file as UTF-8 *without* a BOM. Windows PowerShell's
+      "Set-Content -Encoding UTF8" adds a BOM, which the AWS CLI's JSON file
+      loader rejects. ASCII here is safe: these files hold only bucket names,
+      table names, origins and headers.
+    #>
+    param([string]$Path, [string]$Content)
+    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 function Invoke-Aws {
     <# Runs the AWS CLI and returns stdout as a trimmed string; throws on failure. #>
@@ -97,7 +124,7 @@ function Test-AwsResource {
 
 # --------------------------------------------------------------------------- preflight --------------------------------------------------------------------------- #
 
-Write-Step "FloodPulse M1 deploy (profile $Profile, region $Region)"
+Write-Step "FloodPulse deploy (profile $Profile, region $Region)"
 $identity = Invoke-AwsJson sts get-caller-identity
 Write-Ok "identity: $($identity.Arn) (account $($identity.Account))"
 if ($identity.Arn -match ':root$') { throw 'refusing to deploy with the AWS root account' }
@@ -114,32 +141,48 @@ Write-Step 'Building deployment package'
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 $keyPath = Join-Path $buildDir 'key-latest.json'
 $eavPath = Join-Path $buildDir 'eav-pk.json'
+Write-JsonFile $keyPath '{"pk": {"S": "ZONE#zone-riverside-north"}, "sk": {"S": "LATEST"}}'
+Write-JsonFile $eavPath '{":pk": {"S": "ZONE#zone-riverside-north"}}'
+
+# --------------------------------------------------------------------------- secret + env --------------------------------------------------------------------------- #
+
+Write-Step 'Ingestion secret and Lambda environment'
 if (-not (Test-Path $envPath)) {
-    @"
-{
-  "Variables": {
-    "FLOODPULSE_STORE": "dynamodb",
-    "FLOODPULSE_TABLE": "$TableName"
-  }
+    if (-not (Test-Path $keyFilePath)) {
+        Write-Info "no local secret yet; generating $IngestKeyFile and $envPath"
+    }
+    $initArgs = @('tools/init_ingest_key.py', '--key-file', $keyFilePath, '--lambda-env', $envPath, '--table', $TableName)
+    if (Test-Path $keyFilePath) { $initArgs += '--reuse' }
+    $initOutput = (& python @initArgs 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "failed to prepare the ingestion secret:`n$initOutput" }
+    Write-Ok "secret prepared (value never displayed): $IngestKeyFile + $envPath"
+} else {
+    Write-Ok "environment file already present: $envPath (gitignored)"
 }
-"@ | Set-Content -Path $envPath -Encoding UTF8
+if (-not (Test-Path $keyFilePath)) {
+    throw "missing '$IngestKeyFile'. Create it with: python tools/init_ingest_key.py --lambda-env build\env-prod.json"
 }
-if (-not (Test-Path $corsPath)) {
-    @'
-{
-  "AllowOrigins": ["*"],
-  "AllowMethods": ["GET", "POST", "OPTIONS"],
-  "AllowHeaders": ["content-type", "x-fp-key"],
-  "MaxAge": 300
+$envVariables = (Get-Content -Raw -Path $envPath | ConvertFrom-Json).Variables
+$envNames = @($envVariables.PSObject.Properties.Name)
+Write-Info "lambda environment variables: $($envNames -join ', ') (values not displayed)"
+if ($envNames -notcontains 'FLOODPULSE_INGEST_KEY') {
+    Write-Warn2 'the environment file has no FLOODPULSE_INGEST_KEY: cloud ingestion will fail closed with HTTP 503.'
+    Write-Warn2 "regenerate it with: python tools/init_ingest_key.py --key-file $IngestKeyFile --lambda-env build\env-prod.json"
 }
-'@ | Set-Content -Path $corsPath -Encoding UTF8
-}
-@"
-{"pk": {"S": "ZONE#zone-riverside-north"}, "sk": {"S": "LATEST"}}
-"@ | Set-Content -Path $keyPath -Encoding UTF8
-@'
-{":pk": {"S": "ZONE#zone-riverside-north"}}
-'@ | Set-Content -Path $eavPath -Encoding UTF8
+
+# --------------------------------------------------------------------------- cors --------------------------------------------------------------------------- #
+
+$dashboardUrl = "http://$DashboardBucket.s3-website.$Region.amazonaws.com"
+$allowedOrigins = @($dashboardUrl)
+if ($LocalDevOrigin) { $allowedOrigins += $LocalDevOrigin }
+$corsJson = @{
+    AllowOrigins = $allowedOrigins
+    AllowMethods = @('GET', 'POST', 'OPTIONS')
+    AllowHeaders = @('content-type', 'x-fp-key')
+    MaxAge       = 300
+} | ConvertTo-Json -Depth 4
+Write-JsonFile $corsPath $corsJson
+Write-Ok "CORS restricted to: $($allowedOrigins -join ', ')"
 
 $zipBuilder = @"
 import pathlib, zipfile
@@ -187,12 +230,19 @@ if ($functionExists) {
     if ($config.MemorySize -ne $MemorySize -or $config.Timeout -ne $TimeoutSeconds -or $config.Runtime -ne $Runtime) {
         Invoke-Aws lambda update-function-configuration --function-name $FunctionName `
             --runtime $Runtime --memory-size $MemorySize --timeout $TimeoutSeconds `
-            --handler floodpulse.handler.lambda_handler --environment "file://$envPath" | Out-Null
+            --handler floodpulse.handler.lambda_handler | Out-Null
         Invoke-Aws lambda wait function-updated --function-name $FunctionName | Out-Null
         Write-Ok "configuration corrected (memory $MemorySize MB, timeout ${TimeoutSeconds}s, $Runtime)"
     } else {
         Write-Ok "configuration already correct (memory $MemorySize MB, timeout ${TimeoutSeconds}s, $Runtime)"
     }
+    # the environment is always re-applied from the gitignored file so the ingestion
+    # secret cannot silently drift; only the variable names are ever displayed
+    Invoke-Aws lambda update-function-configuration --function-name $FunctionName `
+        --environment "file://$envPath" | Out-Null
+    Invoke-Aws lambda wait function-updated --function-name $FunctionName | Out-Null
+    $appliedNames = @(((Invoke-AwsJson lambda get-function-configuration --function-name $FunctionName).Environment.Variables).PSObject.Properties.Name)
+    Write-Ok "environment applied: $($appliedNames -join ', ') (values not displayed)"
 } else {
     Invoke-Aws lambda create-function --function-name $FunctionName `
         --runtime $Runtime --role $roleArn --handler floodpulse.handler.lambda_handler `
@@ -294,6 +344,67 @@ if ($null -eq $group) {
     Write-Ok "retention already $LogRetentionDays days"
 }
 
+# --------------------------------------------------------------------------- dashboard --------------------------------------------------------------------------- #
+
+$dashboardReady = $false
+if ($SkipDashboard) {
+    Write-Step 'S3 dashboard (skipped)'
+    Write-Info '-SkipDashboard was passed: no bucket or objects are created or updated.'
+} else {
+    Write-Step "S3 dashboard bucket '$DashboardBucket'"
+    if (Test-AwsResource s3api head-bucket --bucket $DashboardBucket) {
+        Write-Ok 'bucket already exists'
+    } else {
+        Invoke-Aws s3api create-bucket --bucket $DashboardBucket `
+            --create-bucket-configuration "LocationConstraint=$Region" | Out-Null
+        Write-Ok 'bucket created'
+    }
+
+    # public read for static website hosting: objects only, no listing and no writes
+    Invoke-Aws s3api put-public-access-block --bucket $DashboardBucket `
+        --public-access-block-configuration 'BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false' | Out-Null
+    $policyJson = @"
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicReadDashboard",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::$DashboardBucket/*"
+    }
+  ]
+}
+"@
+    Write-JsonFile $policyPath $policyJson
+    Invoke-Aws s3api put-bucket-policy --bucket $DashboardBucket --policy "file://$policyPath" | Out-Null
+    Write-Ok 'public read policy applied to objects (no list, no write)'
+
+    Write-JsonFile $websitePath '{"IndexDocument": {"Suffix": "index.html"}, "ErrorDocument": {"Key": "index.html"}}'
+    Invoke-Aws s3api put-bucket-website --bucket $DashboardBucket --website-configuration "file://$websitePath" | Out-Null
+    Write-Ok 'static website hosting enabled (index.html)'
+
+    # uploads are small (~72 KB in total); long-lived caching only for the background image
+    $assets = @(
+        @{ File = 'index.html';    Type = 'text/html; charset=utf-8';              Cache = 'no-cache' },
+        @{ File = 'styles.css';    Type = 'text/css; charset=utf-8';               Cache = 'no-cache' },
+        @{ File = 'lib.js';        Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'app.js';        Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'bg-storm.webp'; Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+    )
+    foreach ($asset in $assets) {
+        $source = Join-Path $webDir $asset.File
+        if (-not (Test-Path $source)) { throw "dashboard asset missing: $source" }
+        Invoke-Aws s3 cp $source "s3://$DashboardBucket/$($asset.File)" `
+            --content-type $asset.Type --cache-control $asset.Cache | Out-Null
+        Write-Ok "uploaded $($asset.File) ($($asset.Type))"
+    }
+    $dashboardReady = $true
+    $dashboardUrl = "http://$DashboardBucket.s3-website.$Region.amazonaws.com"
+    Write-Ok "dashboard: $dashboardUrl"
+}
+
 # --------------------------------------------------------------------------- done --------------------------------------------------------------------------- #
 
 Write-Step 'Deployment summary'
@@ -302,18 +413,27 @@ Write-Host "  api id        : $apiId"
 Write-Host "  function      : $FunctionName ($Runtime, $MemorySize MB, ${TimeoutSeconds}s)"
 Write-Host "  table         : $TableName"
 Write-Host "  stage         : $StageName"
+if ($dashboardReady) { Write-Host "  dashboard     : $dashboardUrl" }
 Write-Host @"
 
 Acceptance checks (no secrets involved):
 
   curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/zones
   curl.exe -s -o - -w "HTTP %{http_code}" $endpoint/zones/zone-riverside-north/history?minutes=60
-  python tools/local_demo.py --steps 1        # prints a simulated payload you can POST
+  node tools/dashboard_check.mjs --payload build/zones-live.json   # static dashboard checks
+
+  python tools/live_simulator.py --url $endpoint --steps 60 --interval 1.0
+  # ^ reads the secret from $IngestKeyFile (or FLOODPULSE_INGEST_KEY) and never prints it
 
   aws dynamodb get-item --table-name $TableName --profile $Profile --region $Region --key file://build/key-latest.json
   aws dynamodb query --table-name $TableName --profile $Profile --region $Region ``
     --key-condition-expression "pk = :pk" --expression-attribute-values file://build/eav-pk.json
 
-All FloodPulse sensor data is SIMULATED; risk scores are the heuristic-v1 heuristic,
-not a validated prediction model.
+  # POST /readings requires the x-fp-key header; the read routes are public:
+  #   missing header -> HTTP 401      wrong value -> HTTP 401
+  #   function without FLOODPULSE_INGEST_KEY -> HTTP 503 ingest_not_configured (fail closed)
+
+All FloodPulse sensor data is SIMULATED; risk scores come from the heuristic-v1
+heuristic, not a validated prediction model. The ingestion secret lives only in
+$IngestKeyFile and build\env-prod.json (both gitignored) - never in source control.
 "@

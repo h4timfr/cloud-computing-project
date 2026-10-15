@@ -2,9 +2,14 @@
 
 Routes implemented at M0/M1:
 
-* ``POST /readings``                -- validate, score, store
-* ``GET  /zones``                   -- latest state per zone + ranking
-* ``GET  /zones/{zone_id}/history`` -- timestamped history for one zone
+* ``POST /readings``                -- validate, score, store (requires the ``x-fp-key`` header)
+* ``GET  /zones``                   -- latest state per zone + ranking (public)
+* ``GET  /zones/{zone_id}/history`` -- timestamped history for one zone (public)
+
+The read endpoints are deliberately unauthenticated: the dashboard in S3 needs them and
+they expose only simulated data. ``POST /readings`` is protected by the shared secret in
+``FLOODPULSE_INGEST_KEY`` (see ``auth.py``); the secret is never accepted, required or
+revealed on the read routes.
 
 Deliberately **not** implemented yet (deferred, see ``config.DEFERRED_FEATURES``):
 time-to-threshold, SNS alerts, incident creation, dashboard, AWS deployment.
@@ -25,6 +30,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from .auth import check_ingest
 from .config import (
     DEFERRED_FEATURES,
     HISTORY_DEFAULT_MINUTES,
@@ -340,8 +346,12 @@ def dispatch(
     store: Any = None,
     now_epoch: float | None = None,
     query: Mapping[str, Any] | None = None,
+    headers: Mapping[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    """Route one request without touching AWS. Returns ``(status_code, payload)``."""
+    """Route one request without touching AWS. Returns ``(status_code, payload)``.
+
+    ``headers`` is only consulted for ``POST /readings`` (the ingestion secret).
+    """
     store = store if store is not None else get_store()
     now_epoch = time.time() if now_epoch is None else float(now_epoch)
     query = query or {}
@@ -351,6 +361,9 @@ def dispatch(
     if route == "/readings":
         if method != "POST":
             return 405, {"error": "method_not_allowed", "allowed": ["POST"], "path": route}
+        denial = check_ingest(headers)
+        if denial is not None:
+            return denial
         return _handle_reading(body, store, now_epoch)
 
     if route == "/zones":
@@ -369,13 +382,14 @@ def dispatch(
     return 404, {"error": "not_found", "path": route}
 
 
-def _parse_event(event: Mapping[str, Any]) -> tuple[str, str, dict[str, Any], str | None]:
-    """Read method/path/query/body from an API Gateway v2 *or* v1 event."""
+def _parse_event(event: Mapping[str, Any]) -> tuple[str, str, dict[str, Any], str | None, dict[str, Any]]:
+    """Read method/path/query/body/headers from an API Gateway v2 *or* v1 event."""
     request_context = event.get("requestContext") or {}
     http = (request_context.get("http") or {}) if isinstance(request_context, Mapping) else {}
     method = http.get("method") or event.get("httpMethod") or ""
     path = event.get("rawPath") or event.get("path") or "/"
     query = event.get("queryStringParameters") or {}
+    headers = event.get("headers") or {}
 
     body = event.get("body")
     if body is not None and event.get("isBase64Encoded"):
@@ -383,7 +397,7 @@ def _parse_event(event: Mapping[str, Any]) -> tuple[str, str, dict[str, Any], st
             body = base64.b64decode(body).decode("utf-8")
         except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
             raise ValidationError(f"body is not valid base64 UTF-8 ({exc})", "body") from exc
-    return str(method), str(path), dict(query), body
+    return str(method), str(path), dict(query), body, dict(headers)
 
 
 def _respond(status: int, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -398,12 +412,12 @@ def _respond(status: int, payload: Mapping[str, Any]) -> dict[str, Any]:
 def lambda_handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
     """AWS Lambda entry point for the single MVP function."""
     try:
-        method, path, query, body = _parse_event(event)
+        method, path, query, body, headers = _parse_event(event)
     except ValidationError as exc:
         return _respond(400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason})
 
     try:
-        status, payload = dispatch(method, path, body, get_store(), time.time(), query)
+        status, payload = dispatch(method, path, body, get_store(), time.time(), query, headers)
     except Exception:  # noqa: BLE001 - never leak internals to the caller
         LOGGER.exception("unhandled error while processing request")
         return _respond(500, {
