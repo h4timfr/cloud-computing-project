@@ -22,6 +22,7 @@ from unittest import mock
 
 from tools.init_ingest_key import ENV_VAR, fingerprint, main as init_main, read_key, write_lambda_env
 from tools.live_simulator import KEY_HEADER, post_reading, resolve_key
+from tools.storm_demo import STAGES, band_counts, export_story, main as storm_main, run_arc, verify_arc
 
 SECRET = "0123456789abcdef" * 4
 
@@ -174,6 +175,82 @@ class PostReadingTests(unittest.TestCase):
             status, payload = post_reading("https://example.test", SECRET, {}, 5.0)
         self.assertEqual(status, 0)
         self.assertEqual(payload["error"], "connection_failed")
+
+
+class StormDemoTests(unittest.TestCase):
+    """The storm demo is the rehearsed story; if it ever stops working, the demo is a lie."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.story = run_arc(steps=100)
+
+    def test_the_full_arc_reproduces_every_stage_in_order(self) -> None:
+        self.assertEqual(verify_arc(self.story), [], "the demo arc is not demo-ready")
+        steps = {name: (self.story["stages"][name] or {}).get("step") for name in STAGES}
+        for name in STAGES:
+            self.assertIsNotNone(steps[name], f"stage {name} is missing from the arc")
+        self.assertLess(steps["NORMAL"], steps["WATCH"])
+        self.assertLessEqual(steps["WATCH"], steps["WARNING"])
+        self.assertLessEqual(steps["WARNING"], steps["CRITICAL"])
+        self.assertLess(steps["CRITICAL"], steps["RECOVERY"])
+        self.assertLessEqual(steps["RECOVERY"], steps["CLOSED"])
+        self.assertGreaterEqual(self.story["stages"]["CRITICAL"]["open_incidents"], 1)
+        self.assertEqual(self.story["stages"]["CLOSED"]["open_incidents"], 0)
+        self.assertGreaterEqual(self.story["stages"]["CLOSED"]["closed_incidents"], 1)
+
+    def test_a_short_arc_is_reported_as_incomplete(self) -> None:
+        # negative control: the verifier must fail when the story did not actually happen
+        problems = verify_arc(run_arc(steps=25))
+        self.assertTrue(problems, "an arc that never floods must not pass verification")
+        self.assertTrue(any("CRITICAL" in problem for problem in problems), problems)
+        self.assertTrue(any("peak score" in problem for problem in problems), problems)
+
+    def test_the_demo_fleet_is_never_the_live_fleet(self) -> None:
+        for snapshot in (self.story["stages"][name] for name in STAGES):
+            self.assertEqual(snapshot["payload"]["zone_mode"], "simulated")
+            self.assertEqual(snapshot["payload"]["data_classification"], "simulated")
+            self.assertEqual(len(snapshot["payload"]["zones"]), 3)
+
+    def test_a_zone_without_a_reading_is_not_counted_as_normal(self) -> None:
+        counts = band_counts({"zones": [{"latest": None}, {"latest": {"risk_class": "FLOODING"}}]})
+        self.assertEqual(counts["NO_READING"], 2)
+        self.assertEqual(counts["NORMAL"], 0)
+
+    def test_export_binds_each_history_window_to_the_stage_leader(self) -> None:
+        directory = scratch("storm-story")
+        for existing in directory.glob("*.json"):
+            existing.unlink()
+        written = export_story(self.story, directory)
+        self.assertTrue(written)
+        summary = json.loads((directory / "story.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["data_classification"], "simulated")
+        self.assertIn("not a validated hydrological model", summary["disclaimer"])
+        for row in summary["stages"]:
+            slug = row["stage"].lower()
+            zones = json.loads((directory / f"zones-{slug}.json").read_text(encoding="utf-8"))
+            history = json.loads((directory / f"history-{slug}.json").read_text(encoding="utf-8"))
+            self.assertEqual(zones["highest_risk_zone"]["zone_id"], row["leader"])
+            self.assertEqual(history["zone_id"], row["leader"])
+            self.assertGreater(history["point_count"], 0, f"{row['stage']} exported an empty history")
+
+    def test_cli_exit_codes_reflect_demo_reliability(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(storm_main(["--steps", "100", "--quiet"]), 0)
+            self.assertIn("demo reliability check: PASSED", buffer.getvalue())
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(storm_main(["--steps", "25", "--quiet"]), 1)
+            self.assertIn("demo reliability check: FAILED", buffer.getvalue())
+
+    def test_json_output_is_machine_readable_and_carries_the_problems(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(storm_main(["--steps", "25", "--json"]), 1)
+        document = json.loads(buffer.getvalue())
+        self.assertEqual(list(document["stages"]), list(STAGES))
+        self.assertTrue(document["problems"])
+        self.assertIsNone(document["stages"]["CRITICAL"])
 
 
 if __name__ == "__main__":  # pragma: no cover
