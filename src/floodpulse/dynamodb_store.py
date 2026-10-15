@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
-from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX, ZONE_IDS
+from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX, WEATHER_CACHE_SORT_KEY, ZONE_IDS
 from .storage import (
     HISTORY_PREFIX,
     LATEST_SORT_KEY,
@@ -137,6 +137,20 @@ def alert_marker_key(zone_id: str) -> dict[str, str]:
 def alert_marker_get_params(zone_id: str) -> dict[str, Any]:
     """``get_item`` parameters for one zone's alert cooldown marker."""
     return {"Key": alert_marker_key(zone_id), "ConsistentRead": True}
+
+
+def weather_cache_key(zone_id: str) -> dict[str, str]:
+    """Primary key of a zone's cached external-weather snapshot (M4)."""
+    return {"pk": build_zone_pk(zone_id), "sk": WEATHER_CACHE_SORT_KEY}
+
+
+def weather_cache_get_params(zone_id: str) -> dict[str, Any]:
+    """``get_item`` parameters for one zone's weather cache.
+
+    Consistent reads are used deliberately: the cache decides whether an external call is
+    allowed at all, so a stale replica must never cause a second fetch inside the window.
+    """
+    return {"Key": weather_cache_key(zone_id), "ConsistentRead": True}
 
 
 def to_storable(value: Any) -> Any:
@@ -308,12 +322,15 @@ class DynamoDbStore:
         return total
 
     def item_count(self) -> int:
-        """Total records stored for the FloodPulse zones (latest + history + incidents)."""
+        """Total records stored for the FloodPulse zones (latest + history + incidents +
+        markers + weather cache)."""
         latest = sum(1 for zone in self.zone_ids if self.get_latest(zone))
         markers = sum(1 for zone in self.zone_ids if self.get_alert_marker(zone))
+        caches = sum(1 for zone in self.zone_ids if self.get_weather_cache(zone))
         return (
             latest
             + markers
+            + caches
             + sum(self.history_count(zone) for zone in self.zone_ids)
             + self.incident_count()
         )
@@ -381,6 +398,17 @@ class DynamoDbStore:
 
     def put_alert_marker(self, item: Mapping[str, Any]) -> dict[str, Any]:
         """Store the zone's alert cooldown marker."""
+        self._table.put_item(Item=to_storable(deepcopy(dict(item))))
+        return dict(item)
+
+    def get_weather_cache(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's cached external-weather snapshot, or ``None`` (M4)."""
+        response = self._table.get_item(**weather_cache_get_params(zone_id))
+        item = response.get("Item")
+        return plain(item) if item else None
+
+    def put_weather_cache(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Store (overwrite) the zone's cached external-weather snapshot (M4)."""
         self._table.put_item(Item=to_storable(deepcopy(dict(item))))
         return dict(item)
 

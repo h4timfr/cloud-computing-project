@@ -19,11 +19,13 @@ from typing import Any, Iterable, Mapping
 
 from .config import (
     BODY_MAX_BYTES,
+    DATA_CLASSIFICATION_MIXED,
     HISTORY_TTL_SECONDS,
     MAX_CLOCK_SKEW_SECONDS,
     METRIC_ORDER,
     METRICS,
     SCHEMA_VERSION,
+    SOURCE_SIMULATED,
 )
 
 ALLOWED_TOP_LEVEL = frozenset(
@@ -144,11 +146,21 @@ def validate_reading(
     payload: Any,
     now_epoch: float,
     zone_ids: Iterable[str],
+    *,
+    accept_non_simulated: bool = False,
+    metric_sources: Mapping[str, str] | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """Validate and normalise one reading, deriving server-side fields.
 
     Returns the normalised reading record used by the store, including
     ``ts_epoch``, ``ttl`` and ``data_classification``.
+
+    ``accept_non_simulated`` is for FloodPulse's *own* ingestion path (M4 live weather),
+    which is the only caller allowed to store a reading whose metrics are not all
+    simulated. Externally supplied payloads must still declare ``simulated: true``.
+    ``metric_sources``/``source`` are recorded only when supplied, so simulated records
+    keep their exact pre-M4 shape.
     """
     _require(isinstance(payload, Mapping), "payload must be a JSON object", "payload")
     extra = sorted(set(payload) - ALLOWED_TOP_LEVEL)  # type: ignore[arg-type]
@@ -162,11 +174,18 @@ def validate_reading(
         f"must equal {SCHEMA_VERSION!r}",
         "schema_version",
     )
-    _require(
-        payload["simulated"] is True,  # type: ignore[index]
-        "must be true; the MVP accepts explicit simulated data only",
-        "simulated",
-    )
+    if accept_non_simulated:
+        _require(
+            isinstance(payload["simulated"], bool),  # type: ignore[index]
+            "must be a boolean",
+            "simulated",
+        )
+    else:
+        _require(
+            payload["simulated"] is True,  # type: ignore[index]
+            "must be true; the MVP accepts explicit simulated data only",
+            "simulated",
+        )
 
     zone_id = payload["zone_id"]  # type: ignore[index]
     _require(
@@ -200,10 +219,10 @@ def validate_reading(
     readings = _validate_readings(payload["readings"])
     meta = _validate_meta(payload.get("meta"))
 
-    return {
+    record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "simulated": True,
-        "data_classification": DATA_CLASSIFICATION,
+        "simulated": bool(payload["simulated"]) if accept_non_simulated else True,
+        "data_classification": _classification_for(metric_sources),
         "zone_id": zone_id,
         "sensor_node_id": sensor_node_id,
         "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
@@ -213,3 +232,18 @@ def validate_reading(
         "meta": meta,
         "ingested_at_epoch": int(now_epoch),
     }
+    if metric_sources is not None:
+        record["metric_sources"] = {metric: str(metric_sources.get(metric, source or SOURCE_SIMULATED))
+                                    for metric in METRIC_ORDER}
+    if source is not None:
+        record["source"] = str(source)
+    return record
+
+
+def _classification_for(metric_sources: Mapping[str, str] | None) -> str:
+    """``mixed`` as soon as one metric of the record comes from outside FloodPulse."""
+    if not metric_sources:
+        return DATA_CLASSIFICATION
+    if any(str(tag) != SOURCE_SIMULATED for tag in metric_sources.values()):
+        return DATA_CLASSIFICATION_MIXED
+    return DATA_CLASSIFICATION

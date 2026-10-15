@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Mapping
 
-from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX
+from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX, WEATHER_CACHE_SORT_KEY
 
 LATEST_SORT_KEY = "LATEST"
 HISTORY_PREFIX = "H#"
@@ -43,21 +43,31 @@ def sort_incident_items(items: list[Mapping[str, Any]]) -> list[Any]:
     return sorted(items, key=incident_sort_value)
 
 
+#: Provenance fields copied through only when a reading actually carries them, so
+#: simulated records keep their exact pre-M4 shape.
+PROVENANCE_FIELDS = ("metric_sources", "source", "provider", "provider_observed_at")
+
+
 def _core_record(reading: Mapping[str, Any]) -> dict[str, Any]:
     """Fields shared by the LATEST and history items."""
-    return {
+    record = {
         "pk": build_zone_pk(str(reading["zone_id"])),
         "zone_id": reading["zone_id"],
         "sensor_node_id": reading["sensor_node_id"],
         "timestamp": reading["timestamp"],
         "ts_epoch": reading["ts_epoch"],
         "ttl": reading["ttl"],
-        "simulated": True,
+        "simulated": bool(reading.get("simulated", True)),
         "data_classification": reading["data_classification"],
         "readings": dict(reading["readings"]),
         "meta": dict(reading.get("meta") or {}),
         "ingested_at_epoch": reading["ingested_at_epoch"],
     }
+    for field in PROVENANCE_FIELDS:
+        value = reading.get(field)
+        if value is not None:
+            record[field] = dict(value) if isinstance(value, Mapping) else value
+    return record
 
 
 def build_latest_item(
@@ -203,7 +213,7 @@ class LocalStore:
         )
 
     def item_count(self) -> int:
-        """Total number of stored items (LATEST + history + incidents + markers)."""
+        """Total number of stored items (LATEST + history + incidents + markers + cache)."""
         return len(self._items)
 
     # -- incidents (M3) ----------------------------------------------------- #
@@ -261,6 +271,18 @@ class LocalStore:
 
     def put_alert_marker(self, item: Mapping[str, Any]) -> dict[str, Any]:
         """Store the zone's alert cooldown marker."""
+        stored = dict(item)
+        self._items[(str(stored["pk"]), str(stored["sk"]))] = stored
+        return stored
+
+    # -- external weather cache (M4) ---------------------------------------- #
+
+    def get_weather_cache(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's cached external-weather snapshot, or ``None``."""
+        return self._items.get((build_zone_pk(zone_id), WEATHER_CACHE_SORT_KEY))
+
+    def put_weather_cache(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Store (overwrite) the zone's cached external-weather snapshot."""
         stored = dict(item)
         self._items[(str(stored["pk"]), str(stored["sk"]))] = stored
         return stored
