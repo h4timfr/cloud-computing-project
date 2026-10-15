@@ -386,6 +386,179 @@ check('band classes vary with the payload (calm vs storm)', () => {
   assert.ok(!calm.includes('band-critical'));
 });
 
+/* ------------------------------------------------------------- provenance --- */
+
+group('Provenance rendering (M4)');
+
+// A demo-mode zone: the API reports every metric as SIMULATED.
+const DEMO_ZONE = {
+  zone_id: 'zone-riverside-north',
+  name: 'Riverside North',
+  zone_mode: 'simulated',
+  metric_sources: {
+    rainfall_mm_per_hr: 'SIMULATED', drain_level_m: 'SIMULATED', soil_saturation_pct: 'SIMULATED',
+    water_level_m: 'SIMULATED', flow_rate_m3_s: 'SIMULATED'
+  },
+  thresholds: THRESHOLDS,
+  latest: {
+    simulated: true,
+    data_classification: 'simulated',
+    metric_sources: {
+      rainfall_mm_per_hr: 'SIMULATED', drain_level_m: 'SIMULATED', soil_saturation_pct: 'SIMULATED',
+      water_level_m: 'SIMULATED', flow_rate_m3_s: 'SIMULATED'
+    },
+    readings: { rainfall_mm_per_hr: 8, drain_level_m: 0.6, soil_saturation_pct: 40, water_level_m: 0.9, flow_rate_m3_s: 2 },
+    risk_score: 0.22, risk_class: 'NORMAL', risk_class_candidate: 'NORMAL',
+    top_drivers: ['water_level_m'], explanation: 'demo', age_seconds: 5, sequence: 4, trend: {}
+  }
+};
+
+// A live-weather zone: REAL rainfall, MODEL-derived soil moisture, SIMULATED hydraulics.
+const LIVE_ZONE = {
+  zone_id: 'city-chennai',
+  name: 'Chennai',
+  zone_mode: 'live_weather',
+  metric_sources: {
+    rainfall_mm_per_hr: 'REAL', drain_level_m: 'SIMULATED', soil_saturation_pct: 'MODEL_DERIVED',
+    water_level_m: 'SIMULATED', flow_rate_m3_s: 'SIMULATED'
+  },
+  weather: { provider: 'open-meteo', observed_at: '2026-10-15T18:00:00Z', cache_age_seconds: 30 },
+  thresholds: THRESHOLDS,
+  latest: {
+    simulated: false,
+    data_classification: 'mixed',
+    metric_sources: {
+      rainfall_mm_per_hr: 'REAL', drain_level_m: 'SIMULATED', soil_saturation_pct: 'MODEL_DERIVED',
+      water_level_m: 'SIMULATED', flow_rate_m3_s: 'SIMULATED'
+    },
+    readings: { rainfall_mm_per_hr: 12.5, drain_level_m: 1.19, soil_saturation_pct: 48, water_level_m: 1.49, flow_rate_m3_s: 3.6 },
+    risk_score: 0.41, risk_class: 'WATCH', risk_class_candidate: 'WATCH',
+    top_drivers: ['soil_saturation_pct'], explanation: 'live', age_seconds: 12, sequence: 7, trend: {}
+  }
+};
+
+check('a demo zone is labelled simulated, a live zone is not', () => {
+  assert.equal(FP.metricSource(DEMO_ZONE, 'rainfall_mm_per_hr'), 'SIMULATED');
+  assert.equal(FP.metricSource(LIVE_ZONE, 'rainfall_mm_per_hr'), 'REAL');
+  assert.equal(FP.modeMeta(DEMO_ZONE.zone_mode).label, 'SIMULATED');
+  assert.equal(FP.modeMeta(LIVE_ZONE.zone_mode).label, 'LIVE WEATHER');
+});
+
+check('an unknown or missing tag is never upgraded to REAL', () => {
+  const bare = { zone_id: 'x', name: 'X' };
+  assert.equal(FP.metricSource(bare, 'rainfall_mm_per_hr'), null);
+  assert.equal(FP.sourceMeta(undefined).key, 'unknown');
+  assert.equal(FP.sourceMeta('MADE_UP').key, 'unknown');
+  assert.match(FP.sourceChip(null), /src-unknown/);
+  assert.equal(FP.modeMeta(undefined).key, 'unknown');
+});
+
+check('the zone card renders a mode badge and one chip per provenance class', () => {
+  const live = FP.renderZoneCard(LIVE_ZONE);
+  assert.match(live, /mode-live/);
+  assert.match(live, /LIVE WEATHER/);
+  assert.match(live, /src-real/);
+  assert.match(live, /src-model/);
+  assert.match(live, /src-simulated/);
+  assert.match(live, /data-f="source-set"/);
+
+  const demo = FP.renderZoneCard(DEMO_ZONE);
+  assert.match(demo, /mode-simulated/);
+  assert.match(demo, /src-simulated/);
+  assert.ok(!demo.includes('src-real'), 'a simulated zone must not show a REAL chip');
+});
+
+check('every metric row carries its own provenance chip', () => {
+  const rows = FP.METRIC_ORDER.map((metric) => FP.renderMetricRow(LIVE_ZONE, metric));
+  assert.equal(rows.length, 5);
+  rows.forEach((row) => assert.match(row, /data-f="metric-source"/));
+  assert.match(rows[0], /src-real/);          // rainfall
+  assert.match(rows[2], /src-model/);         // soil saturation
+  assert.match(rows[1], /src-simulated/);     // drain level
+  const demoRows = FP.METRIC_ORDER.map((metric) => FP.renderMetricRow(DEMO_ZONE, metric));
+  demoRows.forEach((row) => assert.match(row, /src-simulated/));
+});
+
+check('the ranking names the mode of every zone', () => {
+  const html = FP.renderRanking([DEMO_ZONE, LIVE_ZONE]);
+  assert.match(html, /rank-mode/);
+  assert.match(html, /LIVE WEATHER/);
+  assert.match(html, /SIMULATED/);
+});
+
+check('the banner text follows the payload in both modes', () => {
+  const demoNotice = FP.dataNotice({ zone_mode: 'simulated', notes: ['All FloodPulse sensor data is SIMULATED.'] });
+  assert.match(demoNotice, /^SIMULATED DATA/);
+  const liveNotice = FP.dataNotice({
+    zone_mode: 'live_weather',
+    notes: ['Rainfall intensity and soil saturation in these zones come from the external Open-Meteo weather service;'],
+    weather: { enabled: true, attribution: 'Weather data by Open-Meteo.com (CC BY 4.0)' }
+  });
+  assert.match(liveNotice, /^LIVE WEATHER \+ SIMULATED HYDRAULICS/);
+  assert.match(liveNotice, /Open-Meteo/);
+  assert.ok(!/^SIMULATED DATA/.test(liveNotice));
+  const unknownNotice = FP.dataNotice({});
+  assert.match(unknownNotice, /SIMULATED DATA/);
+});
+
+check('the weather summary explains the refresh cadence and any provider problem', () => {
+  const off = FP.weatherSummary({ weather: { enabled: false } });
+  assert.match(off, /off/);
+  assert.match(off, /every metric is simulated/);
+  // ...but a live fleet with the provider switched off still shows real, already-fetched
+  // values, so the text must not call them simulated
+  const offLive = FP.weatherSummary({ zone_mode: 'live_weather', data_classification: 'mixed', weather: { enabled: false } });
+  assert.match(offLive, /off/);
+  assert.match(offLive, /last fetched values/);
+  assert.ok(!/every metric is simulated/.test(offLive),
+    'a live fleet must never be described as fully simulated');
+  const fresh = FP.weatherSummary({
+    weather: {
+      enabled: true, provider: 'open-meteo', refresh_seconds: 600,
+      last_refresh: { attempted: true, refreshed: ['city-chennai'], error: 'http_503' }
+    }
+  });
+  assert.match(fresh, /open-meteo/);
+  assert.match(fresh, /10 min/);
+  assert.match(fresh, /http_503/);
+  const cached = FP.weatherSummary({
+    weather: { enabled: true, provider: 'open-meteo', refresh_seconds: 600, last_refresh: { attempted: false, reason: 'cache_fresh' } }
+  });
+  assert.match(cached, /cached/);
+  // a recorded failed attempt must stay visible on the polls that (correctly) do not retry
+  const outage = FP.weatherSummary({
+    weather: {
+      enabled: true, provider: 'open-meteo', refresh_seconds: 600,
+      last_refresh: { attempted: false, reason: 'cache_fresh' },
+      last_attempt_error: { 'city-chennai': 'http_503', 'city-mumbai': 'http_503' },
+      cache_age_seconds: { 'city-chennai': 700, 'city-mumbai': 700 }
+    }
+  });
+  assert.match(outage, /cached/);
+  assert.match(outage, /fetch failing on 2 zone/);
+  assert.match(outage, /http_503/);
+});
+
+check('a zone card states how old the external feed is, and when fetching failed', () => {
+  const fresh = FP.zoneProvenance(LIVE_ZONE);
+  assert.match(fresh, /LIVE WEATHER/);
+  assert.match(fresh, /feed just fetched/);
+  const older = FP.zoneProvenance(Object.assign({}, LIVE_ZONE, {
+    weather: { provider: 'open-meteo', cache_age_seconds: 780 }
+  }));
+  assert.match(older, /feed 13 min old/);
+  const failedZone = Object.assign({}, LIVE_ZONE, {
+    weather: { provider: 'open-meteo', cache_age_seconds: 780, last_attempt_error: 'network_error: dns' }
+  });
+  const failed = FP.zoneProvenance(failedZone);
+  assert.match(failed, /fetch failed/);
+  assert.match(failed, /network_error: dns/);
+  assert.equal(FP.zoneProvenance(DEMO_ZONE), FP.modeBadge(DEMO_ZONE),
+    'a demo zone has no external feed to report');
+  assert.match(FP.renderZoneCard(failedZone), /data-f="feed-note"/);
+  assert.match(FP.renderZoneCard(LIVE_ZONE), /data-f="feed-note"/);
+});
+
 /* -------------------------------------------------------------- incidents --- */
 
 group('Incident log rendering');
@@ -601,10 +774,22 @@ check('site contains no credentials, keys or tokens', () => {
   }
 });
 
-check('index.html keeps the permanent simulated-data notice', () => {
-  assert.match(htmlSource, /SIMULATED DATA/);
+check('index.html keeps a permanent, mode-driven data-provenance notice', () => {
+  // M4: the fleet can be simulated or live-weather, so the invariant is no longer the
+  // string "SIMULATED DATA" but a permanent banner that the script fills from the
+  // payload, plus a legend that explains every provenance tag the API can report.
+  assert.match(htmlSource, /id="data-banner"/);
+  assert.match(htmlSource, /id="banner-title"/);
+  assert.match(htmlSource, /id="banner-detail"/);
+  for (const tag of ['src-real', 'src-model', 'src-simulated']) {
+    assert.ok(htmlSource.includes(tag), `index.html must explain the ${tag} provenance tag`);
+  }
   assert.match(htmlSource, /heuristic/);
-  assert.match(htmlSource, /not a validated\s+hydrological model/);
+  assert.match(htmlSource, /shared secret/);
+  // and the banner text itself must come from the payload, not from a constant
+  assert.match(appSource, /FP\.dataNotice\(payload\)/);
+  assert.ok(!/banner-title'\]\.textContent = 'SIMULATED DATA';/.test(appSource),
+    'the banner title must be chosen per mode, not hardcoded');
 });
 
 check('every element id app.js uses exists in index.html', () => {
@@ -618,7 +803,8 @@ check('every element id app.js uses exists in index.html', () => {
     'conn-badge', 'conn-detail', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
     'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
     'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
-    'incidents', 'incidents-meta', 'incidents-alerting'
+    'incidents', 'incidents-meta', 'incidents-alerting',
+    'data-banner', 'banner-title', 'banner-detail', 'summary-mode', 'summary-weather', 'attribution'
   ];
   const missing = idsToCheck.filter((id) => !declared.has(id));
   assert.deepEqual(missing, [], `index.html is missing ids used by app.js: ${missing.join(', ')}`);

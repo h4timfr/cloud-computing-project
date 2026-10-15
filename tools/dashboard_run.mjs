@@ -343,6 +343,52 @@ async function main() {
     assert.ok(hero && /hero-name|Awaiting live data/.test(hero.innerHTML), 'hero panel was not rendered');
   });
 
+  check('the provenance banner and chips match the payload mode', () => {
+    // DOM-level proof that the page states what is real and what is not, for whichever
+    // mode the API is serving. A legacy payload that reports no zone_mode must degrade
+    // to "unknown" -- never to a REAL claim.
+    const liveMode = payload.zone_mode === 'live_weather';
+    const bannerTitle = nodes.get('banner-title');
+    const bannerDetail = nodes.get('banner-detail');
+    assert.ok(bannerTitle, 'no banner title element');
+    assert.ok(bannerDetail, 'no banner detail element');
+    assert.ok(bannerTitle.textContent && bannerTitle.textContent !== '', 'banner title is empty');
+    assert.ok(bannerDetail.textContent && bannerDetail.textContent !== '', 'banner detail is empty');
+
+    if (liveMode) {
+      assert.match(bannerTitle.textContent, /LIVE WEATHER/);
+      assert.match(bannerDetail.textContent, /Open-Meteo/);
+    } else {
+      assert.match(bannerTitle.textContent, /SIMULATED/);
+      assert.match(bannerDetail.textContent, /SIMULATED/);
+    }
+
+    const zonesHtml = nodes.get('zones') ? nodes.get('zones').innerHTML : '';
+    assert.ok(/mode-badge/.test(zonesHtml), 'zone cards carry no mode badge');
+    assert.ok(/src-chip/.test(zonesHtml), 'zone cards carry no provenance chips');
+
+    const claimsReal = /src-real/.test(zonesHtml);
+    const payloadSaysReal = payload.zones.some((zone) => {
+      const sources = (zone.latest && zone.latest.metric_sources) || zone.metric_sources || {};
+      return Object.values(sources).indexOf('REAL') >= 0;
+    });
+    assert.equal(claimsReal, payloadSaysReal,
+      claimsReal ? 'the page claims REAL data the payload never reported'
+        : 'the payload reported REAL data the page did not show');
+
+    if (liveMode) {
+      assert.match(zonesHtml, /src-model/);
+    } else if (payload.zone_mode === 'simulated') {
+      assert.match(zonesHtml, /src-simulated/);
+    } else {
+      assert.match(zonesHtml, /src-unknown/, 'a payload without provenance must render unknown chips');
+    }
+
+    const summaryMode = nodes.get('summary-mode');
+    assert.ok(summaryMode && summaryMode.textContent && summaryMode.textContent !== '–',
+      'the fleet summary does not report the mode');
+  });
+
   group('Staying LIVE while fresh data keeps arriving');
   let polls = 0;
   for (let tick = 1; tick <= 3 && polls < 2; tick += 1) {

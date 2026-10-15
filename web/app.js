@@ -59,7 +59,8 @@
       'conn-badge', 'conn-detail', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
       'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
       'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
-      'incidents', 'incidents-meta', 'incidents-alerting'
+      'incidents', 'incidents-meta', 'incidents-alerting',
+      'data-banner', 'banner-title', 'banner-detail', 'summary-mode', 'summary-weather', 'attribution'
     ].forEach(function (id) { el[id] = $(id); });
   }
 
@@ -161,15 +162,38 @@
 
   function renderSummary(payload) {
     var live = FP.liveCount(state.zones);
+    var mode = FP.modeMeta(payload.zone_mode);
     el['summary-live'].textContent = live + ' / ' + (payload.zone_count || state.zones.length) + ' zones live';
     el['summary-model'].textContent = payload.model || 'heuristic-v1';
     el['summary-generated'].textContent = FP.clockLabel(payload.generated_at);
-    if (el['notice-text'] && payload.model_note) {
-      el['notice-text'].textContent = payload.model_note;
+    if (el['summary-mode']) {
+      el['summary-mode'].textContent = mode.label + (payload.data_classification ? ' · ' + payload.data_classification : '');
+      el['summary-mode'].title = mode.title;
     }
+    if (el['summary-weather']) {
+      var weatherText = FP.weatherSummary(payload);
+      if (el['summary-weather'].textContent !== weatherText) el['summary-weather'].textContent = weatherText;
+    }
+    renderDataNotice(payload);
     if (el['api-base']) {
       el['api-base'].textContent = API_BASE;
       el['api-base'].setAttribute('href', API_BASE + '/zones');
+    }
+  }
+
+  // The banner is driven by the payload so the page stays honest in both modes: demo
+  // payloads say everything is simulated, live payloads name what is real.
+  function renderDataNotice(payload) {
+    if (!el['data-banner']) return;
+    var liveMode = payload.zone_mode === 'live_weather';
+    el['data-banner'].classList.toggle('is-live-data', liveMode);
+    el['banner-title'].textContent = liveMode ? 'LIVE WEATHER + SIMULATED HYDRAULICS' : 'SIMULATED DATA';
+    el['banner-detail'].textContent = FP.dataNotice(payload);
+    if (el['attribution']) {
+      var weather = payload.weather || {};
+      el['attribution'].textContent = weather.attribution
+        ? weather.attribution + (weather.docs ? ' — ' + weather.docs : '')
+        : '';
     }
   }
 
@@ -264,6 +288,26 @@
     };
 
     setBorderBand(card, latest ? latest.risk_class : null);
+
+    // Provenance follows the payload: switch to the live-weather labels the moment the
+    // API reports them, without rebuilding the card.
+    var provenance = card.querySelector('[data-f="provenance"]');
+    if (provenance) {
+      var badge = FP.zoneProvenance(zone);
+      if (provenance.innerHTML !== badge) provenance.innerHTML = badge;
+    }
+    var sourceSet = card.querySelector('[data-f="source-set"]');
+    if (sourceSet) {
+      var chips = FP.sourceSummary(zone);
+      if (sourceSet.innerHTML !== chips) sourceSet.innerHTML = chips;
+    }
+    FP.METRIC_ORDER.forEach(function (metric) {
+      var row = card.querySelector('[data-metric="' + metric + '"]');
+      if (!row) return;
+      var nameNode = row.querySelector('[data-f="metric-source"]');
+      var chip = FP.sourceChip(FP.metricSource(zone, metric));
+      if (nameNode && nameNode.innerHTML !== chip) nameNode.innerHTML = chip;
+    });
 
     if (!latest) {
       setText('risk_class', FP.classLabel(null));
