@@ -405,6 +405,55 @@ async function main() {
     for (const zone of payload.zones) assert.ok(html.includes(zone.name), `ranking lost ${zone.name}`);
   });
 
+  /* The board has to say what moved between polls, so drive a real change through the real app:
+   * the stub serves the same objects, so mutating the payload between polls is exactly what a
+   * changed API response looks like to this code. A stage fixture may already sit at the top
+   * band, in which case the movement to check is the other direction. */
+  const note = nodes.get('change-note');
+  const ladder = ['NORMAL', 'WATCH', 'WARNING', 'CRITICAL'];
+  const rankOf = (value) => ladder.indexOf(String(value === null || value === undefined ? '' : value).toUpperCase());
+  const movable = payload.zones.find((zone) => zone.latest && rankOf(zone.latest.risk_class) >= 0
+    && rankOf(zone.latest.risk_class) < ladder.length - 1);
+  const mover = movable || payload.zones.find((zone) => zone.latest && rankOf(zone.latest.risk_class) > 0);
+  const originalClass = mover ? mover.latest.risk_class : null;
+  const movingUp = Boolean(movable);
+  const nextClass = movingUp
+    ? ladder[rankOf(originalClass) + 1]
+    : ladder[rankOf(originalClass) - 1];
+
+  group('Saying what changed between polls');
+  check('a quiet poll shows no change note', () => {
+    assert.ok(note, 'index.html has no change-note element');
+    assert.equal(note.textContent, '', `the note claims "${note.textContent}" with nothing changed`);
+    assert.equal(note.hidden, true, 'the empty note is still visible');
+  });
+
+  mover.latest.risk_class = nextClass;
+  mover.latest.risk_score = Math.max(Number(mover.latest.risk_score) || 0, 0.9);
+  fakeNow += 5000;
+  const moved = await drivePoll();
+
+  check('a change between two polls is named on the page', () => {
+    assert.ok(moved, 'the poll after the change never ran');
+    const verb = movingUp ? 'escalated' : 'eased';
+    assert.match(note.textContent, new RegExp(`^${mover.name} ${verb} .+ → ${nextClass}$`),
+      `the note reads "${note.textContent}" instead of naming the move`);
+    assert.equal(note.hidden, false, 'the note stayed hidden while the fleet moved');
+    const expectedTone = movingUp ? nextClass : 'NORMAL';
+    assert.equal(note.className, 'change-note band-' + expectedTone.toLowerCase(),
+      `the note reads "${note.textContent}" but is styled "${note.className}"`);
+  });
+
+  fakeNow += 5000;
+  const settled = await drivePoll();
+  check('the change is stated once, not repeated forever', () => {
+    assert.ok(settled, 'the follow-up poll never ran');
+    assert.equal(note.textContent, '', `the note still claims "${note.textContent}"`);
+    assert.equal(note.hidden, true, 'the stale note is still on screen');
+  });
+
+  mover.latest.risk_class = originalClass;  // leave the fixture as the file describes it
+
   console.log(`\n${passed} runtime checks passed, ${failures.length} failed`);
   if (failures.length) {
     for (const failure of failures) console.log(`  - ${failure.name}: ${failure.message}`);

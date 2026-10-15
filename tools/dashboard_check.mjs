@@ -1008,6 +1008,96 @@ if (payloadPath) {
   });
 }
 
+group('What changed since the last poll');
+
+function fleetZone(id, name, riskClass) {
+  return { zone_id: id, name, latest: riskClass ? { risk_class: riskClass, risk_score: 0.5 } : null };
+}
+
+check('an escalation is named, with the move it made', () => {
+  const before = FP.fleetClasses({ zones: [fleetZone('a', 'Chennai', 'NORMAL')] });
+  const change = FP.fleetChange(before, { zones: [fleetZone('a', 'Chennai', 'WARNING')] });
+  assert.equal(change.escalated.length, 1);
+  assert.equal(change.text, 'Chennai escalated NORMAL → WARNING');
+  assert.equal(change.tone, 'band-warning', 'the note must take the colour of the band reached');
+});
+
+check('the highest escalation sets the tone and the wording', () => {
+  const before = FP.fleetClasses({
+    zones: [fleetZone('a', 'Chennai', 'NORMAL'), fleetZone('b', 'Mumbai', 'WATCH'), fleetZone('c', 'Kochi', 'NORMAL')]
+  });
+  const change = FP.fleetChange(before, {
+    zones: [fleetZone('a', 'Chennai', 'WATCH'), fleetZone('b', 'Mumbai', 'CRITICAL'), fleetZone('c', 'Kochi', 'NORMAL')]
+  });
+  assert.equal(change.escalated.length, 2);
+  assert.equal(change.eased.length, 0);
+  assert.equal(change.tone, 'band-critical');
+  assert.match(change.text, /^2 zones escalated, highest CRITICAL$/);
+});
+
+check('an unchanged fleet says nothing at all', () => {
+  const zones = [fleetZone('a', 'Chennai', 'WATCH'), fleetZone('b', 'Mumbai', 'NORMAL')];
+  const change = FP.fleetChange(FP.fleetClasses({ zones }), { zones });
+  // lengths, not deepEqual: the VM hands back arrays from another realm
+  assert.equal(change.escalated.length + change.eased.length + change.started.length + change.stopped.length, 0);
+  assert.equal(change.text, '', 'a quiet poll must not manufacture a headline');
+  assert.equal(change.tone, '');
+});
+
+check('a first reading is not an escalation, and a lost reading is not silence', () => {
+  const zones = (mumbai) => ({
+    zones: [fleetZone('a', 'Chennai', 'NORMAL'), fleetZone('b', 'Mumbai', mumbai)]
+  });
+  const withoutReading = FP.fleetClasses(zones(null));
+  const withReading = FP.fleetClasses(zones('WATCH'));
+
+  const started = FP.fleetChange(withoutReading, zones('WATCH'));
+  assert.equal(started.escalated.length, 0, 'a zone reporting for the first time has not escalated');
+  assert.equal(started.text, 'Mumbai started reporting at WATCH');
+
+  const lost = FP.fleetChange(withReading, zones(null));
+  assert.equal(lost.text, 'Mumbai stopped reporting');
+  assert.equal(lost.tone, 'band-watch', 'a gap in coverage is a warning, not a neutral note');
+
+  const unknown = FP.fleetChange(
+    FP.fleetClasses({ zones: [fleetZone('a', 'Chennai', 'NORMAL')] }),
+    { zones: [fleetZone('a', 'Chennai', 'FLOODING')] }
+  );
+  assert.equal(unknown.text, 'Chennai stopped reporting', 'an unrecognised class is no reading at all');
+});
+
+check('an easing is reported as calmly as an escalation is loudly', () => {
+  const before = FP.fleetClasses({ zones: [fleetZone('a', 'Chennai', 'CRITICAL')] });
+  const change = FP.fleetChange(before, { zones: [fleetZone('a', 'Chennai', 'WATCH')] });
+  assert.equal(change.escalated.length, 0);
+  assert.equal(change.text, 'Chennai eased CRITICAL → WATCH');
+  assert.equal(change.tone, 'band-normal');
+});
+
+check('nothing is claimed without a baseline to compare against', () => {
+  const change = FP.fleetChange(null, { zones: [fleetZone('a', 'Chennai', 'CRITICAL')] });
+  assert.equal(change.text, '', 'the first poll has nothing to compare with');
+  // a zone that appears without ever having been seen before is not a change
+  const fresh = FP.fleetChange(FP.fleetClasses({ zones: [fleetZone('a', 'Chennai', 'NORMAL')] }), {
+    zones: [fleetZone('a', 'Chennai', 'NORMAL'), fleetZone('z', 'Delhi', 'CRITICAL')]
+  });
+  assert.equal(fresh.text, '', 'a zone joining the fleet is not an escalation');
+});
+
+check('the browser half of the feature is wired up', () => {
+  assert.match(htmlSource, /id="change-note"/, 'index.html has no change note');
+  assert.match(htmlSource, /id="change-note"[^>]*role="status"/, 'the change note is not announced');
+  assert.match(appSource, /renderChangeNote\(payload\)/, 'the change note is never rendered');
+  assert.match(appSource, /FP\.fleetChange\(state\.previousClasses, payload\)/, 'the note is not computed from the previous poll');
+  assert.match(appSource, /state\.previousClasses = FP\.fleetClasses\(payload\)/, 'the baseline is never advanced');
+  assert.match(cssSource, /\.change-note\s*\{/, 'the change note is unstyled');
+  assert.match(cssSource, /\.change-note\[hidden\]\s*\{\s*display:\s*none/, 'the empty note is not hidden');
+  ['critical', 'warning', 'watch', 'normal'].forEach((band) => {
+    assert.match(cssSource, new RegExp(`\\.change-note\\.band-${band}\\s*\\{[^}]*var\\(--band-${band}-text\\)`),
+      `the ${band} tone does not use the ${band} text token`);
+  });
+});
+
 /* ------------------------------------------------------- design contract --- */
 
 group('Design system');

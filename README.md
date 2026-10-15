@@ -466,7 +466,8 @@ footer and in this document.
 | Degradation is bounded, not a retry storm | unit test drives **119 polls inside one window against a failing provider and asserts exactly 1 provider call**; live-shaped endpoint test asserts each poll after that reports `cache_fresh` with the recorded `last_attempt_error` |
 | `FLOODPULSE_WEATHER=off` kill switch | live check: `weather.enabled: false`, `last_refresh.attempted: false`, `reason: "disabled"`, no provider call, and the five zones **still serve their last real readings** (`status: live`) |
 | Refresh is traceable in CloudWatch | one structured line per attempt, verified live: `weather refresh outcome: {"attempted": true, "event": "weather_refresh", "failed": [], "mode": "live_weather", "refreshed": [five zone ids], …}` — no secret, no credentials |
-| Deployed dashboard vs live API | `node tools/dashboard_run.mjs --site <s3 website> --api <endpoint>` → **8/8**, badge `LIVE`, ranking ordered, provenance chips + banner + feed note match the live payload, no panel error |
+| Deployed dashboard vs live API | `node tools/dashboard_run.mjs --site <s3 website> --api <endpoint>` → **11/11**, badge `LIVE`, ranking ordered, a change between two polls named on the page, provenance chips + banner + feed note match the live payload, no panel error |
+| Deployed pages carry their contracts | `python build/verify_deployed_page.py` → **all hold** (live regions, change note, labelled chart, no-script fallback, hidden decoration, attribution) |
 | Deployed assets match the repo | `index.html`, `styles.css`, `lib.js`, `app.js` served from S3 are **byte-identical** (sha256) to `web/` |
 | Existing routes preserved | `GET /zones/city-chennai/history?minutes=60` **200** (points accumulate at one per 10 min), `GET /incidents?limit=20` **200**, alerting block unchanged, no ARN, key or provider URL in any body |
 | Demo fleet still isolated | `GET /zones/zone-riverside-north/history` in live mode → **404** `unknown_zone` + the live zone list |
@@ -530,6 +531,14 @@ created. What changed is the dashboard, the verification tooling and the honesty
 * **History that explains itself** — the tooltip names the five channels it has values for, or says
   plainly that no sensor readings are stored for that point; the chart reports when the API
   downsampled the window.
+* **What moved since the last poll** — the board compares the effective class of every zone with the
+  previous successful poll and says so in one line under the distribution ("Chennai escalated WATCH →
+  WARNING", "2 zones escalated, highest CRITICAL", "Mumbai stopped reporting", "Kochi started
+  reporting at WATCH"). It is stated once and then cleared, so a single escalation cannot keep
+  claiming attention; a zone that had no reading and now has one has *started reporting*, not
+  escalated; and a zone that loses its reading is a WATCH-toned gap, because silence is not safety.
+  `FP.fleetChange` is a pure function with seven checks of its own, plus three that drive it through
+  the running app.
 * **State that is announced, not only coloured** — the connection badge is a polite live region, the
   zone grid and incident list are `aria-live`, the chart is exposed as a labelled image, decorative
   layers are `aria-hidden`, every control is a real `<button>`, and the stylesheet is checked for a
@@ -583,8 +592,8 @@ now sleeps only the remainder of the cadence and reports the drift, so a demo be
 | Check | Result |
 |---|---|
 | `python -m unittest discover -s tests -t .` | **363 tests, OK** (1.7 s, no AWS, no network) |
-| `node tools/dashboard_check.mjs` (demo, live, all six story stages) | **57 checks, 0 failed** |
-| `node tools/dashboard_run.mjs` (real `lib.js` + `app.js` in a fake DOM) | **8 checks, 0 failed** |
+| `node tools/dashboard_check.mjs` (demo, live, all six story stages) | **64 checks, 0 failed** (58 without payload fixtures) |
+| `node tools/dashboard_run.mjs` (real `lib.js` + `app.js` in a fake DOM) | **11 checks, 0 failed** |
 | `node tools/dashboard_scenarios.mjs` (33 failure/edge scenarios) | **33 checks, 0 failed** |
 | `node tools/story_check.mjs` (demo arc end to end) | **29 checks, 0 failed** |
 | `python build/live_acceptance_hardening.py` (deployed API, read-only) | **35 checks, 0 failed** |

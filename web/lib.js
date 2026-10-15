@@ -143,6 +143,78 @@
     return scored + ' of ' + total + ' ' + zoneNounPlural(payload) + ' scored in this snapshot';
   }
 
+  /* ------------------------------------------------- what changed since --- */
+
+  /* A snapshot of the effective (post-hysteresis) class per zone - the input to fleetChange. */
+  function fleetClasses(payload) {
+    var classes = {};
+    ((payload && payload.zones) || []).forEach(function (zone) {
+      if (!zone || !zone.zone_id) return;
+      classes[String(zone.zone_id)] = classLabel(zone.latest && zone.latest.risk_class);
+    });
+    return classes;
+  }
+
+  function changePhrase(rows, verb) {
+    if (rows.length === 1) return rows[0].name + ' ' + verb;
+    return rows.length + ' zones ' + verb;
+  }
+
+  /* What moved between two polls, in words.
+   *
+   * A board that shows only the current state asks the operator to compare snapshots in their
+   * head, which is exactly the work an early-warning display should do for them. Only real
+   * movements in the band ladder are reported: a zone that had no reading and now has one has
+   * "started reporting" - it has not "escalated". A zone that lost its reading is a data gap
+   * and is reported with a WATCH tone, because silence is not safety. */
+  function fleetChange(beforeClasses, payload) {
+    var change = { escalated: [], eased: [], started: [], stopped: [], tone: '', text: '' };
+    if (!beforeClasses || !payload || !payload.zones) return change;
+    payload.zones.forEach(function (zone) {
+      if (!zone || !zone.zone_id) return;
+      var id = String(zone.zone_id);
+      if (!Object.prototype.hasOwnProperty.call(beforeClasses, id)) return;  // new zone: no comparison
+      var name = String(zone.name || id);
+      var was = classRank(beforeClasses[id]);
+      var now = classRank(zone.latest && zone.latest.risk_class);
+      if (was < 0 && now < 0) return;
+      if (was < 0) {
+        change.started.push({ zone_id: id, name: name, to: classLabel(zone.latest.risk_class) });
+      } else if (now < 0) {
+        change.stopped.push({ zone_id: id, name: name, from: classLabel(beforeClasses[id]) });
+      } else if (now > was) {
+        change.escalated.push({ zone_id: id, name: name, from: classLabel(beforeClasses[id]), to: classLabel(zone.latest.risk_class) });
+      } else if (now < was) {
+        change.eased.push({ zone_id: id, name: name, from: classLabel(beforeClasses[id]), to: classLabel(zone.latest.risk_class) });
+      }
+    });
+
+    var worst = change.escalated.slice().sort(function (a, b) { return classRank(b.to) - classRank(a.to); })[0];
+    if (change.escalated.length === 1) {
+      change.tone = 'band-' + worst.to.toLowerCase();
+      change.text = worst.name + ' escalated ' + worst.from + ' → ' + worst.to;
+    } else if (change.escalated.length > 1) {
+      change.tone = 'band-' + worst.to.toLowerCase();
+      change.text = change.escalated.length + ' zones escalated, highest ' + worst.to;
+    } else if (change.stopped.length) {
+      change.tone = 'band-watch';
+      change.text = changePhrase(change.stopped, 'stopped reporting');
+    } else if (change.started.length === 1) {
+      change.tone = 'band-normal';
+      change.text = change.started[0].name + ' started reporting at ' + change.started[0].to;
+    } else if (change.started.length) {
+      change.tone = 'band-normal';
+      change.text = changePhrase(change.started, 'started reporting');
+    } else if (change.eased.length === 1) {
+      change.tone = 'band-normal';
+      change.text = change.eased[0].name + ' eased ' + change.eased[0].from + ' → ' + change.eased[0].to;
+    } else if (change.eased.length) {
+      change.tone = 'band-normal';
+      change.text = changePhrase(change.eased, 'eased');
+    }
+    return change;
+  }
+
   /* ----------------------------------------------------------- formatting --- */
 
   function formatScore(value) {
@@ -946,6 +1018,8 @@
     bandCounts: bandCounts,
     renderBandStrip: renderBandStrip,
     bandStripLabel: bandStripLabel,
+    fleetClasses: fleetClasses,
+    fleetChange: fleetChange,
     providerLabel: providerLabel,
     weatherEvidence: weatherEvidence,
     zoneProvenance: zoneProvenance,

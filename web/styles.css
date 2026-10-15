@@ -412,6 +412,26 @@ main {
   letter-spacing: 0.06em;
   color: var(--slate-400);
 }
+/* What moved since the previous poll. It occupies its own line under the tiles, so a long
+ * sentence can never squeeze the distribution it describes. */
+.change-note {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: rgba(9, 24, 51, 0.72);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--slate-200);
+  width: fit-content;
+}
+.change-note[hidden] { display: none; }
+.change-note.band-critical { color: var(--band-critical-text); }
+.change-note.band-warning { color: var(--band-warning-text); }
+.change-note.band-watch { color: var(--band-watch-text); }
+.change-note.band-normal { color: var(--band-normal-text); }
 
 /* ------------------------------------------------------------------ hero row --- */
 

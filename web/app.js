@@ -39,7 +39,10 @@
     zones: [],
     lastSuccessMs: null,
     lastError: false,
+    lastErrorMessage: null,
     payload: null,
+    // class per zone at the previous successful poll, so the board can say what moved
+    previousClasses: null,
     series: {},
     history: null,
     selectedZone: null,
@@ -88,7 +91,8 @@
       'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
       'incidents', 'incidents-meta', 'incidents-alerting',
       'data-banner', 'banner-title', 'banner-detail', 'summary-mode', 'summary-weather', 'attribution',
-      'brand-subtitle', 'summary-freshness', 'footer-disclaimer', 'ranking-title', 'zones-title'
+      'brand-subtitle', 'summary-freshness', 'footer-disclaimer', 'ranking-title', 'zones-title',
+      'change-note'
     ].forEach(function (id) { el[id] = $(id); });
   }
 
@@ -156,6 +160,7 @@
     renderSummary(payload);
     renderTitles(payload);
     renderBandStrip(payload);
+    renderChangeNote(payload);
     renderHero(payload);
     renderCards(state.zones);
     renderRanking(state.zones);
@@ -195,6 +200,20 @@
       el['band-strip'].setAttribute('data-rendered', html);
     }
     setText('band-strip-label', FP.bandStripLabel(payload));
+  }
+
+  /* What changed since the last poll. The comparison is against the previous *successful*
+   * snapshot and is then forgotten, so a single escalation is stated once and does not keep
+   * claiming attention on every subsequent poll. */
+  function renderChangeNote(payload) {
+    var note = el['change-note'];
+    var change = FP.fleetChange(state.previousClasses, payload);
+    state.previousClasses = FP.fleetClasses(payload);
+    if (!note) return;
+    var classes = 'change-note' + (change.tone ? ' ' + change.tone : '');
+    note.className = classes;
+    note.textContent = change.text;
+    note.hidden = !change.text;
   }
 
   function findZone(zoneId) {
