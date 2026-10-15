@@ -369,6 +369,16 @@
     ctx.stroke();
   }
 
+  /* ---------------------------------------------------------------- ranking --- */
+
+  function renderRanking(zones) {
+    if (!el.ranking) return;
+    var html = (zones && zones.length)
+      ? FP.renderRanking(zones)
+      : '<li class="muted">waiting for data…</li>';
+    if (el.ranking.innerHTML !== html) el.ranking.innerHTML = html;
+  }
+
   /* ---------------------------------------------------------------- history --- */
 
   function loadHistory() {

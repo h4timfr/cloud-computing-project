@@ -650,6 +650,45 @@ check('app.js field selectors exist in lib.js markup', () => {
   assert.ok(fieldsWritten.size >= fieldsRead.size);
 });
 
+check('every function app.js calls is either local or provided by lib.js', () => {
+  // Regression guard: app.js once called renderRanking() while the implementation only
+  // existed as FP.renderRanking, so the panel threw and the whole page went STALE.
+  // Strip strings and comments first so prose like "boundaries (" is not mistaken for a call.
+  const codeOnly = (source) => source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1 ')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""');
+
+  const defined = new Set();
+  for (const match of appSource.matchAll(/(?:function|var)\s+([A-Za-z_$][\w$]*)\s*(?:\(|=)/g)) {
+    defined.add(match[1]);
+  }
+  const exported = new Set();
+  for (const match of libSource.matchAll(/^\s*([A-Za-z_$][\w$]*):\s*[A-Za-z_$][\w$]*,?\s*$/gm)) {
+    exported.add(match[1]);
+  }
+  const globals = new Set([
+    'fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame',
+    'URLSearchParams', 'AbortController', 'Date', 'Math', 'JSON', 'parseInt', 'parseFloat', 'isFinite',
+    'String', 'Number', 'Array', 'Object', 'Boolean', 'Error', 'Promise', 'encodeURIComponent',
+    'getComputedStyle', 'matchMedia', 'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof',
+    'function', 'new'
+  ]);
+
+  const code = codeOnly(appSource);
+  const called = new Set();
+  for (const match of code.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g)) called.add(match[1]);
+  const unresolved = [...called]
+    .filter((name) => !defined.has(name) && !globals.has(name))
+    .sort();
+
+  assert.deepEqual(unresolved, [],
+    `app.js calls functions that are neither defined in app.js nor namespaced via FP.: ${unresolved.join(', ')}`);
+  assert.ok(defined.size >= 20, `expected app.js to define its own helpers, found ${defined.size}`);
+  assert.ok(exported.has('renderRanking'), 'lib.js must keep exporting renderRanking');
+});
+
 check('local assets referenced by the page exist and the site stays small', () => {
   ['lib.js', 'app.js', 'styles.css'].forEach((file) => {
     assert.ok(fs.existsSync(path.join(webDir, file)), `${file} referenced by index.html is missing`);

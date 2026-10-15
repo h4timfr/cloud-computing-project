@@ -253,7 +253,7 @@ severity every 10 min"). No part of the storm-blue design was changed.
 |---|---|
 | Incident engine, storage, API route, notifier, dashboard panel | ✅ implemented and covered by unit tests |
 | Local test suite | ✅ **250 tests** pass (`python -m unittest discover -s tests -t .`) |
-| Dashboard harness | ✅ **35 checks** pass against the live payloads (`node tools/dashboard_check.mjs --payload build/zones-live.json --history build/history-live.json --incidents build/incidents-live.json`) |
+| Dashboard harness | ✅ **36 + 7 checks** pass against the live payloads (`tools/dashboard_check.mjs` for the sources, `tools/dashboard_run.mjs` for actually running them) |
 | SNS topic `floodpulse-alerts` | ✅ live in `eu-north-1`, `DisplayName = FloodPulse Alerts` |
 | `sns:Publish` for the Lambda role | ✅ inline `FloodPulseSnsPublish` attached by the project owner, scoped to that one topic ARN |
 | Lambda code, `GET /incidents` route, dashboard upload | ✅ deployed and verified live |
@@ -298,6 +298,22 @@ Not verifiable from here, and stated as such: the dashboard was never opened in 
 browser on this machine), so its rendering is verified by the node harness against the captured live
 payloads plus the live HTML/asset fetches above — not by looking at pixels. Email delivery is also
 unverified because the topic has no subscription.
+
+### Dashboard defect found in the browser and fixed: `renderRanking is not defined`
+
+| | |
+|---|---|
+| Symptom | The browser console reported `renderRanking is not defined`, the **Risk ranking** panel kept its static "waiting for data…" placeholder, and the page fell into the **STALE** state even though every other panel showed live data |
+| Root cause | `web/app.js` called its own `renderRanking(state.zones)` at the end of `applyPayload()`, but no such local function was ever defined — the implementation only exists in `web/lib.js` as `FP.renderRanking`. The `ReferenceError` was thrown inside the `/zones` promise chain, so the shared `.catch()` handler set `state.lastError` and repainted the badge as STALE; the panels rendered before that line (summary, hero, cards) were already filled, which is exactly the reported behaviour |
+| Introduced by | M2 (commit `2666bf7`), not M3 — `git show 2666bf7:web/app.js` has the same call and no definition; the M3 incident work did not touch it |
+| Why the checks missed it | `dashboard_check.mjs` verified element ids, `data-*` attributes and lib.js field selectors, but never that a function app.js *calls* is actually defined somewhere — a static check that only looks at markup cannot see this class of bug |
+| Fix | 9 lines in `web/app.js`: the missing local wrapper that writes `FP.renderRanking(zones)` into `#ranking`, keeping the existing placeholder when there are no zones. No backend, API, markup or style change; `lib.js` was already correct and needed no edit |
+| Guard | `tools/dashboard_check.mjs` now fails if app.js calls any function that is neither defined in app.js nor namespaced with `FP.`; `tools/dashboard_run.mjs` executes the real assets in a small fake DOM against a real payload and asserts the ranking renders every zone and the page stays LIVE across repeated polls. Verified as a negative control: the runner fails against the pre-fix `app.js` with the browser's exact message |
+| Verified after the fix | The single changed asset (`app.js`) was uploaded, the deployed file is byte-identical to the local one (25,891 bytes, new ETag), and the runner fetched **the deployed** `lib.js` + `app.js` from S3 and ran them against **live** API payloads: ranking rendered for all 3 zones (`Riverside North 1.00 CRITICAL`, `Old Town Canal 0.24 NORMAL`, `Harbor East 0.22 NORMAL`) and the badge stayed `LIVE` across three polls |
+
+Still stated honestly: this verification executes the deployed JavaScript in a VM with a stub DOM —
+it proves no runtime error, correct ranking markup and correct connection state, but it is not a
+substitute for a human opening the page in a real browser.
 
 ### M3 limitations (known, deliberate)
 
@@ -360,6 +376,7 @@ tools/
   live_simulator.py           drives the deployed API with simulated readings
   init_ingest_key.py          creates the local secret + Lambda env file (never prints it)
   dashboard_check.mjs         static checks on the dashboard sources (node, no browser)
+  dashboard_run.mjs           executes lib.js + app.js in a fake DOM against a real payload (node)
   make_background.py          generates web/bg-storm.webp + WCAG contrast report
 infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API + S3 dashboard)
 ```
@@ -376,6 +393,11 @@ python -m unittest discover -s tests -t .
 node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-live.json --history build/history-live.json
 node tools/dashboard_check.mjs --payload build/zones-live.json --incidents build/incidents-live.json
+
+# dashboard runtime check: runs the real lib.js + app.js in a fake DOM and drives the poller
+node tools/dashboard_run.mjs --payload build/zones-live.json --history build/history-live.json --incidents build/incidents-live.json
+#   ...or against the deployed assets and the live API:
+node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
 
 # local demo: risk timeline for all three zones
 python tools/local_demo.py --steps 40
