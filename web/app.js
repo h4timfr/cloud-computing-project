@@ -155,6 +155,7 @@
     rememberSeries(state.zones);
     renderSummary(payload);
     renderTitles(payload);
+    renderBandStrip(payload);
     renderHero(payload);
     renderCards(state.zones);
     renderRanking(state.zones);
@@ -182,6 +183,18 @@
     if (el['summary-live'] && el['summary-live'].title !== plural) {
       el['summary-live'].title = 'How many ' + plural + ' have a scored reading in this snapshot';
     }
+  }
+
+  /* Fleet risk distribution: rendered from the payload only, so an empty or partial
+   * snapshot shows the counts it can prove instead of a reassuring zero. */
+  function renderBandStrip(payload) {
+    if (!el['band-strip']) return;
+    var html = FP.renderBandStrip(payload);
+    if (el['band-strip'].getAttribute('data-rendered') !== html) {
+      el['band-strip'].innerHTML = html;
+      el['band-strip'].setAttribute('data-rendered', html);
+    }
+    setText('band-strip-label', FP.bandStripLabel(payload));
   }
 
   function findZone(zoneId) {
@@ -710,11 +723,30 @@
     var tooltip = el['history-tooltip'];
     var readings = point.readings || {}; // a point without readings must not throw
     tooltip.hidden = false;
+    // Every sensor channel the point carries, named as the cards name it, so the chart can
+    // be read without hunting for the same values in a card.
+    var channels = [
+      ['rainfall_mm_per_hr', 'rain'],
+      ['drain_level_m', 'drain'],
+      ['soil_saturation_pct', 'soil'],
+      ['water_level_m', 'water'],
+      ['flow_rate_m3_s', 'flow']
+    ].map(function (entry) {
+      var value = readings[entry[0]];
+      if (value === null || value === undefined) return null;
+      return entry[1] + ' ' + FP.formatValueWithUnit(entry[0], value);
+    }).filter(Boolean);
     tooltip.innerHTML = FP.escapeHtml(FP.clockLabel(point.timestamp)) + ' · score ' +
       FP.escapeHtml(FP.formatScore(point.risk_score)) + ' · ' + FP.escapeHtml(FP.classLabel(point.risk_class)) +
-      '<br><span class="muted">rain ' + FP.escapeHtml(FP.formatValueWithUnit('rainfall_mm_per_hr', readings.rainfall_mm_per_hr)) +
-      ' · water ' + FP.escapeHtml(FP.formatValueWithUnit('water_level_m', readings.water_level_m)) + '</span>';
-    tooltip.style.left = Math.round(event.clientX - rect.left) + 'px';
+      (channels.length
+        ? '<br><span class="muted">' + FP.escapeHtml(channels.join(' · ')) + '</span>'
+        : '<br><span class="muted">no sensor readings stored for this point</span>');
+    // Keep the tooltip inside the panel: it is centred on the cursor, so near an edge it
+    // would otherwise hang outside the card and clip.
+    var half = tooltip.offsetWidth ? tooltip.offsetWidth / 2 : 0;
+    var offsetX = Math.round(event.clientX - rect.left);
+    if (half) offsetX = Math.min(Math.max(offsetX, half + 4), Math.round(rect.width - half - 4));
+    tooltip.style.left = offsetX + 'px';
     drawHistory();
   }
 

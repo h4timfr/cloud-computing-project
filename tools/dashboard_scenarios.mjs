@@ -431,7 +431,9 @@ async function main() {
       const tooltip = dom.html('history-tooltip');
       assert.ok(tooltip.length > 0, 'the tooltip was never filled');
       assert.match(tooltip, /score 0.50/);
-      assert.match(tooltip, /rain –/, 'a missing reading must render as an em dash, not a crash');
+      // a point with no stored readings must not invent dashes for five channels
+      assert.match(tooltip, /no sensor readings stored for this point/);
+      assert.ok(!/rain –|water –/.test(tooltip), 'the tooltip padded out values it does not have');
       assert.ok(before !== undefined);
       assert.equal(dom.node('history-tooltip').hidden, false);
       dom.fire(canvas, 'mouseleave', {});

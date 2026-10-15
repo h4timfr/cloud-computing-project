@@ -915,6 +915,198 @@ check('local assets referenced by the page exist and the site stays small', () =
   assert.ok(total <= 400 * 1024, 'site payload exceeds the 400 KB hard maximum');
 });
 
+/* ------------------------------------------------------- fleet band strip --- */
+
+group('Fleet risk distribution');
+
+function rawCounts(payload) {
+  const counts = { NORMAL: 0, WATCH: 0, WARNING: 0, CRITICAL: 0, UNSET: 0 };
+  const bands = ['NORMAL', 'WATCH', 'WARNING', 'CRITICAL'];
+  (payload.zones || []).forEach((zone) => {
+    const klass = zone.latest && String(zone.latest.risk_class || '').toUpperCase();
+    counts[bands.includes(klass) ? klass : 'UNSET'] += 1;
+  });
+  return counts;
+}
+
+if (payloadPath) {
+  const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+  const expected = rawCounts(payload);
+
+  check('the band counts match the payload, counted straight from the fixture', () => {
+    // rebuilt locally: the VM hands back an object from another realm, which strict
+    // deep-equality rejects for prototype reasons alone
+    const actual = Object.assign({}, FP.bandCounts(payload));
+    assert.deepEqual(actual, expected);
+    const sum = Object.values(expected).reduce((a, b) => a + b, 0);
+    assert.equal(sum, (payload.zones || []).length, 'every zone must be counted exactly once');
+  });
+
+  check('the strip shows a count per band and dims the empty ones', () => {
+    const html = FP.renderBandStrip(payload);
+    ['normal', 'watch', 'warning', 'critical', 'unknown'].forEach((band) => {
+      assert.ok(html.includes(`data-f="count-${band}"`), `the strip has no ${band} tile`);
+    });
+    assert.equal((html.match(/band-tile/g) || []).length, 5, 'expected exactly five tiles');
+    const zeroTiles = (html.match(/band-tile[^"]*is-zero/g) || []).length;
+    const emptyBands = Object.values(expected).filter((count) => count === 0).length;
+    assert.equal(zeroTiles, emptyBands, 'exactly the empty bands must be dimmed');
+    // A zone with no reading is not NORMAL: it must never be counted as safe.
+    assert.equal(FP.bandCounts({ zones: [{ latest: null }, { latest: { risk_class: 'FLOODING' } }] }).UNSET, 2);
+    assert.equal(FP.bandCounts({ zones: [{ latest: null }] }).NORMAL, 0);
+  });
+
+  check('the strip label names the fleet noun and only the scored zones', () => {
+    const label = FP.bandStripLabel(payload);
+    const scored = (payload.zones || []).filter((zone) => zone.latest).length;
+    assert.match(label, new RegExp(`^${scored} of ${(payload.zones || []).length} `));
+    assert.match(label, /scored in this snapshot$/);
+    assert.match(label, payload.zone_mode === 'live_weather' ? /cities/ : /zones/);
+  });
+}
+
+/* ------------------------------------------------------- design contract --- */
+
+group('Design system');
+
+function rgbOf(hex) {
+  const value = hex.replace('#', '');
+  const full = value.length === 3 ? value.split('').map((c) => c + c).join('') : value;
+  return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+}
+
+function luminance(hex) {
+  const [r, g, b] = rgbOf(hex).map((channel) => {
+    const c = channel / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrast(a, b) {
+  const l1 = luminance(a);
+  const l2 = luminance(b);
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
+function token(name) {
+  const match = cssSource.match(new RegExp(`${name}:\\s*(#[0-9a-f]{3,6})`, 'i'));
+  assert.ok(match, `styles.css does not define ${name}`);
+  return match[1];
+}
+
+/* Effective surface behind card text: the glass panel composited over the page gradient.
+ * Computed rather than guessed, so the contrast numbers below are meaningful. */
+function composite(fg, alpha, bg) {
+  const a = rgbOf(fg);
+  const b = rgbOf(bg);
+  const mix = a.map((channel, i) => Math.round(channel * alpha + b[i] * (1 - alpha)));
+  return '#' + mix.map((channel) => channel.toString(16).padStart(2, '0')).join('');
+}
+
+const glassToken = /--glass:\s*rgba\((\d+),\s*(\d+),\s*(\d+),\s*([0-9.]+)\)/.exec(cssSource);
+assert.ok(glassToken, 'styles.css does not define --glass as rgba()');
+const cardSurface = composite(
+  '#' + [1, 2, 3].map((i) => Number(glassToken[i]).toString(16).padStart(2, '0')).join(''),
+  Number(glassToken[4]),
+  token('--navy-800')
+);
+
+check('every risk band is a distinct colour with a readable text variant', () => {
+  const bands = ['normal', 'watch', 'warning', 'critical'].map((band) => token(`--band-${band}`).toLowerCase());
+  assert.equal(new Set(bands).size, 4, 'two risk bands share the same colour');
+  bands.forEach((hex) => {
+    // graphics threshold on the dark surface
+    assert.ok(contrast(hex, cardSurface) >= 3, `${hex} is below the 3:1 graphics contrast on a card`);
+  });
+  const texts = ['normal', 'watch', 'warning', 'critical'].map((band) => token(`--band-${band}-text`));
+  texts.forEach((hex) => {
+    assert.ok(contrast(hex, cardSurface) >= 4.5,
+      `band text ${hex} is below 4.5:1 on a card (${contrast(hex, cardSurface).toFixed(2)}:1)`);
+  });
+  ['--state-stale-text', '--state-error-text', '--state-live-text', '--src-real', '--src-model']
+    .forEach((name) => {
+      const hex = token(name);
+      assert.ok(contrast(hex, cardSurface) >= 4.5,
+        `${name} (${hex}) is below 4.5:1 on a card (${contrast(hex, cardSurface).toFixed(2)}:1)`);
+    });
+  assert.ok(contrast(token('--slate-400'), cardSurface) >= 4.5, 'muted text is not readable on a card');
+});
+
+check('small band text always uses the light variant, never the vivid one', () => {
+  // '.pill.band-critical' and friends carry ~11px text: they must resolve the -text tokens.
+  const smallTextRules = [
+    /\.pill\.band-critical[^{]*\{[^}]*color:\s*var\(--band-critical-text\)/,
+    /\.pill\.band-watch[^{]*\{[^}]*color:\s*var\(--band-watch-text\)/,
+    /\.band-name\.band-critical[^{]*\{[^}]*color:\s*var\(--band-critical-text\)/,
+    /\.incident-severity\.band-warning[^{]*\{[^}]*color:\s*var\(--band-warning-text\)/,
+    /\.rank-class\.band-watch[^{]*\{[^}]*color:\s*var\(--band-watch-text\)/,
+    /\.incident-status\.status-open[^{]*\{[^}]*color:\s*var\(--band-critical-text\)/
+  ];
+  smallTextRules.forEach((rule) => {
+    assert.match(cssSource, rule, `a small-text rule does not use its -text colour: ${rule}`);
+  });
+});
+
+check('the stylesheet styles every class the page emits', () => {
+  const emitted = new Set();
+  [htmlSource, libSource, appSource].forEach((source) => {
+    for (const match of source.matchAll(/class=\\?["']([^"'\\]+)/g)) {
+      match[1].split(/\s+/).filter(Boolean).forEach((name) => emitted.add(name));
+    }
+    for (const match of source.matchAll(/className\s*=\s*'([^']+)'/g)) {
+      match[1].split(/\s+/).filter(Boolean).forEach((name) => emitted.add(name));
+    }
+  });
+  // Prefix families are emitted by concatenation: base names are listed here instead.
+  const prefixes = ['band-', 'conn-', 'mode-', 'src-', 'status-', 'is-'];
+  const missing = [...emitted].filter((name) => {
+    if (prefixes.some((prefix) => name.endsWith(prefix))) return false;
+    return !new RegExp(`\\.${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(cssSource);
+  }).sort();
+  assert.deepEqual(missing, [], `classes used by the page but never styled: ${missing.join(', ')}`);
+});
+
+check('the visual language covers the required states and roles', () => {
+  const required = [
+    ['sticky header', /\.topbar\s*\{[^}]*position:\s*sticky/],
+    ['keyboard focus ring', /:focus-visible\s*\{[^}]*outline:\s*2px solid/],
+    ['fleet band strip', /\.band-strip-bar\s*\{/],
+    ['dimmed empty band', /\.band-tile\.is-zero\s*\{/],
+    ['metric threshold markers', /\.metric-tick\.critical\s*\{[^}]*background:\s*rgba\(239,\s*68,\s*68/],
+    ['state dot on the badge', /\.conn-badge::before\s*\{/],
+    ['feed-state colouring in the summary', /#summary-freshness\[data-feed-state="failed"\]/],
+    ['degraded-feed banner', /\.simulation-banner\.is-feed-degraded\s*\{/],
+    ['disabled-feed banner', /\.simulation-banner\.is-feed-off\s*\{/],
+    ['stale page treatment', /body\.is-stale \.zone-card/],
+    ['disconnected page treatment', /body\.is-disconnected \.zone-card/],
+    ['reduced-motion guard', /@media \(prefers-reduced-motion: reduce\)/],
+    ['tablet breakpoint', /@media \(max-width: 980px\)/],
+    ['phone breakpoint', /@media \(max-width: 760px\)/],
+    ['tabular figures for numbers', /font-variant-numeric: tabular-nums/],
+    ['provenance chips', /\.src-real\s*\{[^}]*var\(--src-real\)/]
+  ];
+  required.forEach(([label, pattern]) => {
+    assert.match(cssSource, pattern, `styles.css is missing: ${label}`);
+  });
+  // z-index order: the sticky header must paint above the content it scrolls over
+  const topbarZ = /\.topbar\s*\{[^}]*z-index:\s*(\d+)/.exec(cssSource);
+  const mainZ = /^main\s*\{[^}]*z-index:\s*(\d+)/m.exec(cssSource);
+  assert.ok(topbarZ && mainZ && Number(topbarZ[1]) > Number(mainZ[1]),
+    'the sticky header must stack above main content');
+});
+
+check('the page pins the fleet strip and headings to the payload', () => {
+  assert.match(htmlSource, /id="band-strip"/, 'index.html has no band strip');
+  assert.match(htmlSource, /id="band-strip-label"/, 'index.html has no band strip label');
+  assert.match(appSource, /FP\.renderBandStrip\(payload\)/, 'the strip is not built from the payload');
+  assert.match(appSource, /FP\.bandStripLabel\(payload\)/, 'the strip label is not built from the payload');
+  // the label must live outside the list the renderer replaces, or it would be erased
+  const listBody = /<ul id="band-strip"[\s\S]*?<\/ul>/.exec(htmlSource);
+  assert.ok(listBody && !listBody[0].includes('band-strip-label'),
+    'the strip label must not be inside the element whose innerHTML is replaced');
+});
+
 /* ------------------------------------------------------------------ report --- */
 
 console.log(`\n${passed} checks passed, ${failures.length} failed`);

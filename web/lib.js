@@ -101,6 +101,48 @@
     return index < 0 ? -1 : index;
   }
 
+  /* How many zones sit in each band right now. Counted from the effective (post-hysteresis)
+   * risk_class the API reports, never from a guess: a zone with no reading is counted as
+   * "no reading", not as NORMAL. */
+  function bandCounts(payload) {
+    var zones = (payload && payload.zones) || [];
+    var counts = { NORMAL: 0, WATCH: 0, WARNING: 0, CRITICAL: 0, UNSET: 0 };
+    zones.forEach(function (zone) {
+      var latest = zone && zone.latest;
+      if (!latest || classRank(latest.risk_class) < 0) {
+        counts.UNSET += 1;
+      } else {
+        counts[classLabel(latest.risk_class)] += 1;
+      }
+    });
+    return counts;
+  }
+
+  /* The fleet risk distribution strip: the one element that answers "how bad is it right
+   * now" before any reading is read in detail. */
+  function renderBandStrip(payload) {
+    var counts = bandCounts(payload);
+    var order = ['NORMAL', 'WATCH', 'WARNING', 'CRITICAL', 'UNSET'];
+    var items = order.map(function (name) {
+      var band = name === 'UNSET' ? 'unknown' : name.toLowerCase();
+      var count = counts[name];
+      return '<li class="band-tile band-' + band + (count ? '' : ' is-zero') + '">' +
+        '<span class="band-count" data-f="count-' + band + '">' + count + '</span>' +
+        '<span class="band-name band-' + band + '">' +
+        (name === 'UNSET' ? 'No reading' : name.charAt(0) + name.slice(1).toLowerCase()) +
+        '</span></li>';
+    }).join('');
+    return items;
+  }
+
+  function bandStripLabel(payload) {
+    if (!payload) return 'loading fleet…';
+    var zones = payload.zones || [];
+    var total = isFiniteNumber(payload.zone_count) ? payload.zone_count : zones.length;
+    var scored = zones.filter(function (zone) { return zone && zone.latest; }).length;
+    return scored + ' of ' + total + ' ' + zoneNounPlural(payload) + ' scored in this snapshot';
+  }
+
   /* ----------------------------------------------------------- formatting --- */
 
   function formatScore(value) {
@@ -901,6 +943,9 @@
     zoneNounPlural: zoneNounPlural,
     isLiveZone: isLiveZone,
     dataAttribution: dataAttribution,
+    bandCounts: bandCounts,
+    renderBandStrip: renderBandStrip,
+    bandStripLabel: bandStripLabel,
     providerLabel: providerLabel,
     weatherEvidence: weatherEvidence,
     zoneProvenance: zoneProvenance,
