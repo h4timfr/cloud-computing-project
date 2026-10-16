@@ -87,7 +87,9 @@ export function createFakeDom() {
       closest: () => null,
       getContext: () => makeCanvasContext(),
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 300, right: 800, bottom: 300 }),
-      focus: noop,
+      // focus() records the focused node the way a browser exposes document.activeElement,
+      // so a harness can check where the keyboard landed after a view change.
+      focus() { documentStub.activeElement = this; },
       blur: noop,
       remove: noop
     };
@@ -101,12 +103,27 @@ export function createFakeDom() {
   }
 
   const body = makeNode('body');
+  /* The viewport is a mutable fact of this fake DOM: media queries resolve against it, so a
+   * harness can prove what the page does on a phone-sized screen and on a desktop. */
+  let viewportWidth = 1280;
+  function mediaMatches(query) {
+    const max = /max-width:\s*(\d+)px/.exec(String(query));
+    const min = /min-width:\s*(\d+)px/.exec(String(query));
+    if (max && viewportWidth > Number(max[1])) return false;
+    if (min && viewportWidth < Number(min[1])) return false;
+    return true;
+  }
+  function matchMedia(query) {
+    return { media: String(query), matches: mediaMatches(query), addEventListener: noop, removeEventListener: noop };
+  }
   const documentStub = {
     body,
     documentElement: makeNode('html'),
+    activeElement: body,
     visibilityState: 'visible',
     hidden: false,
     readyState: 'complete',
+    title: '',
     getElementById(id) {
       if (!nodes.has(id)) nodes.set(id, makeNode(id));
       return nodes.get(id);
@@ -118,10 +135,11 @@ export function createFakeDom() {
     removeEventListener: noop
   };
   const windowStub = {
-    location: { search: '', href: 'http://localhost/' },
+    location: { search: '', hash: '', href: 'http://localhost/' },
     FLOODPULSE_API_BASE: '',
+    innerWidth: viewportWidth,
     devicePixelRatio: 1,
-    matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop }),
+    matchMedia,
     addEventListener(type, fn) { addListener(windowStub, type, fn); },
     removeEventListener: noop
   };
@@ -159,6 +177,16 @@ export function createFakeDom() {
       const node = nodes.get(id);
       return node ? node.innerHTML : '';
     },
+    title: () => documentStub.title,
+    focusedId: () => (documentStub.activeElement ? documentStub.activeElement.id : null),
+    /* Resize the fake viewport: `max-width`/`min-width` queries then answer accordingly,
+     * which is how a harness drives the responsive behaviour of the real stylesheet. */
+    setViewport(width) {
+      viewportWidth = Number(width) || 0;
+      windowStub.innerWidth = viewportWidth;
+      return viewportWidth;
+    },
+    matches: (query) => mediaMatches(query),
     fire,
     targetWith,
     listeners,
@@ -284,7 +312,7 @@ export function createRuntime() {
       URLSearchParams,
       AbortController,
       getComputedStyle: () => ({ getPropertyValue: () => '' }),
-      matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+      matchMedia: dom.window.matchMedia,
       setInterval: (fn, delay) => { timers.push({ fn, delay }); return timers.length; },
       clearInterval: () => {},
       // Real timers, driven by the fake clock: the page's fetch timeout/abort path is part
