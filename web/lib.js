@@ -956,7 +956,21 @@
       (limit === null ? '' : ' · newest ' + limit) + ' · source GET /incidents';
   }
 
-  function renderIncidentRow(incident, nowMs) {
+  /* Zones whose newest reading is too old to describe the present, from the fleet's own
+   * declaration when it made one, otherwise from the ages on the zone blocks. */
+  function staleZoneIds(payload) {
+    if (!payload) return [];
+    if (payload.stale_zone_ids && payload.stale_zone_ids.length) return payload.stale_zone_ids.slice();
+    var declared = toNumber(payload.stale_after_seconds);
+    var threshold = declared === null ? 1800 : declared;
+    return ((payload.zones) || []).filter(function (zone) {
+      var age = zone.latest ? toNumber(zone.latest.age_seconds) : null;
+      return age !== null && age > threshold;
+    }).map(function (zone) { return zone.zone_id; });
+  }
+
+  function renderIncidentRow(incident, nowMs, options) {
+    var silent = options && options.silentZoneIds ? options.silentZoneIds : [];
     var severity = String(incident.severity || '').toUpperCase();
     var band = severityBand(severity);
     var open = incidentIsOpen(incident);
@@ -975,7 +989,10 @@
         '<span class="incident-status status-' + (open ? 'open' : 'closed') + '" role="cell" data-f="status">' +
           (open ? 'OPEN' : 'CLOSED') + '</span>' +
         '<span class="incident-duration" role="cell" data-f="duration">' + escapeHtml(formatDuration(duration)) +
-          (open ? ' and counting' : '') + '</span>' +
+          (open ? ' and counting' : '') +
+          (open && silent.indexOf(incident.zone_id) >= 0
+            ? ' <span class="muted" data-f="zone-silent">· zone not reporting</span>'
+            : '') + '</span>' +
         '<span class="incident-detail" role="cell" data-f="detail">' +
           'score at open ' + escapeHtml(formatScore(incident.risk_score_at_open)) +
           ' · driver ' + escapeHtml(driver) +
@@ -998,7 +1015,7 @@
         '</li>';
     }
     return incidents.map(function (incident) {
-      return renderIncidentRow(incident, nowMs);
+      return renderIncidentRow(incident, nowMs, options);
     }).join('');
   }
 
@@ -1254,6 +1271,12 @@
       leader: leader,
       leaderName: leader ? leader.name : '',
       leaderScore: leader ? formatScore(leader.risk_score) : '–',
+      // How old the reading behind the leading score is, and whether the fleet itself says
+      // that zone is out of date. Without this, "highest risk: Chennai 0.72" reads as a
+      // present-tense fact even when Chennai stopped reporting half an hour ago.
+      leaderAge: leaderAgeSeconds(payload, leader),
+      leaderStale: !!(payload && leader && leader.zone_id &&
+        (payload.stale_zone_ids || []).indexOf(leader.zone_id) >= 0),
       openIncidents: open === null ? 0 : open,
       activeAlerts: activeAlerts.length,
       feed: feed,
@@ -1261,6 +1284,21 @@
       freshness: freshnessLine(feed),
       updated: payload ? clockLabel(payload.generated_at) : '–'
     };
+  }
+
+  /* The age of the reading behind the highest-risk zone: the API's own field when the fleet
+   * reported one, otherwise that zone's stored reading age. null when neither is known. */
+  function leaderAgeSeconds(payload, leader) {
+    if (!leader) return null;
+    var declared = toNumber(leader.age_seconds);
+    if (declared !== null) return Math.max(0, Math.round(declared));
+    var zones = (payload && payload.zones) || [];
+    for (var index = 0; index < zones.length; index += 1) {
+      if (zones[index].zone_id !== leader.zone_id) continue;
+      var age = zones[index].latest ? toNumber(zones[index].latest.age_seconds) : null;
+      return age === null ? null : Math.max(0, Math.round(age));
+    }
+    return null;
   }
 
   /* One sentence for the top of the page, written for a non-technical reader. The noun comes
@@ -1479,7 +1517,8 @@
     return { active: active, closed: closed, total: incidents.length };
   }
 
-  function alertRow(incident, nowMs) {
+  function alertRow(incident, nowMs, options) {
+    var silent = options && options.silentZoneIds ? options.silentZoneIds : [];
     var severity = classLabel(incident.severity);
     var band = severityBand(incident.severity);
     var open = incidentIsOpen(incident);
@@ -1492,7 +1531,10 @@
         '<div class="alert-body">' +
         '<p class="alert-title"><b data-f="zone_name">' + escapeHtml(incident.zone_name || incident.zone_id) + '</b>' +
         ' · <span data-f="status">' + (open ? 'active' : 'resolved') + '</span>' +
-        ' · <span data-f="duration">' + escapeHtml(formatDuration(duration)) + (open ? ' so far' : '') + '</span></p>' +
+        ' · <span data-f="duration">' + escapeHtml(formatDuration(duration)) + (open ? ' so far' : '') + '</span>' +
+        (open && silent.indexOf(incident.zone_id) >= 0
+          ? ' <span class="muted" data-f="zone-silent">· zone not reporting</span>'
+          : '') + '</p>' +
         '<p class="alert-meta">Opened ' + escapeHtml(clockLabel(incident.opened_at)) +
         (open ? '' : ' · closed ' + escapeHtml(clockLabel(incident.closed_at))) +
         ' · main factor ' + escapeHtml(driver) +
@@ -1684,6 +1726,7 @@
     navState: navState,
     viewTitle: viewTitle,
     fleetOverview: fleetOverview,
+    leaderAgeSeconds: leaderAgeSeconds,
     fleetHeadline: fleetHeadline,
     productIntro: productIntro,
     bandPill: bandPill,
@@ -1693,6 +1736,7 @@
     cityDetail: cityDetail,
     technicalDetails: technicalDetails,
     alertsSplit: alertsSplit,
+    staleZoneIds: staleZoneIds,
     alertRow: alertRow,
     alertsEmptyState: alertsEmptyState,
     alertSummary: alertSummary,

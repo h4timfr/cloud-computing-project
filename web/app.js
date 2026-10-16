@@ -1011,7 +1011,10 @@
       var leaderValue = ov.leaderName || 'No reading yet';
       var leaderMeta = ov.leaderName
         ? '<span class="pill band-' + FP.bandKey(ov.worst) + '">' + FP.escapeHtml(ov.worst) + '</span>' +
-          ' score ' + FP.escapeHtml(ov.leaderScore)
+          ' score ' + FP.escapeHtml(ov.leaderScore) +
+          // the score is only meaningful with the age of the reading behind it
+          (ov.leaderAge === null ? '' : ' · reading ' + FP.escapeHtml(FP.ageLabel(ov.leaderAge))) +
+          (ov.leaderStale ? ' <span class="muted">· not reporting recently</span>' : '')
         : 'The first reading will appear here';
       var alertMeta = ov.activeAlerts
         ? 'highest severity ' + FP.escapeHtml(state.incidents && state.incidents.incidents ? (FP.alertsSplit(state.incidents).active[0] || {}).severity || '–' : '–')
@@ -1118,18 +1121,25 @@
       // before the first response the view says so: an empty list must never be shown as
       // "no alerts" when the truth is "not answered yet"
       var loading = !payload;
+      // A zone that stopped reporting can leave an incident OPEN for ever (an incident
+      // closes on a return to NORMAL, not on silence), so say when that is the case.
+      var silentZones = FP.staleZoneIds(state.payload);
       if (el['alerts-active']) {
         el['alerts-active'].innerHTML = loading
           ? '<li class="muted">loading alerts…</li>'
           : (split.active.length
-            ? split.active.map(function (incident) { return FP.alertRow(incident, Date.now()); }).join('')
+            ? split.active.map(function (incident) {
+              return FP.alertRow(incident, Date.now(), { silentZoneIds: silentZones });
+            }).join('')
             : FP.alertsEmptyState('active', FP.zoneNoun(state.payload)));
       }
       if (el['alerts-closed']) {
         el['alerts-closed'].innerHTML = loading
           ? '<li class="muted">loading incidents…</li>'
           : (split.closed.length
-            ? split.closed.map(function (incident) { return FP.alertRow(incident, Date.now()); }).join('')
+            ? split.closed.map(function (incident) {
+              return FP.alertRow(incident, Date.now(), { silentZoneIds: silentZones });
+            }).join('')
             : FP.alertsEmptyState('closed', FP.zoneNoun(state.payload)));
       }
       if (el['alerts-summary']) {

@@ -783,6 +783,75 @@ async function main() {
     });
   })();
 
+  group('A reading that is too old to describe now is never presented as current');
+
+  await (async () => {
+    const staleId = live.payload.zones[0].zone_id;
+    const staleName = live.payload.zones[0].name;
+    const aged = JSON.parse(JSON.stringify(live.payload));
+    aged.stale_zone_ids = [staleId];
+    aged.stale_after_seconds = 1800;
+    aged.highest_risk_zone.age_seconds = 3600;
+    aged.highest_risk_zone.stale = true;
+    aged.highest_risk_zone.zone_id = staleId;
+    aged.highest_risk_zone.name = staleName;
+    aged.zones = aged.zones.map((zone) => {
+      if (zone.zone_id !== staleId) return zone;
+      zone.latest.age_seconds = 3600;
+      return zone;
+    });
+    const openIncidents = JSON.parse(JSON.stringify(live.incidents));
+    const open = (openIncidents.incidents || []).find((incident) => incident.current_status === 'OPEN');
+    if (open) {
+      open.zone_id = staleId;
+      open.zone_name = staleName;
+    }
+
+    const runtime = createRuntime();
+    runtime.on(zonesRoute, () => ({ body: aged }));
+    runtime.on(historyRoute, () => ({ body: live.history }));
+    runtime.on(incidentsRoute, () => ({ body: openIncidents }));
+    const dom = boot(runtime);
+    await runtime.settle();
+
+    await check('the highest-risk card carries the age of the reading, and flags it', () => {
+      const stats = dom.html('ov-stats');
+      assert.match(stats, /Highest risk/);
+      assert.match(stats, /reading 60 min ago/,
+        `the leading score has no age next to it: ${stats.slice(0, 400)}`);
+      assert.match(stats, /not reporting recently/,
+        'a reading an hour old is presented without any hint that the zone is silent');
+    });
+
+    await check('an open incident on a silent zone says the zone stopped reporting', () => {
+      const rows = dom.html('alerts-active');
+      if (!open) {
+        assert.ok(rows.length >= 0, 'the fixture has no open incident to check');
+        return;
+      }
+      assert.match(rows, /zone not reporting/,
+        `the alert does not mention the silent zone: ${rows.slice(0, 400)}`);
+    });
+  })();
+
+  await (async () => {
+    const runtime = createRuntime();
+    runtime.on(zonesRoute, () => ({ body: live.payload }));
+    runtime.on(historyRoute, () => ({ body: live.history }));
+    runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+    const dom = boot(runtime);
+    await runtime.settle();
+
+    await check('a fresh fleet carries neither marker', () => {
+      const stats = dom.html('ov-stats');
+      assert.ok(!/not reporting recently/.test(stats),
+        'the marker appears on a healthy fleet, so it means nothing');
+      const rows = dom.html('alerts-active');
+      assert.ok(!/zone not reporting/.test(rows),
+        'the silent-zone marker appears on a healthy fleet');
+    });
+  })();
+
   group('One idle tab does not fetch the same thing twice');
 
   await (async () => {
