@@ -489,6 +489,18 @@ async function main() {
       'the freshness line was not rendered');
   });
 
+  check('the freshness figure names the feed state, and the line beneath it the age', () => {
+    const stats = dom.html('ov-stats').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+    // whatever lib computes for this payload is what the page must print: reading a field the
+    // feed object does not carry (as "feed.ageSeconds" once did) has to fail here
+    const expected = app.sandbox.window.FP.fleetOverview(payload, incidents, Date.now()).feedValue;
+    assert.ok(stats.includes(expected), `the overview should show the feed state "${expected}": ${stats}`);
+    assert.ok(!/\bpending\b|–/.test(stats), `the overview shows a placeholder freshness figure: ${stats}`);
+    if (payload.zone_mode === 'live_weather') {
+      assert.match(stats, /weather feed \d+/, 'the freshness line does not state the age of the feed');
+    }
+  });
+
   group('The Cities view lists the whole fleet');
   check('all five cities are present in the grid, with their live values', () => {
     assert.equal((dom.html('zones').match(/class="card zone-card/g) || []).length, payload.zones.length);

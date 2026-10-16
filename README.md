@@ -656,31 +656,33 @@ a `<section class="view">` with its own `<h2>`, `tabindex="-1"` and `aria-labell
 views moves focus and announces the new section. All four views are rendered from every successful
 poll rather than lazily, so a view switch can never show stale content.
 
-### Three real bugs the new checks found
+### Four real bugs found while building and verifying this
 
-The redesign's verification was extended first, and all three of these were live on the deployed site:
+The redesign's verification was extended first, and all four of these were live on the deployed site:
 
 | Bug | Why nothing caught it | Fix |
 |---|---|---|
 | The fleet risk distribution strip was frozen at its static "–" placeholders. `renderBandStrip()` guards on `el['band-strip']`, but `cacheDom()` never listed `band-strip`/`band-strip-label`, so it returned immediately and the label stayed "loading fleet…" forever | the existing strip checks were static (does the element exist, is the renderer wired into `app.js`), and no harness asserted the strip's rendered DOM | both ids added to `cacheDom()`; `dashboard_run.mjs` now asserts the strip renders real counts and no placeholder `–` |
 | On the Alerts view, an empty incident list left the panel on "loading alerts…". "Nothing loaded yet" and "loaded, and there are none" produced the same render signature, so the guard skipped the write | the empty-state path was never executed — every fixture had incidents | the signature now includes whether the list is loaded; the harness asserts an explicit `data-empty` empty state for both lists |
 | A simulated board credited Open-Meteo it had never fetched: `attributionLine()` described the provider regardless of mode | the attribution check only ever ran against a live-weather payload | `attributionLine()` returns nothing unless the feed is live and enabled; the card is hidden when unused, and the harness asserts the per-mode behaviour both ways |
+| The Overview's "Weather freshness" figure always read **pending** even with a minutes-old cached reading, because the card asked for `feed.ageSeconds` while `feedStatus()` returns `feedAgeSeconds`. Every other panel was correct, so the page disagreed with itself | nothing static can see a misspelled property on a returned object, and the panel still looked plausible | the word for the feed state is now computed once in `lib.js` (`feedValue`) and the page prints it; the harness asserts the Overview shows exactly what `fleetOverview()` computes, for the payload actually loaded, and never a placeholder |
 
 ### Verification for this pass
 
 | Check | Result |
 |---|---|
-| `python -m unittest discover -s tests -t .` | **363 tests, OK** (~2.0 s, no AWS, no network) |
+| `python -m unittest discover -s tests -t .` | **363 tests, OK** (~1.8 s, no AWS, no network) |
 | `node tools/dashboard_check.mjs` (live fixtures) | **76 checks, 0 failed** |
 | `node tools/dashboard_check.mjs` (demo fixtures) | **76 checks, 0 failed** |
 | `node tools/dashboard_check.mjs` (no fixtures) | **70 checks, 0 failed** |
-| `node tools/dashboard_run.mjs` (live fixtures) | **38 checks, 0 failed** |
-| `node tools/dashboard_run.mjs` (demo fixtures, all six story stages) | **36 checks, 0 failed each** |
+| `node tools/dashboard_run.mjs` (deployed assets + live API) | **39 checks, 0 failed** |
+| `node tools/dashboard_run.mjs` (live fixtures) | **39 checks, 0 failed** |
+| `node tools/dashboard_run.mjs` (demo fixtures, all six story stages) | **37 checks, 0 failed each** |
 | `node tools/dashboard_scenarios.mjs` | **33 checks, 0 failed** |
 | `node tools/story_check.mjs --dir build/story` | **29 checks, 0 failed** |
 | `python build/live_acceptance_hardening.py` (deployed API, read-only) | **35 checks, 0 failed** |
-| `python build/live_incident_check.py` (deployed API) | **18 checks, 0 failed** |
-| `python build/demo_mode_roundtrip.py` (deployed API, whole demo track) | **18 checks, 0 failed** |
+| `python build/verify_deployed_code.py` | deployed Lambda code **byte-identical** to `src/` (this pass changed no backend file) |
+| `python build/verify_deployed_page.py` | all deployed page contracts hold |
 
 `dashboard_run.mjs` used to be a static-ish runner with its own throwaway DOM that could not dispatch
 events. It now executes the real `lib.js` + `app.js` against the shared fake browser
@@ -692,8 +694,9 @@ the values already on screen; and recovery afterwards. `dashboard_check.mjs` gai
 contracts, including one that reads `RISK_BANDS`, `METRIC_WEIGHTS` and `TREND_WEIGHT` out of
 `src/floodpulse/config.py` and fails if the methodology page ever states different numbers.
 
-Asset budget after M6 (still one request per file, nothing added): `index.html` 15.2 KB,
-`styles.css` 50.2 KB, `lib.js` 73.1 KB, `app.js` 57.4 KB, `bg-storm.webp` 13.3 KB.
+Asset budget after M6 (still one request per file, nothing added): `index.html` 14.6 KB,
+`styles.css` 49.9 KB, `lib.js` 74.0 KB, `app.js` 56.4 KB, `bg-storm.webp` 13.3 KB — 208 KB
+in total, all served uncompressed from one bucket with `no-cache` on the four text files.
 
 ### M6 limitations (known, deliberate)
 

@@ -900,7 +900,8 @@
       var html = statCard('Highest risk city', leaderValue, leaderMeta, FP.bandKey(ov.worst)) +
         statCard('Active alerts', String(ov.activeAlerts), FP.escapeHtml(alertMeta), ov.activeAlerts ? 'warning' : '') +
         statCard('Cities reporting', ov.reporting + ' / ' + ov.total, 'DynamoDB latest reading per city', reportingTone) +
-        statCard('Weather freshness', ov.feed && ov.feed.live ? (ov.feed.ageSeconds === null || ov.feed.ageSeconds === undefined ? 'pending' : FP.ageLabel(ov.feed.ageSeconds)) : 'simulator', FP.escapeHtml(ov.freshness || 'waiting for the first provider check'));
+        statCard('Weather freshness', ov.feedValue,
+        FP.escapeHtml(ov.freshness || 'waiting for the first provider check'));
       if (el['ov-stats'].getAttribute('data-rendered') !== html) {
         el['ov-stats'].innerHTML = html;
         el['ov-stats'].setAttribute('data-rendered', html);

@@ -629,6 +629,17 @@
     return 'fresh';
   }
 
+  /* The feed's state in one word, for a card value: the age and the countdown belong to the
+   * sentence underneath it, and a field name the feed does not carry must never be read. */
+  function feedWord(feed) {
+    if (!feed || !feed.live) return 'simulator';
+    if (feed.state === 'fresh') return 'fresh';
+    if (feed.state === 'stale') return 'stale';
+    if (feed.state === 'failed') return 'last fetch failed';
+    if (feed.state === 'off') return 'provider off';
+    return 'not fetched yet';
+  }
+
   function agePhrase(seconds) {
     var num = toNumber(seconds);
     if (num === null) return 'unknown';
@@ -1200,6 +1211,7 @@
       openIncidents: open === null ? 0 : open,
       activeAlerts: activeAlerts.length,
       feed: feed,
+      feedValue: feedWord(feed),
       freshness: freshnessLine(feed),
       updated: payload ? clockLabel(payload.generated_at) : '–'
     };
