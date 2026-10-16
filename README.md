@@ -630,6 +630,82 @@ No browser was available on this machine, so every visual claim above is checked
 * `tempfile.TemporaryDirectory()` is unreliable under this sandbox (its cleanup calls `chmod`, which
   is refused), so tests keep scratch files in the gitignored `build/test-scratch/`.
 
+## M6 public-facing information architecture (frontend only, deployed)
+
+The M5 dashboard was technically rich and read like an engineering console: one long page, every
+number at the same volume, the model visible before the answer. M6 reorganises the same data into a
+product a non-technical visitor can use, **without touching risk logic, the data model, the API
+contracts or any AWS resource**. No npm, no framework, no build step, no new dependency: still
+`index.html` + `styles.css` + `lib.js` + `app.js` + one background image.
+
+### Four views, one asset set
+
+| View | URL | What it answers |
+|---|---|---|
+| **Overview** | `#/overview` | Plain-language fleet headline ("2 of 5 cities are at a critical flood risk right now."), highest-risk city, active alerts, cities reporting, weather freshness, a four-band distribution strip, and one status card per city |
+| **Cities** | `#/cities` | The full fleet as a grid, plus the ranked list; each card links to its own page |
+| **City** | `#/cities/<zone_id>` | Risk score and class as the API reported them, a plain-English reason and advice, five measurement tiles (icon, value, unit, provenance chip, distance to that metric's own watch/flooding level), data freshness, trend/history chart, incident history, and **all** model detail folded into a collapsed `<details>` |
+| **Alerts** | `#/alerts` | Live alerts and resolved incidents as separate lists: severity, city, opened/closed times, duration (ticking), top driver, plus the honest SNS alerting state |
+| **Data & Methodology** | `#/data` | REAL / MODEL_DERIVED / SIMULATED explained per metric, Open-Meteo attribution and licence, `heuristic-v1` step by step with its fixed weights and band table, why the hydraulics are simulated, and an explicit list of limitations |
+
+Routing is a ~40-line hash router (`#/…`, no `pushState`), so each view is linkable, back/forward
+works, and an unknown URL falls back to the Overview instead of blanking the page. The top bar is a
+three-cell grid (`brand | nav | status`); under 760 px the links collapse into a labelled `#nav-toggle`
+button (`aria-expanded`, `aria-controls`, Escape to close, closes on choosing a section). Every view is
+a `<section class="view">` with its own `<h2>`, `tabindex="-1"` and `aria-labelledby`, so switching
+views moves focus and announces the new section. All four views are rendered from every successful
+poll rather than lazily, so a view switch can never show stale content.
+
+### Three real bugs the new checks found
+
+The redesign's verification was extended first, and all three of these were live on the deployed site:
+
+| Bug | Why nothing caught it | Fix |
+|---|---|---|
+| The fleet risk distribution strip was frozen at its static "–" placeholders. `renderBandStrip()` guards on `el['band-strip']`, but `cacheDom()` never listed `band-strip`/`band-strip-label`, so it returned immediately and the label stayed "loading fleet…" forever | the existing strip checks were static (does the element exist, is the renderer wired into `app.js`), and no harness asserted the strip's rendered DOM | both ids added to `cacheDom()`; `dashboard_run.mjs` now asserts the strip renders real counts and no placeholder `–` |
+| On the Alerts view, an empty incident list left the panel on "loading alerts…". "Nothing loaded yet" and "loaded, and there are none" produced the same render signature, so the guard skipped the write | the empty-state path was never executed — every fixture had incidents | the signature now includes whether the list is loaded; the harness asserts an explicit `data-empty` empty state for both lists |
+| A simulated board credited Open-Meteo it had never fetched: `attributionLine()` described the provider regardless of mode | the attribution check only ever ran against a live-weather payload | `attributionLine()` returns nothing unless the feed is live and enabled; the card is hidden when unused, and the harness asserts the per-mode behaviour both ways |
+
+### Verification for this pass
+
+| Check | Result |
+|---|---|
+| `python -m unittest discover -s tests -t .` | **363 tests, OK** (~2.0 s, no AWS, no network) |
+| `node tools/dashboard_check.mjs` (live fixtures) | **76 checks, 0 failed** |
+| `node tools/dashboard_check.mjs` (demo fixtures) | **76 checks, 0 failed** |
+| `node tools/dashboard_check.mjs` (no fixtures) | **70 checks, 0 failed** |
+| `node tools/dashboard_run.mjs` (live fixtures) | **38 checks, 0 failed** |
+| `node tools/dashboard_run.mjs` (demo fixtures, all six story stages) | **36 checks, 0 failed each** |
+| `node tools/dashboard_scenarios.mjs` | **33 checks, 0 failed** |
+| `node tools/story_check.mjs --dir build/story` | **29 checks, 0 failed** |
+| `python build/live_acceptance_hardening.py` (deployed API, read-only) | **35 checks, 0 failed** |
+| `python build/live_incident_check.py` (deployed API) | **18 checks, 0 failed** |
+| `python build/demo_mode_roundtrip.py` (deployed API, whole demo track) | **18 checks, 0 failed** |
+
+`dashboard_run.mjs` used to be a static-ish runner with its own throwaway DOM that could not dispatch
+events. It now executes the real `lib.js` + `app.js` against the shared fake browser
+(`tools/dashboard_dom.mjs`) and drives the page the way a person does: clicking each of the four
+sections, opening every one of the five India cities and checking its score, class, five metric tiles,
+provenance chips, freshness and collapsed technical block; the unknown-city panel; the alerts split and
+its empty states; the phone menu (open, Escape, close-on-navigate); a failed poll that must not lose
+the values already on screen; and recovery afterwards. `dashboard_check.mjs` gained the matching static
+contracts, including one that reads `RISK_BANDS`, `METRIC_WEIGHTS` and `TREND_WEIGHT` out of
+`src/floodpulse/config.py` and fails if the methodology page ever states different numbers.
+
+Asset budget after M6 (still one request per file, nothing added): `index.html` 15.2 KB,
+`styles.css` 50.2 KB, `lib.js` 73.1 KB, `app.js` 57.4 KB, `bg-storm.webp` 13.3 KB.
+
+### M6 limitations (known, deliberate)
+
+* No browser exists on this machine: every visual claim above is verified at the DOM/CSS/usability
+  level (navigation state, focus movement, emitted classes, contrast ratios, breakpoint rules), never
+  by pixels. Nothing here claims to have been seen.
+* The history chart is still a `<canvas>` panel inside the City view rather than a separate route.
+* There is no per-view lazy loading, so a poll re-renders every view. At five cities and one table
+  this costs nothing measurable; it would need revisiting at fleet scale.
+* The Overview's "active alerts" count comes from `GET /incidents`, so it is only as fresh as the
+  incident poll (10 s) rather than the zone poll (5 s).
+
 ## Repository layout
 
 ```
@@ -700,7 +776,8 @@ node tools/story_check.mjs --dir build/story
 # live weather probe: one real Open-Meteo request for all five cities, read-only
 python tools/weather_probe.py
 
-# dashboard checks: pure helpers, rendering from a real payload, provenance, site safety (node)
+# dashboard static checks: pure helpers, rendering from a real payload, provenance, site safety,
+# and the information architecture (four views, router, phone menu, methodology vs config.py)
 node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
 node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
@@ -709,7 +786,9 @@ node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history
 # hung requests, mode switching, history backoff...) driven through the real poller in a fake DOM
 node tools/dashboard_scenarios.mjs
 
-# dashboard runtime check: runs the real lib.js + app.js in a fake DOM and drives the poller
+# dashboard runtime check: runs the real lib.js + app.js in a fake browser and uses the page the
+# way a person does — clicking all four sections, opening each city, the alerts split and its empty
+# states, the phone menu, a failed poll, recovery. 38 checks against the live payloads.
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
@@ -830,7 +909,7 @@ constant so tests never depend on the wall clock.
 | M3 | Flood incidents + SNS alerts + incident log in the dashboard | ✅ **done and verified live** |
 | M4 | India live-weather integration: 5 city zones on real rainfall/soil moisture, per-metric provenance, cached external feed, simulator kept as demo/fallback | ✅ **done and verified live** |
 | M5 | Dashboard hardening: fleet risk strip, documented colour system, honest failure/stale states, provenance fix on `/history` + `/incidents`, one-command verified storm demo | ✅ **done and verified live** |
-| M6 | Historical chart polish, session trends, zone drill-down | ⛔ |
+| M6 | Public-facing information architecture: Overview / Cities / City / Alerts / Data & Methodology as four routed views with a phone menu, plus the runtime harness to drive them | ✅ **done, verified, deployed** |
 | M7 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ |
 
 ## AWS state (verified)

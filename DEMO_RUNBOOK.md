@@ -33,9 +33,24 @@ node tools\story_check.mjs --dir build\story
 Start-Process "http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com"
 ```
 
-On the dashboard, confirm with your own eyes: the connection badge reads **LIVE**, the fleet strip
-shows five tiles, each city card shows a provenance chip per metric (`REAL`, `MODEL_DERIVED`,
-`SIMULATED`) and the freshness line counts up between polls.
+On the dashboard, confirm with your own eyes (it opens on **Overview**): the connection badge reads
+**LIVE**, the headline names the fleet (e.g. "2 of 5 cities are at a critical flood risk right now."),
+the four headline figures are filled, the fleet strip shows five tiles with real counts, and the
+freshness line counts up between polls. Then open **Cities → any city**: five measurement tiles carry
+per-metric provenance chips (`REAL` / `MODEL` / `SIM`), and *Technical details* is folded away.
+
+### The 60-second tour (four views, same four clicks in either track)
+
+| Click | What it shows | The line to say |
+|---|---|---|
+| **Overview** | Plain-language fleet answer, highest-risk city, active alerts, cities reporting, weather freshness, band strip, one status card per city | "This is the whole fleet in one screen, and it says in words what the numbers mean." |
+| **Cities → a city** | Score and class **as the API reported them**, a plain-English reason and advice, five measurement tiles with their thresholds and provenance, freshness, history chart, then a collapsed *Technical details* | "Same city, detail on demand. The model is one click away, not in the visitor's face." |
+| **Alerts** | Live alerts and resolved incidents as separate lists, with severity, duration, top driver and the honest SNS state | "Nothing is open right now" / during the storm: "watch it appear here, then move to the resolved list with its duration." |
+| **Data & Methodology** | REAL / MODEL_DERIVED / SIMULATED explained per metric, Open-Meteo attribution, `heuristic-v1` step by step with weights and bands, why the hydraulics are simulated, and the limitations | "This is the honest page: what is measured, what is simulated, and what this score is **not**." |
+
+The URL follows the view (`#/overview`, `#/cities/city-chennai`, `#/alerts`, `#/data`), so you can jump
+straight to a city, the browser back button works, and a mistyped fragment falls back to the Overview.
+On a phone-sized window the links collapse into a menu button.
 
 ---
 
@@ -81,7 +96,7 @@ calm demo fleet):
 | warning | ~29 | the zone turns orange, the incident opens, an SNS alert is published |
 | critical | ~32 | red tile + red banner, strip reads 0/0/1/2, peak score 0.925 on the leader |
 | recovery | ~96 | tiles fall back to NORMAL/WATCH, first incident closes |
-| closure | ~98 | all three NORMAL again, three closed incidents in the incident panel |
+| closure | ~98 | all three NORMAL again, three closed incidents in the **Alerts** view |
 
 To stop early instead of playing the whole arc:
 
