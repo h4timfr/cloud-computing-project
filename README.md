@@ -468,7 +468,7 @@ footer and in this document.
 | `FLOODPULSE_WEATHER=off` kill switch | live check: `weather.enabled: false`, `last_refresh.attempted: false`, `reason: "disabled"`, no provider call, and the five zones **still serve their last real readings** (`status: live`) |
 | Refresh is traceable in CloudWatch | one structured line per attempt, verified live: `weather refresh outcome: {"attempted": true, "event": "weather_refresh", "failed": [], "mode": "live_weather", "refreshed": [five zone ids], …}` — no secret, no credentials |
 | Deployed dashboard vs live API | `node tools/dashboard_run.mjs --site <s3 website> --api <endpoint>` → **11/11**, badge `LIVE`, ranking ordered, a change between two polls named on the page, provenance chips + banner + feed note match the live payload, no panel error |
-| Deployed pages carry their contracts | `python build/verify_deployed_page.py` → **all hold** (live regions, change note, labelled chart, no-script fallback, hidden decoration, attribution) |
+| Deployed pages carry their contracts | `python tools/verify_deployed_page.py` → **all hold** (live regions, change note, labelled chart, no-script fallback, hidden decoration, attribution) |
 | Deployed assets match the repo | `index.html`, `styles.css`, `lib.js`, `app.js` served from S3 are **byte-identical** (sha256) to `web/` |
 | Existing routes preserved | `GET /zones/city-chennai/history?minutes=60` **200** (points accumulate at one per 10 min), `GET /incidents?limit=20` **200**, alerting block unchanged, no ARN, key or provider URL in any body |
 | Demo fleet still isolated | `GET /zones/zone-riverside-north/history` in live mode → **404** `unknown_zone` + the live zone list |
@@ -597,9 +597,9 @@ now sleeps only the remainder of the cadence and reports the drift, so a demo be
 | `node tools/dashboard_run.mjs` (real `lib.js` + `app.js` in a fake DOM) | **11 checks, 0 failed** |
 | `node tools/dashboard_scenarios.mjs` (33 failure/edge scenarios) | **33 checks, 0 failed** |
 | `node tools/story_check.mjs` (demo arc end to end) | **29 checks, 0 failed** |
-| `python build/live_acceptance_hardening.py` (deployed API, read-only) | **35 checks, 0 failed** |
-| `python build/live_incident_check.py` (deployed API, incident provenance) | **18 checks, 0 failed** |
-| `python build/demo_mode_roundtrip.py` (deployed API, whole demo track and back) | **18 checks, 0 failed** |
+| `python tools/live_acceptance.py` (deployed API, read-only) | **35 checks, 0 failed** |
+| `python build/live_incident_check.py` (deployed API, incident provenance; local scratch, not committed) | **18 checks, 0 failed** |
+| `python build/demo_mode_roundtrip.py` (deployed API, whole demo track and back; local scratch, not committed) | **18 checks, 0 failed** |
 
 No browser was available on this machine, so every visual claim above is checked at the DOM/CSS level
 (computed contrast ratios, emitted-class coverage, layout contracts) and never by pixels.
@@ -681,9 +681,9 @@ The redesign's verification was extended first, and all four of these were live 
 | `node tools/dashboard_run.mjs` (demo fixtures, all six story stages) | **37 checks, 0 failed each** |
 | `node tools/dashboard_scenarios.mjs` | **33 checks, 0 failed** |
 | `node tools/story_check.mjs --dir build/story` | **29 checks, 0 failed** |
-| `python build/live_acceptance_hardening.py` (deployed API, read-only) | **35 checks, 0 failed** |
-| `python build/verify_deployed_code.py` | deployed Lambda code **byte-identical** to `src/` (this pass changed no backend file) |
-| `python build/verify_deployed_page.py` | all deployed page contracts hold |
+| `python tools/live_acceptance.py` (deployed API, read-only) | **35 checks, 0 failed** |
+| `python tools/verify_deployed_code.py` | deployed Lambda code **byte-identical** to `src/` (this pass changed no backend file) |
+| `python tools/verify_deployed_page.py` | all deployed page contracts hold |
 
 `dashboard_run.mjs` used to be a static-ish runner with its own throwaway DOM that could not dispatch
 events. It now executes the real `lib.js` + `app.js` against the shared fake browser
@@ -768,7 +768,7 @@ operator's side.
 
 | Harness | Before this pass | After |
 | --- | --- | --- |
-| `python -m unittest discover -s tests -t .` | 391 | **400** |
+| `python -m unittest discover -s tests -t .` | 391 | **405** (the last five check that the committed tooling compiles, names its target and carries no secret-looking literal) |
 | `node tools/dashboard_check.mjs` | 78 | **87** on both payloads (the live fixture was re-captured against the deployed API, so it exercises the same checks as the demo one) |
 | `node tools/dashboard_run.mjs` | 41 live, 39 demo (2 demo checks were mode-blind and failing) | **45** live / **43** demo, 0 failed |
 | `node tools/dashboard_scenarios.mjs` | 35 | **42** |
@@ -788,14 +788,18 @@ without their secrets.
 
 | Check | Result |
 | --- | --- |
-| `python build/verify_deployed_code.py` | deployed Lambda package is **byte-identical** to `src/` (13 files, 0 differing) |
-| `python build/verify_deployed_page.py` | all deployed page contracts hold (18 checks): the quiet live region, the focusable chart, the incident table roles, and the negative checks — the ticking line is not a live region, the column headers are not hidden, focus outlines are not disabled |
-| `python build/live_acceptance_hardening.py` | **35 checks, 0 failed**; median `/zones` latency **1.07 s** (max 1.12 s over five polls); no city failing its fetch; unknown zone 404; out-of-range `minutes` 400; no ARN in any response |
+| `python tools/verify_deployed_code.py` | deployed Lambda package is **byte-identical** to `src/` (13 files, 0 differing) |
+| `python tools/verify_deployed_page.py` | all deployed page contracts hold (18 checks): the quiet live region, the focusable chart, the incident table roles, and the negative checks — the ticking line is not a live region, the column headers are not hidden, focus outlines are not disabled |
+| `python tools/live_acceptance.py` | **35 checks, 0 failed**; median `/zones` latency **1.07 s** (max 1.12 s over five polls); no city failing its fetch; unknown zone 404; out-of-range `minutes` 400; no ARN in any response |
 | `node tools/dashboard_run.mjs --site <dashboard> --api <api>` | **45 checks, 0 failed** with the *deployed* `lib.js`/`app.js` against the *live* API |
 | `GET /zones` (live) | `stale_zone_ids []`, `stale_after_seconds 1800`, `highest_risk_zone.age_seconds 68`, `stale false`, `weather.last_attempt_ok` true for all five cities |
 | `GET /incidents` (live) | `counts_scope "returned_page"`, `truncated false`, `open_count 0` of `count 4` |
 | CloudWatch, last 24 h of `/aws/lambda/floodpulse-api` | 0 ERROR lines, 0 tracebacks, 0 timeouts, 0 5xx; every `weather_refresh` line reports `error: null` |
 
+These three checks are committed under `tools/` as of this pass — they used to live only in the
+gitignored `build/` directory, which meant the commands above were documented but not reproducible
+for anyone cloning the repository. `tests/test_tooling.py` now compiles every Python tool, syntax-
+checks the node harnesses, and asserts that no tool carries a secret-looking literal.
 The history-downsampling fix cannot be observed live: at current volumes `stride` stays 1 (a
 24-hour window for one city is about 290 points against the 600-point cap). Two unit tests pin
 the property instead — the first and last points of a thinned window are real records, and the
@@ -865,6 +869,10 @@ tools/
   storm_demo.py               one-command storm demo; verifies the arc and exports story payloads
   story_check.mjs             replays the exported story through lib.js and asserts it holds up
   weather_probe.py            read-only probe of the live Open-Meteo feed (no AWS credentials)
+  verify_deployed_code.py     deployed Lambda package vs src/ (read-only, byte comparison)
+  verify_deployed_page.py     deployed page contracts: live regions, chart, table roles, no-script
+  live_acceptance.py          live acceptance probe over the deployed API (read-only, no secrets);
+                              also writes build/zones-live-weather.json and friends as fixtures
   init_ingest_key.py          creates the local secret + Lambda env file (never prints it)
   dashboard_check.mjs         static checks on the dashboard sources (node, no browser)
   dashboard_run.mjs           executes lib.js + app.js in a fake DOM against a real payload (node)
@@ -879,7 +887,7 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (400 tests, no AWS calls, no network)
+# full test suite (405 tests, no AWS calls, no network)
 python -m unittest discover -s tests -t .
 
 # the demo story, rehearsed end to end: drives the arc, verifies it, exports what the API served

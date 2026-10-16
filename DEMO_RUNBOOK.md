@@ -23,8 +23,8 @@ python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https
 
 # 2. the deployed stack is the code in this repository (expect 'RESULT: ... identical' and
 #    'all deployed page contracts hold'; both are read-only)
-python build\verify_deployed_code.py
-python build\verify_deployed_page.py
+python tools\verify_deployed_code.py
+python tools\verify_deployed_page.py
 Get-ChildItem web | ForEach-Object { "{0,-16} {1,8} {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName -Algorithm MD5).Hash.ToLower() }
 aws s3api list-objects-v2 --bucket floodpulse-dashboard-725934295966 --query "Contents[].[Key,Size,ETag]" --output text --profile cloud-project --region eu-north-1
 
@@ -152,7 +152,7 @@ Useful extras while talking:
 python tools\weather_probe.py
 
 # what the API serves, with provenance (pretty-printed)
-python build\live_acceptance_hardening.py   # 35 asserts over the live API, read-only
+python tools\live_acceptance.py   # 35 asserts over the live API, read-only
 ```
 
 ## 3. Recovery moves (if something looks wrong)
@@ -187,7 +187,7 @@ python tools\init_ingest_key.py --lambda-env build\env-prod.json --force
 
 # 3. push the new value to the Lambda and re-verify the deployed code
 powershell -NoProfile -File infra\deploy.ps1
-python build\verify_deployed_code.py
+python tools\verify_deployed_code.py
 ```
 
 * Both scripts print a `sha256:` **fingerprint** (12 hex characters), never the key. Compare the
