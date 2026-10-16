@@ -21,7 +21,10 @@ Two things to be honest about, out loud, at the start and if anyone asks:
 #    five cities, REAL rainfall, cache ages well under 600 s)
 python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com/zones')); print(d['zone_mode'], d['zone_count'], d['data_classification'], d['weather']['cache_age_seconds'])"
 
-# 2. the deployed dashboard is byte-identical to this repository (expect 'RESULT: ... identical')
+# 2. the deployed stack is the code in this repository (expect 'RESULT: ... identical' and
+#    'all deployed page contracts hold'; both are read-only)
+python build\verify_deployed_code.py
+python build\verify_deployed_page.py
 Get-ChildItem web | ForEach-Object { "{0,-16} {1,8} {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName -Algorithm MD5).Hash.ToLower() }
 aws s3api list-objects-v2 --bucket floodpulse-dashboard-725934295966 --query "Contents[].[Key,Size,ETag]" --output text --profile cloud-project --region eu-north-1
 
@@ -44,7 +47,7 @@ per-metric provenance chips (`REAL` / `MODEL` / `SIM`), and *Technical details* 
 | Click | What it shows | The line to say |
 |---|---|---|
 | **Overview** | Plain-language fleet answer, highest-risk city, active alerts, cities reporting, weather freshness, band strip, one status card per city | "This is the whole fleet in one screen, and it says in words what the numbers mean." |
-| **Cities → a city** | Score and class **as the API reported them**, a plain-English reason and advice, five measurement tiles with their thresholds and provenance, freshness, history chart, then a collapsed *Technical details* | "Same city, detail on demand. The model is one click away, not in the visitor's face." |
+| **Cities → a city** | Score and class **as the API reported them**, a plain-English reason and advice, five measurement tiles with their thresholds and provenance, freshness, history chart (click it and use the arrow keys), then a collapsed *Technical details* | "Same city, detail on demand. The model is one click away, not in the visitor's face. The chart is reachable without a mouse, too." |
 | **Alerts** | Live alerts and resolved incidents as separate lists, with severity, duration, top driver and the honest SNS state | "Nothing is open right now" / during the storm: "watch it appear here, then move to the resolved list with its duration." |
 | **Data & Methodology** | REAL / MODEL_DERIVED / SIMULATED explained per metric, Open-Meteo attribution, `heuristic-v1` step by step with weights and bands, why the hydraulics are simulated, and the limitations | "This is the honest page: what is measured, what is simulated, and what this score is **not**." |
 
@@ -159,10 +162,41 @@ python build\live_acceptance_hardening.py   # 35 asserts over the live API, read
 | Badge shows **STALE** or **DISCONNECTED** | the API stopped answering. Check the endpoint with the `curl.exe` line from the deploy summary; the board keeps the last values, says they are out of date, and retries every 5 s by itself. Nothing to restart. |
 | Badge shows **CONNECTING** with a reason | the last poll failed; the reason is printed under the badge. A 500 from Lambda usually means a transient AWS error — it clears on its own. |
 | Cities show "Awaiting the first live weather refresh" | the fleet is live but nobody has polled for over 10 minutes; the next poll triggers the refresh. |
+| A city card says "not reporting recently" (or the highest-risk card shows a reading age next to the score) | that city's newest reading is older than 30 minutes, so the score on the card describes a past moment, not now. Say so if it is on screen: it is the board being honest, not a fault. The age comes back down by itself on the next successful provider refresh. |
 | Everything is simulated and no city cards appear | the Lambda is still in demo mode: re-run `infra\deploy.ps1` with no flags. |
 | The board is frozen at a value from 10 minutes ago | by design: the feed refreshes at most once per 600 s, and only while the page is polling. Press refresh in the browser. |
 | The page shows nothing at all | you are serving it from the wrong origin: only `http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com` and `http://localhost:8000` are allow-listed for CORS. `127.0.0.1:8000` and any other port are blocked by design — use the S3 website URL, or start the local server with `python -m http.server 8000 --directory web` and open `http://localhost:8000`. |
 | Lambda errors during the demo | `aws logs tail /aws/lambda/floodpulse-api --since 10m --profile cloud-project --region eu-north-1` |
+
+## 3b. Handling the ingestion key safely (only if the key actually needs changing)
+
+The key is only needed to **write** readings; every read route is public, so a demo that only shows
+the dashboard never touches it. If it does need rotating, do it like this and nothing can be left in
+a half-written state:
+
+```powershell
+# 1. dry run: prints the fingerprint and what it would write, writes nothing
+#    (--reuse means 'keep the key that exists'; without it the tool refuses to act on an
+#     existing key file, which is the safe default)
+python tools\init_ingest_key.py --lambda-env build\env-prod.json --reuse --dry-run
+python tools\init_ingest_key.py --reuse --show-fingerprint
+
+# 2. rotate for real: atomic write, and every other Lambda variable is left untouched
+#    (measured: 'dry run: ... already carries this key: 8 other variable(s) left untouched')
+python tools\init_ingest_key.py --lambda-env build\env-prod.json --force
+
+# 3. push the new value to the Lambda and re-verify the deployed code
+powershell -NoProfile -File infra\deploy.ps1
+python build\verify_deployed_code.py
+```
+
+* Both scripts print a `sha256:` **fingerprint** (12 hex characters), never the key. Compare the
+  fingerprint from `.floodpulse-key` with the one in the deploy output: if they differ, stop and
+  re-run step 2 rather than assuming which side is stale.
+* `infra\deploy.ps1` checks that the local key file and the deployed environment agree **before** it
+  changes anything, and prints the recovery command if they do not.
+* After rotating, an old key must answer HTTP 401 on `POST /readings` (verified in earlier passes).
+* Never put the key in a command line, a screenshot, a slide, or this repository.
 
 ## 4. Questions you should expect, with the verified answers
 
@@ -181,7 +215,13 @@ python build\live_acceptance_hardening.py   # 35 asserts over the live API, read
   history, one item per reading plus `LATEST`, `INCIDENT#…`, `ALERT#COOLDOWN` and `WEATHER#CACHE`
   items in the same table. No GSI, no scans.
 * **Cost?** Idle: effectively $0 (on-demand DynamoDB, Lambda free tier, one small S3 bucket, one SNS
-  topic with no subscribers). A demo day stays far below $0.05.
+  topic with no subscribers). Measured at the end of the last pass: 1,841 Lambda invocations and
+  ~1.7 MB of DynamoDB over two days, which is under $0.01. A demo day stays far below $0.05.
+* **What if a city stops reporting?** Its last reading stays on the board with its age until it is
+  more than 30 minutes old, then the card, the highest-risk stat and any open incident say "not
+  reporting recently" and `/zones` lists it in `stale_zone_ids`. Nothing is invented to fill the
+  gap, and an incident on that city stays OPEN: closing one needs a real NORMAL reading, and no
+  reading is not NORMAL.
 
 ## 5. What not to claim
 
@@ -191,3 +231,5 @@ python build\live_acceptance_hardening.py   # 35 asserts over the live API, read
 * Do not say alerts reach anyone until a subscription is confirmed on `floodpulse-alerts`.
 * Do not mix the two fleets in one sentence: `FLOODPULSE_ZONE_MODE` selects exactly one fleet, and the
   demo story is rehearsed on the demo fleet only.
+* Do not read a city that stopped reporting as a calm city: its score is an old one, and the board
+  says exactly that next to it.

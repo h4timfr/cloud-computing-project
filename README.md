@@ -73,7 +73,7 @@ Item model (one table, no GSI, no scan — `LATEST` per zone plus append-only hi
 
 | `sk` | purpose | TTL |
 |---|---|---|
-| `LATEST` | newest reading + risk for a zone, overwritten each time | none |
+| `LATEST` | newest reading + risk for a zone, overwritten each time | 7 days (`ttl`), refreshed on every write: a zone that stops reporting disappears rather than sitting on the board for ever |
 | `H#<iso timestamp>` | history point; duplicate timestamps get `#2`, `#3`, … via a conditional write | 7 days (`ttl`) |
 | `INCIDENT#<iso timestamp>` | one flood incident (M3), oldest→newest sorted, kept as history | none |
 | `ALERT#COOLDOWN` | per-zone alert cooldown marker with the last SNS `MessageId` per severity (M3) | none |
@@ -215,6 +215,7 @@ M3 adds real flood-incident tracking and one SNS alert topic, without changing w
 | Escalate | WARNING → CRITICAL on the **same** incident: `severity` is raised, `severity_changes` gets an entry, `alert_count` grows. Severity is never downgraded inside an incident |
 | Stay open | WATCH (or any non-NORMAL class) keeps the incident OPEN — that is still an elevated state |
 | Close | Only once the zone is back to NORMAL per the existing `DEESCALATION_STREAK`, then `closed_at`, `duration_seconds` and `close_reason` are set |
+| Silence never closes | A zone that stops reporting leaves its incident OPEN for ever: closing needs a NORMAL reading, and no reading is not NORMAL. The board marks such a row ("zone not reporting") using the zone ages it already holds, and `/zones` lists the zone in `stale_zone_ids`; the incident is not closed for it, because nothing has been measured |
 | History | Closed incidents are kept forever (no TTL) and returned by the API newest first |
 | Tracking failures | Incident/alert errors are caught: the reading still returns **202** with `incident.action = "tracking_failed"`, so ingestion never breaks because of alerting |
 
@@ -709,6 +710,115 @@ in total, all served uncompressed from one bucket with `no-cache` on the four te
 * The Overview's "active alerts" count comes from `GET /incidents`, so it is only as fresh as the
   incident poll (10 s) rather than the zone poll (5 s).
 
+## M7 final hardening and product quality pass (no new AWS resources)
+
+An audit of the whole system — backend, front end, tests, documentation, cost, security — then
+one fix at a time, each with a test that fails without it. Nothing was rebuilt, no architecture
+was added, and no AWS resource was created, deleted or reconfigured. The tables below are the
+complete set of defects found and fixed; `DEMO_RUNBOOK.md` records the same findings from the
+operator's side.
+
+### Backend correctness
+
+| Defect | Effect it had | Fix |
+| --- | --- | --- |
+| `records[::stride]` sampled history from the oldest record | A thinned window dropped its **newest** reading — the point the chart's right edge is drawn from (9 records, cap 5: indices 0,2,4,6,8 kept, index 8's successor lost) | The sample is anchored at the newest record, so the first and last points of a window are always real ones and the cap still holds |
+| `open_count`/`closed_count` summed the returned slice | "1 open" could not be told apart from "1 open on this page of 50" | `counts_scope: "returned_page"` plus `truncated: true` when the limit was reached |
+| `FLOODPULSE_WEATHER_TIMEOUT_SECONDS` never read | Documented and deployed, but the provider client always used its own default | Read, clamped to 1-8 s, and asserted to reach the transport call |
+| `FLOODPULSE_WEATHER_REFRESH_SECONDS` logged "clamping" but returned 600 s | An operator setting 30 s or 86400 s got a value the log did not describe | Clamps to the range and logs the value it actually used |
+| The top-level `weather` block hardcoded the live sources and note | The demo fleet (no provider at all) reported `metric_sources.rainfall_mm_per_hr == "REAL"` and called generated rainfall "the real rainfall" | With no live zone the block reports the simulated sources, a note saying every channel is generated, and `last_attempt_ok` per zone like the per-zone blocks |
+| One unreadable stored reading raised through the fleet view | Any single bad `LATEST` item blanked the whole board | That zone alone reports `status: no_data`, the fleet still renders, and the failure is logged with the zone and the missing fields |
+| One provider error raised through the live-weather path | A provider failure could blank the fleet instead of degrading it | Caught per zone, recorded and reported; the last good values keep being served with their true ages |
+
+### Honesty about time and provenance
+
+* `highest_risk_zone` carries `age_seconds` and `stale`; `/zones` carries `stale_zone_ids` and
+  `stale_after_seconds` (**1800 s**: three missed provider refreshes). All of it is derived from
+  `LATEST` items already in hand, so no extra DynamoDB reads.
+* The Overview's highest-risk stat shows the age of the reading behind the score and marks a zone
+  that has stopped reporting; the hero card and the zone cards already did.
+* An OPEN incident on a zone that went quiet is marked in the incident log and in the alerts view.
+* SNS alert subjects state their provenance: `(simulated)`, `(live rainfall, simulated hydraulics)`
+  or `(simulated data)` per alert kind, instead of one subject for both fleets.
+* A POST whose timestamp is inside the accepted ±300 s skew can move `LATEST` backwards: an
+  out-of-order arrival replaces a newer reading with an older one. The stored reading is real and
+  keeps its own timestamp, but that zone's "newest" reading is the older one until the next reading
+  arrives. Judge a zone by `latest.age_seconds`, not by assuming `LATEST` is the latest arrival.
+
+### Front end
+
+| Defect | Effect it had | Fix |
+| --- | --- | --- |
+| `role="status" aria-live="polite"` wrapped the whole connection block, whose text carried a seconds-resolution age and countdown | About 60 polite announcements a minute, for ever, to anyone using a screen reader | The live region is one off-screen sentence with no ages in it, written only on a real state change; the visible ticker is unchanged |
+| Sparklines drew a dpr-scaled path into the 280x56 bitmap the markup declared | Clipped on a HiDPI screen, stretched on a 1x one | Both canvases size their backing store from their laid-out width (asserted in the runtime harness) |
+| A failed history fetch left a blank box labelled `role="img"` | AT heard "chart" over an empty rectangle, and the previous window's numbers stayed on screen | A loading line before the request, an empty state that says why on failure, and a label describing the series actually drawn |
+| The plain-language sentence tested `trendLabel()` against `'rising'`/`'falling'` | "Conditions are getting worse" was unreachable dead code on a flood board | Branches on `trendDirection()`; the numbers stay in the technical table |
+| `#/cities` was a dead end | Cards lifted on hover but nothing opened a city | Each card title is a link with a stretched hit area |
+| With no API base the page sat on CONNECTING for ever | Five panels said "waiting for data..." indefinitely | The badge, the status line and the screen-reader sentence all say the API base is missing |
+| `poll()` refreshed incidents on the 10 s boundary whenever the 5 s poll crossed it | `/incidents` cost twice what it needed to (13 requests a minute instead of 6) | The poll no longer triggers incidents, and `loadIncidents` has an in-flight guard |
+| `.band-tile.is-zero { opacity: 0.55 }` | The strip's own labels fell to 3.6-4.5:1, on four of five tiles of the live fleet | The tile recedes by losing its gradient and band colour; its labels keep 12:1 |
+| `.zone-card .pill { color: currentColor }` | Beat `.pill.band-critical` on source order, so a CRITICAL pill rendered at 4.90:1 while the stylesheet and the checks claim the light variant | Removed; the band rules apply as documented |
+| `.ghost`/`.nav-toggle` boundaries at 1.88-1.89:1 and 29.6-34 px tall | A control needs 3:1 and a fingertip needs 40 px | Border strengthened to `rgba(148,163,184,0.6)`, 40 px minimum, and a 40 px floor on the phone breakpoint |
+| The six-column technical table (min-content about 410 px) pushed the page sideways below a 500 px viewport | Horizontal page scroll on a phone | It scrolls inside its own focusable box |
+| The chart answered `mousemove` on a canvas with no tabindex | The per-point values were unreachable by keyboard or touch | Focusable, arrow keys/Home/End/Escape, a label naming the point being shown, touch handlers, and a line saying the arrow keys work |
+| `formatMetric`/`formatValueWithUnit` dereferenced `METRIC_META[metric]` unguarded | One unexpected driver name from the API threw inside the renderer and blanked the city page | A `metricMeta` fallback that uses the raw name with no unit |
+| `<ol id="ranking">` preceded its own heading; `#zones` had no accessible name; the missing-city card started at `<h3>` under an `<h1>` | Screen-reader reading order and heading structure | Heading first, both regions labelled by their headings, the card is an `<h2>` |
+
+### Tests
+
+| Harness | Before this pass | After |
+| --- | --- | --- |
+| `python -m unittest discover -s tests -t .` | 391 | **400** |
+| `node tools/dashboard_check.mjs` | 78 | **87** on both payloads (the live fixture was re-captured against the deployed API, so it exercises the same checks as the demo one) |
+| `node tools/dashboard_run.mjs` | 41 live, 39 demo (2 demo checks were mode-blind and failing) | **45** live / **43** demo, 0 failed |
+| `node tools/dashboard_scenarios.mjs` | 35 | **42** |
+| `node tools/story_check.mjs --dir build/story` | 29 | **29** (unchanged: the story arc is untouched) |
+
+Every fixed defect has a check that fails without the fix, phrased as the property that matters
+("a simulated zone is never called a city", "seventy clock ticks must not rewrite the announced
+sentence", "a reading an hour old must be shown with its age"). The two demo-mode assertions that
+failed before this pass were harness bugs rather than product bugs: they hardcoded the live noun.
+
+### M7 acceptance run (live, against the deployed stack)
+
+Everything below was run against the **deployed** resources after this pass: the Lambda code
+was updated from `src/`, four dashboard objects were uploaded, no resource was created,
+reconfigured or deleted, IAM was untouched and the ingest key is unchanged. Commands are shown
+without their secrets.
+
+| Check | Result |
+| --- | --- |
+| `python build/verify_deployed_code.py` | deployed Lambda package is **byte-identical** to `src/` (13 files, 0 differing) |
+| `python build/verify_deployed_page.py` | all deployed page contracts hold (18 checks): the quiet live region, the focusable chart, the incident table roles, and the negative checks — the ticking line is not a live region, the column headers are not hidden, focus outlines are not disabled |
+| `python build/live_acceptance_hardening.py` | **35 checks, 0 failed**; median `/zones` latency **1.07 s** (max 1.12 s over five polls); no city failing its fetch; unknown zone 404; out-of-range `minutes` 400; no ARN in any response |
+| `node tools/dashboard_run.mjs --site <dashboard> --api <api>` | **45 checks, 0 failed** with the *deployed* `lib.js`/`app.js` against the *live* API |
+| `GET /zones` (live) | `stale_zone_ids []`, `stale_after_seconds 1800`, `highest_risk_zone.age_seconds 68`, `stale false`, `weather.last_attempt_ok` true for all five cities |
+| `GET /incidents` (live) | `counts_scope "returned_page"`, `truncated false`, `open_count 0` of `count 4` |
+| CloudWatch, last 24 h of `/aws/lambda/floodpulse-api` | 0 ERROR lines, 0 tracebacks, 0 timeouts, 0 5xx; every `weather_refresh` line reports `error: null` |
+
+The history-downsampling fix cannot be observed live: at current volumes `stride` stays 1 (a
+24-hour window for one city is about 290 points against the 600-point cap). Two unit tests pin
+the property instead — the first and last points of a thinned window are real records, and the
+cap still holds.
+### Documentation
+
+* `DEMO_RUNBOOK.md` covers the ingest-key tool's `--dry-run` and fingerprint, the env/key
+  consistency check in `infra/deploy.ps1`, and what to do when a poll fails mid-demo.
+* This README documents the incident-silence rule, the `LATEST` TTL, the staleness fields, the
+  scope of the incident counts and the out-of-order-reading caveat.
+
+### Security review (M7)
+
+| Item | State |
+| --- | --- |
+| Ingestion key | Stored only in the gitignored `.floodpulse-key` and `build/env-prod.json`; compared with `hmac.compare_digest`; absent key in cloud mode fails **closed** (503 `ingest_not_configured`); a missing header is 401 while a wrong key is a differently-worded 401 that reveals nothing |
+| Secret hygiene | `tools/init_ingest_key.py` never prints the key (only a `sha256:` fingerprint), merges into the Lambda environment instead of replacing it, validates before writing, and writes atomically; `infra/deploy.ps1` verifies that the local key file and the deployed environment agree *before* it changes anything, and prints no values |
+| Repository | No secret, ARN, account id or key appears in the front end, the deployed assets or any response: asserted by the static harness (the page may not mention `x-fp-key`, `FLOODPULSE_INGEST_KEY`, `POST` or `/readings`), by the live acceptance probe (no `arn:aws` in any payload) and by tests |
+| Public surface | Read routes are public by design (`/zones`, `/incidents`, `/zones/{id}/history`); the only write route requires the key; unknown routes 404 at API Gateway; query parameters are validated (`minutes` 1-1440, `limit` 1-200) |
+| Response headers | CORS is restricted to the dashboard origin and `http://localhost:8000`; an unknown origin gets no allow-origin header. S3 static website hosting cannot send custom headers, so a CSP would need CloudFront, which is out of scope — the page loads no third-party script, stylesheet or font, and every image is local |
+| Injection and input handling | Every string that reaches the DOM goes through `escapeHtml`; stored payloads are validated before use and a malformed one degrades to `no_data` rather than throwing; no `eval`, no `innerHTML` with unescaped data |
+| Least privilege | The Lambda role has `dynamodb:GetItem/PutItem` on the one table (no scan, no delete, no GSI) and `sns:Publish` on the one topic ARN; `iam:*` is denied to the deployment profile, so no policy was touched |
+| Known gaps (accepted, documented) | No API throttling; no CloudWatch alarm; no subscriber on the alerts topic; no CSP header (S3 static hosting); no WAF. All four are reported rather than silently accepted, and none is a defect in the code |
 ## Repository layout
 
 ```
@@ -769,7 +879,7 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (363 tests, no AWS calls, no network)
+# full test suite (400 tests, no AWS calls, no network)
 python -m unittest discover -s tests -t .
 
 # the demo story, rehearsed end to end: drives the arc, verifies it, exports what the API served
@@ -785,13 +895,13 @@ node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
 node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
 
-# dashboard scenario harness: 33 failure and edge cases (first-poll failure, 500s, stale feed,
+# dashboard scenario harness: 42 failure and edge cases (first-poll failure, 500s, stale feed,
 # hung requests, mode switching, history backoff...) driven through the real poller in a fake DOM
 node tools/dashboard_scenarios.mjs
 
 # dashboard runtime check: runs the real lib.js + app.js in a fake browser and uses the page the
 # way a person does — clicking all four sections, opening each city, the alerts split and its empty
-# states, the phone menu, a failed poll, recovery. 38 checks against the live payloads.
+# states, the phone menu, a failed poll, recovery. 45 checks against the live payloads.
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
@@ -913,7 +1023,8 @@ constant so tests never depend on the wall clock.
 | M4 | India live-weather integration: 5 city zones on real rainfall/soil moisture, per-metric provenance, cached external feed, simulator kept as demo/fallback | ✅ **done and verified live** |
 | M5 | Dashboard hardening: fleet risk strip, documented colour system, honest failure/stale states, provenance fix on `/history` + `/incidents`, one-command verified storm demo | ✅ **done and verified live** |
 | M6 | Public-facing information architecture: Overview / Cities / City / Alerts / Data & Methodology as four routed views with a phone menu, plus the runtime harness to drive them | ✅ **done, verified, deployed** |
-| M7 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ |
+| M7 | Final hardening and product quality pass: full-system audit, per-defect fixes with tests, accessibility and mobile work, cost and security review. No new AWS resources, no architecture change | ✅ **done, verified against the deployed stack** |
+| M8 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ |
 
 ## AWS state (verified)
 
@@ -927,20 +1038,42 @@ constant so tests never depend on the wall clock.
   owner as well, because `iam:PutRolePolicy` is denied for the `cloud-project` user (AWS returns
   `AccessDenied … no identity-based policy allows the iam:PutRolePolicy action`)
 * no EC2, RDS, CloudFront, VPC, NAT gateway, ECS/EKS or OpenSearch resource exists for this project
+* this pass changed **no** resource definition: the Lambda's code was replaced from `src/`, the four
+  text objects in the dashboard bucket were re-uploaded, and the CORS allow-list on the existing API
+  was refreshed. No table, function, API, route, topic, policy or IAM entity was created, deleted or
+  reconfigured, and the ingest key is unchanged (its fingerprint is checked by the deploy script
+  before and after a write)
 * `cloudformation:*` is **denied** for this profile (verified earlier: `ListStacks`, `DescribeStacks`,
   `ValidateTemplate`) → SAM/CDK/`cfn deploy` are unusable; deployment is per-service AWS CLI calls
 * the unrelated role `Video2Product-EC2-SSM-Role` exists in the account and was not touched
 
 ## Cost posture
 
-Live now: DynamoDB on-demand + Lambda (free tier) + HTTP API ($1 per million requests) + 7-day log
-retention + one S3 bucket holding ~95 KB (a few cents at most per month) + one SNS topic with no
-subscriptions (idle topics and 6 publishes cost nothing; SNS's first 1M publishes/month are free) +
-the M4 weather cache (~1,440 extra tiny writes/day, ~$0) + at most 144 external weather requests/day
-on a free, key-less tier. No NAT gateway, CloudFront, IoT Core, EC2, RDS or OpenSearch. Estimated
-cost while the stack sits idle: effectively $0 (all on-demand/free-tier, log retention bounded at
-7 days); a demo day of thousands of API requests, tens of thousands of DynamoDB writes and a handful
-of SNS publishes stays far below $0.05.
+Measured at the end of this pass (read-only AWS CLI, eu-north-1):
+
+| Resource | Usage now | Cost effect |
+| --- | --- | --- |
+| Lambda `floodpulse-api` | **1,841 invocations** and **441.6 s** of total duration over the two days CloudWatch reports, 0 errors, 0 throttles, 256 MB | ≈110 GB-s: inside the 400,000 GB-s monthly free tier, **$0** |
+| API Gateway HTTP API | ~1,841 requests on those two days | $1.00 per million requests: **$0.002** |
+| DynamoDB `floodpulse` | **1,364 items / 947 KB**, on-demand, TTL pruning history at 7 days, no GSI, no scans | 25 GB storage free tier: **$0**; writes are a few thousand a day (on-demand write units cost $1.25/million) |
+| S3 `floodpulse-dashboard-…` | **5 objects / 234 KB** (index, styles, lib, app, backdrop) | a few cents **per year**, no CloudFront |
+| CloudWatch Logs | **297 KB stored**, 7-day retention | ingestion ~$0.0002, storage negligible; retention bounds it by design |
+| SNS `floodpulse-alerts` | **0 confirmed subscriptions**, 1 pending | 1 M publishes/month free; nothing is delivered to anyone |
+| External weather API | at most 1 request per 10 minutes (~144/day), free and key-less | **$0** (attribution is the price: CC BY 4.0) |
+
+Idle cost is effectively **$0**; the two days of development and demo traffic above cost under
+**$0.01**. No NAT gateway, CloudFront, IoT Core, EC2, RDS, OpenSearch, provisioned capacity or
+scheduled refresh exists. Three things are deliberately absent and would be the first additions if
+the budget allowed (all are cheap or free, none was created because adding resources needs the
+owner's approval):
+
+1. **API Gateway throttling** — `$default` has no burst or rate limit, so a runaway client could
+   spend credits and inflate the bill. A burst/rate limit is a configuration change on the existing
+   stage, not a new resource.
+2. **CloudWatch alarms** — nothing pages anyone if the error rate or latency spikes. The first ten
+   alarms are free; with 0 confirmed SNS subscribers an alarm would need an action target first.
+3. **Detailed API metrics** — currently off, so per-route latency is only visible in the Lambda's own
+   logs rather than in API Gateway metrics.
 
 ## Engineering rules
 
