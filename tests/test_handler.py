@@ -416,7 +416,12 @@ class LambdaHandlerAdapterTests(HandlerTestCase):
         self.assertEqual(response["statusCode"], 400)
         self.assertEqual(json.loads(response["body"])["error"], "invalid_body")
 
-    def test_unexpected_store_error_becomes_a_500_without_leaking_details(self) -> None:
+    def test_one_unreadable_zone_degrades_that_zone_and_not_the_fleet(self) -> None:
+        """A failing per-zone read used to raise out of GET /zones and blank the whole board.
+
+        The honest degradation is the zone that cannot be read, reported as "no data" like a
+        zone that has never reported, with no invented values and no leaked internals.
+        """
         class ExplodingStore(LocalStore):
             def get_latest(self, zone_id: str):  # type: ignore[override]
                 raise RuntimeError("dynamo is on fire")
@@ -424,6 +429,53 @@ class LambdaHandlerAdapterTests(HandlerTestCase):
         set_store(ExplodingStore())
         response = lambda_handler(
             {"version": "2.0", "rawPath": "/zones", "requestContext": {"http": {"method": "GET"}}},
+            None,
+        )
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertEqual(len(body["zones"]), 3)
+        for zone in body["zones"]:
+            self.assertEqual(zone["status"], "no_data")
+            self.assertIsNone(zone["latest"])
+        self.assertIsNone(body["highest_risk_zone"])
+        self.assertEqual(len(body["zone_ranking"]), 3, "every zone is still listed, in the ranking")
+        self.assertNotIn("on fire", response["body"], "a store error must never reach the client")
+        self.assertNotIn("Traceback", response["body"])
+
+    def test_a_zone_whose_stored_reading_is_unreadable_reports_no_data(self) -> None:
+        """A short or legacy LATEST item must not become a half-rendered reading."""
+        class ShortItemStore(LocalStore):
+            def get_latest(self, zone_id: str):  # type: ignore[override]
+                if zone_id == "zone-old-town-canal":
+                    # a shape the schema never wrote: no readings, no risk class, no timestamp
+                    return {"pk": "ZONE#zone-old-town-canal", "sk": LATEST_SORT_KEY, "risk_score": 0.9}
+                return super().get_latest(zone_id)
+
+        self.store = ShortItemStore()
+        set_store(self.store)
+        self.assertEqual(self.post_json(payload())[0], 202, "the seeding post must be accepted")
+        response = lambda_handler(
+            {"version": "2.0", "rawPath": "/zones", "requestContext": {"http": {"method": "GET"}}},
+            None,
+        )
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        by_id = {zone["zone_id"]: zone for zone in body["zones"]}
+        self.assertEqual(by_id["zone-old-town-canal"]["status"], "no_data")
+        self.assertIsNone(by_id["zone-old-town-canal"]["latest"],
+                          "half an item must never be presented as a reading")
+        self.assertEqual(by_id["zone-riverside-north"]["status"], "live",
+                         "the readable zone must keep its reading")
+        self.assertEqual(body["highest_risk_zone"]["zone_id"], "zone-riverside-north")
+
+    def test_unexpected_store_error_becomes_a_500_without_leaking_details(self) -> None:
+        class ExplodingStore(LocalStore):
+            def list_incidents(self, *args, **kwargs):  # type: ignore[override]
+                raise RuntimeError("dynamo is on fire")
+
+        set_store(ExplodingStore())
+        response = lambda_handler(
+            {"version": "2.0", "rawPath": "/incidents", "requestContext": {"http": {"method": "GET"}}},
             None,
         )
         self.assertEqual(response["statusCode"], 500)

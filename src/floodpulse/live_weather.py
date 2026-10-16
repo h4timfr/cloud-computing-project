@@ -431,7 +431,10 @@ def refresh_live_weather(
     caches: dict[str, Any] = {}
     for zone in zones:
         zone_id = str(zone["zone_id"])
-        cache = store.get_weather_cache(zone_id)
+        try:
+            cache = store.get_weather_cache(zone_id)
+        except Exception:  # noqa: BLE001 - an unreadable cache means "refresh", never a crash
+            cache = None
         caches[zone_id] = cache
         if needs_refresh(cache, now_epoch, refresh_seconds):
             stale.append(zone)
@@ -457,18 +460,45 @@ def refresh_live_weather(
     refreshed: list[str] = []
     failed: list[str] = []
     errors: list[str] = []
+
+    def record_failure(zone_id: str, detail: str) -> None:
+        """Report a per-zone failure *and* move its attempt anchor.
+
+        Without the anchor this zone is stale on every poll, so one zone the provider
+        cannot serve (a short response, a coordinate mismatch, one store read error)
+        would turn the documented "at most one provider call per refresh window" into one
+        call per dashboard poll. Best effort: bookkeeping never breaks the response.
+        """
+        failed.append(zone_id)
+        errors.append(f"{zone_id}: {detail}")
+        try:
+            store.put_weather_cache(
+                build_weather_failure_item(
+                    zone_id=zone_id,
+                    now_epoch=now_epoch,
+                    error=detail,
+                    previous=caches.get(zone_id),
+                )
+            )
+        except Exception:  # noqa: BLE001 - diagnostics must not break the response
+            pass
+
     for zone in stale:
         zone_id = str(zone["zone_id"])
         observation = result.observations.get(zone_id)
         if observation is None or not observation.ok:
-            failed.append(zone_id)
-            errors.append(f"{zone_id}: {(observation.error if observation else None) or 'no_observation'}")
+            record_failure(zone_id, (observation.error if observation else None) or "no_observation")
             continue
-        previous = store.get_latest(zone_id)
-        metrics = build_live_metrics(observation, previous=previous, now_epoch=now_epoch)
+        try:
+            # both the stored item read and the metric derivation are per-zone work: one
+            # unreadable zone must not abandon the refresh for the zones that are fine
+            previous = store.get_latest(zone_id)
+            metrics = build_live_metrics(observation, previous=previous, now_epoch=now_epoch)
+        except Exception as exc:  # noqa: BLE001 - one bad zone must not stop the others
+            record_failure(zone_id, f"prepare_failed: {type(exc).__name__}")
+            continue
         if metrics is None:
-            failed.append(zone_id)
-            errors.append(f"{zone_id}: incomplete_observation")
+            record_failure(zone_id, "incomplete_observation")
             continue
         try:
             record = build_live_record(zone_id, metrics, now_epoch=now_epoch, observation=observation)
@@ -477,19 +507,7 @@ def refresh_live_weather(
             )
             ingest(record, observation)
         except Exception as exc:  # noqa: BLE001 - one bad zone must not stop the others
-            failed.append(zone_id)
-            errors.append(f"{zone_id}: ingest_failed: {exc}")
-            try:
-                store.put_weather_cache(
-                    build_weather_failure_item(
-                        zone_id=zone_id,
-                        now_epoch=now_epoch,
-                        error=f"ingest_failed: {exc}",
-                        previous=caches.get(zone_id),
-                    )
-                )
-            except Exception:  # noqa: BLE001 - diagnostics must not break the response
-                pass
+            record_failure(zone_id, f"ingest_failed: {type(exc).__name__}: {exc}")
             continue
         refreshed.append(zone_id)
 

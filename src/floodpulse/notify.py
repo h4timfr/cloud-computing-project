@@ -18,7 +18,13 @@ import json
 import re
 from typing import Any, Mapping
 
-from .config import SIMULATION_DISCLAIMER, SNS_TOPIC_ENV
+from .config import (
+    DATA_CLASSIFICATION_MIXED,
+    DATA_CLASSIFICATION_SIMULATED,
+    MIXED_DATA_DISCLAIMER,
+    SIMULATION_DISCLAIMER,
+    SNS_TOPIC_ENV,
+)
 from .risk import MODEL_NOTE
 
 ALERT_KIND_OPENED = "incident_opened"
@@ -104,13 +110,41 @@ def sanitise_subject(text: str) -> str:
     return cleaned
 
 
-def alert_subject(kind: str, zone_name: str, severity: str) -> str:
-    """Human-readable subject line for an incident alert."""
+def alert_provenance(incident: Mapping[str, Any]) -> str:
+    """The provenance of the data that raised this incident ("simulated" or "mixed").
+
+    Incidents carry the classification of the reading that opened them, so a live-weather
+    incident over real rainfall is ``mixed``. Defaulting to "simulated" when the field is
+    absent keeps the conservative direction: never claim real measurements we cannot prove.
+    """
+    value = str(incident.get("data_classification") or "").strip().lower()
+    if value == DATA_CLASSIFICATION_MIXED:
+        return value
+    return DATA_CLASSIFICATION_SIMULATED
+
+
+def is_simulated_only(incident: Mapping[str, Any]) -> bool:
+    return alert_provenance(incident) == DATA_CLASSIFICATION_SIMULATED
+
+
+def alert_disclaimer(incident: Mapping[str, Any]) -> str:
+    return SIMULATION_DISCLAIMER if is_simulated_only(incident) else MIXED_DATA_DISCLAIMER
+
+
+def alert_subject(kind: str, zone_name: str, severity: str, *, simulated: bool = True) -> str:
+    """Human-readable subject line for an incident alert.
+
+    The provenance marker follows the incident: a live-weather incident is never labelled
+    "simulated", and a fully simulated one keeps its full simulation wording.
+    """
     if kind == ALERT_KIND_ESCALATED:
-        return sanitise_subject(f"FloodPulse ESCALATION to {severity}: {zone_name} (simulated)")
+        tail = "(simulated)" if simulated else "(live rainfall, simulated hydraulics)"
+        return sanitise_subject(f"FloodPulse ESCALATION to {severity}: {zone_name} {tail}")
     if kind == ALERT_KIND_TEST:
-        return sanitise_subject(f"FloodPulse test alert: {zone_name} (simulated data)")
-    return sanitise_subject(f"FloodPulse {severity}: {zone_name} (simulated flood risk)")
+        tail = "(simulated data)" if simulated else "(live rainfall mode)"
+        return sanitise_subject(f"FloodPulse test alert: {zone_name} {tail}")
+    tail = "(simulated flood risk)" if simulated else "(live rainfall, simulated hydraulics)"
+    return sanitise_subject(f"FloodPulse {severity}: {zone_name} {tail}")
 
 
 def _number(value: Any) -> float | None:
@@ -123,14 +157,18 @@ def _number(value: Any) -> float | None:
 def build_alert_message(kind: str, incident: Mapping[str, Any]) -> str:
     """JSON message body for an incident alert.
 
-    Contains only incident facts plus explicit statements that the data is simulated and
-    the score is a heuristic. It never contains the topic ARN or any ingestion secret.
+    Contains only incident facts plus explicit statements about where the data came from
+    and that the score is a heuristic. The provenance is the incident's own: a live-weather
+    incident is reported as ``mixed`` rather than being mislabelled as fully simulated.
+    It never contains the topic ARN or any ingestion secret.
     """
+    provenance = alert_provenance(incident)
+    simulated_only = provenance == DATA_CLASSIFICATION_SIMULATED
     payload = {
         "source": "floodpulse",
         "kind": kind,
-        "simulated": True,
-        "data_classification": "simulated",
+        "simulated": simulated_only,
+        "data_classification": provenance,
         "severity": incident.get("severity"),
         "zone": {
             "zone_id": incident.get("zone_id"),
@@ -151,10 +189,16 @@ def build_alert_message(kind: str, incident: Mapping[str, Any]) -> str:
         },
         "model": incident.get("model", "heuristic-v1"),
         "model_note": MODEL_NOTE,
-        "disclaimer": SIMULATION_DISCLAIMER,
+        "disclaimer": alert_disclaimer(incident),
         "action": (
-            "Automated demo notification. The zone's heuristic risk class crossed into an "
-            "alerting band. No real flood is being measured; all sensor values are SIMULATED."
+            "Automated notification. The zone's heuristic risk class crossed into an alerting "
+            "band. " + (
+                "No real flood is being measured; all sensor values are SIMULATED."
+                if simulated_only else
+                "Rainfall intensity and soil saturation are real observations from the "
+                "Open-Meteo weather service; drain level, water level and flow rate are "
+                "SIMULATED. Nothing here is an official flood warning."
+            )
         ),
     }
     return json.dumps(payload, indent=2, sort_keys=False, default=str)

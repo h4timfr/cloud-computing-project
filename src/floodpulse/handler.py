@@ -98,6 +98,7 @@ from .notify import (
     NoopNotifier,
     alert_subject,
     build_alert_message,
+    is_simulated_only,
     notifier_for_env,
 )
 from .risk import MODEL_NOTE, apply_hysteresis, rolling_mean_metrics, score_zone
@@ -261,7 +262,10 @@ def _maybe_alert(
     zone_name = str(incident.get("zone_name") or zone_id)
     try:
         result = notifier.publish(
-            alert_subject(kind, zone_name, alert_severity),
+            # the subject states the provenance of the incident, not of the deployment:
+            # a live-weather incident over real rainfall is never labelled "simulated"
+            alert_subject(kind, zone_name, alert_severity,
+                          simulated=is_simulated_only(incident)),
             build_alert_message(kind, incident),
         )
     except Exception as exc:  # noqa: BLE001 - a bad notifier must not break tracking
@@ -556,6 +560,20 @@ def _handle_reading(
 # GET /zones
 # --------------------------------------------------------------------------- #
 
+# What a stored LATEST item must carry before it can be presented as a reading. A missing
+# field means "this item cannot be shown", never "assume zero".
+LATEST_REQUIRED_FIELDS: tuple[str, ...] = (
+    "data_classification", "sensor_node_id", "timestamp", "ts_epoch", "sequence",
+    "risk_score", "risk_class", "risk_class_candidate", "readings", "smoothed_readings",
+)
+
+
+def _missing_latest_fields(latest: Mapping[str, Any]) -> list[str]:
+    """The required fields this stored item is missing (a non-mapping misses all of them)."""
+    if not isinstance(latest, Mapping):
+        return list(LATEST_REQUIRED_FIELDS)
+    return [field for field in LATEST_REQUIRED_FIELDS if latest.get(field) is None]
+
 
 def _zone_view(
     zone: Mapping[str, Any],
@@ -604,6 +622,15 @@ def _zone_view(
     if latest is None:
         return view
 
+    # A stored item can be incomplete (a legacy shape, a partial write, a hand-edited item).
+    # Presenting half a reading is worse than presenting none, so an unreadable item is
+    # reported as "no data" for that zone only, with the reason logged and no value invented.
+    missing = _missing_latest_fields(latest)
+    if missing:
+        LOGGER.warning("readings.unreadable zone_id=%s missing=%s", zone["zone_id"], ",".join(missing))
+        view["status"] = "no_data"
+        return view
+
     detail = latest.get("risk_detail", {})
     view["latest"] = {
         "simulated": bool(latest.get("simulated", True)),
@@ -631,6 +658,24 @@ def _zone_view(
         "hysteresis": latest.get("hysteresis", {}),
     }
     return view
+
+
+def _zone_view_safely(
+    zone: Mapping[str, Any],
+    store: Any,
+    now_epoch: float,
+    *,
+    mode: str,
+    weather_cache: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """One zone's view, isolated: a failing read degrades that zone, never the fleet."""
+    zone_id = str(zone["zone_id"])
+    try:
+        latest = store.get_latest(zone_id)
+    except Exception as exc:  # noqa: BLE001 - one unreadable zone must not blank the board
+        LOGGER.warning("readings.latest_failed zone_id=%s error=%s", zone_id, type(exc).__name__)
+        latest = None
+    return _zone_view(zone, latest, now_epoch, mode=mode, weather_cache=weather_cache)
 
 
 def _apply_zone_mode(store: Any, env: Mapping[str, str] | None) -> tuple[str, tuple[dict[str, Any], ...]]:
@@ -757,9 +802,9 @@ def _handle_zones(
     )
 
     views = [
-        _zone_view(
+        _zone_view_safely(
             zone,
-            store.get_latest(str(zone["zone_id"])),
+            store,
             now_epoch,
             mode=active_mode,
             weather_cache=caches.get(str(zone["zone_id"])),

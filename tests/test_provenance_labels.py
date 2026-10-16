@@ -134,6 +134,57 @@ class ProvenanceRuleTest(unittest.TestCase):
         )
 
 
+class AlertProvenanceTest(unittest.TestCase):
+    """The published alert states the provenance of the incident that raised it.
+
+    This is the only artifact that leaves FloodPulse (it lands in an inbox), so it is the
+    worst place to mislabel real rainfall as simulated.
+    """
+
+    class CapturingNotifier:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str]] = []
+
+        def publish(self, subject: str, message: str) -> dict:
+            self.messages.append((subject, message))
+            return {"published": True, "message_id": "test-message"}
+
+        def redact(self, text: str) -> str:
+            return text
+
+    def test_a_live_rainfall_incident_publishes_mixed_provenance(self) -> None:
+        store = LocalStore()
+        notifier = self.CapturingNotifier()
+        hot = FixedWeatherClient(rain=60.0, soil_saturation_pct=99.0)
+        for step in range(3):
+            dispatch(
+                "GET", "/zones", store=store, now_epoch=NOW + step * 601, env=dict(LIVE_ENV),
+                weather_client=hot, notifier=notifier, cooldown_seconds=600,
+            )
+        self.assertTrue(notifier.messages, "the live incident published no alert at all")
+        subject, message = notifier.messages[0]
+        self.assertNotIn("(simulated", subject, f"a live incident was labelled simulated: {subject}")
+        body = json.loads(message)
+        self.assertEqual(body["data_classification"], DATA_CLASSIFICATION_MIXED)
+        self.assertFalse(body["simulated"])
+        self.assertIn("real observations", body["action"])
+
+    def test_a_demo_incident_still_publishes_simulated_provenance(self) -> None:
+        store = LocalStore()
+        notifier = self.CapturingNotifier()
+        scenario = ZoneScenario(store, zone_id="zone-old-town-canal", notifier=notifier, cooldown_seconds=600)
+        scenario.run(45)  # the simulated arc needs ~30 readings from calm to reach WARNING
+        self.assertTrue(notifier.messages,
+                        f"the demo incident published no alert at all (actions: {scenario.actions()})")
+        subject, message = notifier.messages[0]
+        self.assertIn("(simulated", subject)
+        body = json.loads(message)
+        self.assertEqual(body["data_classification"], DATA_CLASSIFICATION_SIMULATED)
+        self.assertTrue(body["simulated"])
+
+
 class HistoryProvenanceTest(unittest.TestCase):
     """GET /zones/{zone_id}/history reports what its own records are."""
 

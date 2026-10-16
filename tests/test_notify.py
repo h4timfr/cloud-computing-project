@@ -14,9 +14,11 @@ from floodpulse.notify import (
     ALERT_KIND_TEST,
     NoopNotifier,
     SnsNotifier,
+    alert_provenance,
     alert_subject,
     build_alert_message,
     build_notifier,
+    is_simulated_only,
     notifier_for_env,
     sanitise_subject,
 )
@@ -129,6 +131,58 @@ class SubjectTest(unittest.TestCase):
         long_subject = sanitise_subject("x" * 200)
         self.assertEqual(len(long_subject), 100)
         self.assertTrue(long_subject.endswith("..."))
+
+    def test_a_live_weather_incident_is_never_labelled_simulated(self) -> None:
+        """A live-rainfall incident reached an inbox labelled "simulated flood risk".
+
+        The incident carries its provenance; the alert must state the incident's, not a
+        constant.
+        """
+        opened = alert_subject(ALERT_KIND_OPENED, "Bengaluru", "CRITICAL", simulated=False)
+        escalated = alert_subject(ALERT_KIND_ESCALATED, "Bengaluru", "CRITICAL", simulated=False)
+        self.assertIn("live rainfall", opened)
+        self.assertIn("live rainfall", escalated)
+        self.assertNotIn("(simulated", opened)
+        self.assertNotIn("(simulated", escalated)
+        self.assertTrue(opened.isascii() and len(opened) <= 100)
+        # and the simulated fleet keeps saying so
+        self.assertIn("(simulated flood risk)", alert_subject(ALERT_KIND_OPENED, "Riverside North", "WARNING"))
+
+
+class AlertProvenanceTest(unittest.TestCase):
+    """The message body follows the incident's own classification."""
+
+    MIXED = dict(INCIDENT, data_classification="mixed")
+    SIMULATED = dict(INCIDENT, data_classification="simulated")
+
+    def test_a_mixed_incident_reports_mixed_data(self) -> None:
+        payload = json.loads(build_alert_message(ALERT_KIND_OPENED, self.MIXED))
+        self.assertFalse(payload["simulated"], "a live-rainfall incident must not claim to be fully simulated")
+        self.assertEqual(payload["data_classification"], "mixed")
+        self.assertIn("Open-Meteo", payload["disclaimer"])
+        self.assertNotIn("All FloodPulse sensor data is SIMULATED", payload["disclaimer"])
+        self.assertIn("real observations", payload["action"])
+        self.assertNotIn("all sensor values are SIMULATED", payload["action"])
+        self.assertIn("official flood warning", payload["action"])
+
+    def test_a_simulated_incident_keeps_the_simulation_words(self) -> None:
+        payload = json.loads(build_alert_message(ALERT_KIND_OPENED, self.SIMULATED))
+        self.assertTrue(payload["simulated"])
+        self.assertEqual(payload["data_classification"], "simulated")
+        self.assertIn("ALL FloodPulse sensor data is SIMULATED".replace("ALL", "All"), payload["disclaimer"])
+        self.assertIn("all sensor values are SIMULATED", payload["action"])
+
+    def test_a_missing_classification_defaults_to_simulated(self) -> None:
+        payload = json.loads(build_alert_message(ALERT_KIND_OPENED, dict(INCIDENT, data_classification=None)))
+        self.assertTrue(payload["simulated"], "an unknown provenance must never be upgraded to real")
+
+    def test_alert_provenance_helper_reads_the_incident(self) -> None:
+        self.assertEqual(alert_provenance(self.MIXED), "mixed")
+        self.assertEqual(alert_provenance(self.SIMULATED), "simulated")
+        self.assertEqual(alert_provenance({}), "simulated")
+        self.assertEqual(alert_provenance({"data_classification": " MIXED "}), "mixed")
+        self.assertTrue(is_simulated_only(self.SIMULATED))
+        self.assertFalse(is_simulated_only(self.MIXED))
 
 
 class MessageTest(unittest.TestCase):

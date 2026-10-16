@@ -418,6 +418,101 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(outcome.failed, (CITY,))
         self.assertIsNotNone(outcome.error)
 
+    def test_a_per_zone_provider_failure_is_not_retried_every_poll(self):
+        """One zone the provider cannot serve must not become a call per dashboard poll.
+
+        The attempt anchor used to be written only when the *whole* provider failed, so a
+        single bad zone stayed stale forever and every poll fetched again (measured: 120
+        provider calls in 600 s of 5 s polls).
+        """
+        failing = FakeClient({CITY: observation(CITY, ok=False)})
+        first = live_weather.refresh_live_weather(
+            self.store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
+            ingest=self.ingest, client=failing,
+        )
+        self.assertEqual(first.failed, (CITY,))
+        self.assertEqual(failing.calls, 1)
+
+        cache = self.store.get_weather_cache(CITY)
+        self.assertEqual(cache["last_attempt_ok"], False)
+        self.assertEqual(cache["last_attempt_error"], "provider_said_no")
+        self.assertEqual(live_weather.attempt_age_seconds(cache, NOW), 0.0)
+
+        for step in range(1, 120):
+            later = NOW + step * 5
+            again = live_weather.refresh_live_weather(
+                self.store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=later,
+                ingest=self.ingest, client=failing,
+            )
+            self.assertFalse(again.attempted, f"poll {step} called the provider again")
+            self.assertEqual(again.reason, "cache_fresh")
+        self.assertEqual(failing.calls, 1, "a per-zone failure must not become a retry storm")
+
+    def test_a_per_zone_failure_is_reported_per_zone_not_as_a_whole_provider_outage(self):
+        """The failure has to reach the payload: a null error next to last_attempt_ok True
+        would make the dashboard's "fetch failed" badge unreachable."""
+        failing = FakeClient({CITY: observation(CITY, ok=False)})
+        status, payload = dispatch(
+            "GET", "/zones", store=self.store, now_epoch=NOW, env=dict(LIVE_ENV), weather_client=failing
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["weather"]["last_refresh"]["failed"], [CITY])
+        self.assertEqual(payload["weather"]["last_attempt_error"][CITY], "provider_said_no")
+        self.assertEqual(payload["weather"]["last_attempt_age_seconds"][CITY], 0)
+        chennai = next(zone for zone in payload["zones"] if zone["zone_id"] == CITY)
+        self.assertEqual(chennai["weather"]["last_attempt_ok"], False)
+        self.assertEqual(chennai["weather"]["last_attempt_error"], "provider_said_no")
+        others = [zone for zone in payload["zones"] if zone["zone_id"] != CITY]
+        self.assertTrue(all(zone["status"] == "live" for zone in others))
+
+    def test_a_store_read_error_costs_one_zone_not_the_refresh(self):
+        """A transient store error on one zone must not abandon the others or lose the
+        attempt anchor (which used to mean a provider call on every poll)."""
+        class FlakyStore(LocalStore):
+            def get_latest(self, zone_id):
+                if zone_id == CITY:
+                    raise RuntimeError("store is having a moment")
+                return super().get_latest(zone_id)
+
+        store = FlakyStore()
+        client = FakeClient()
+        outcome = live_weather.refresh_live_weather(
+            store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
+            ingest=self.ingest, client=client,
+        )
+        self.assertEqual(outcome.failed, (CITY,))
+        self.assertEqual(len(outcome.refreshed), 4, "the readable zones must still refresh")
+        self.assertIn("prepare_failed", outcome.error)
+        self.assertFalse(outcome.error.startswith("no_zone_refreshed"))
+        cache = store.get_weather_cache(CITY)
+        self.assertEqual(cache["last_attempt_ok"], False)
+        self.assertIn("prepare_failed", cache["last_attempt_error"])
+        self.assertEqual(live_weather.attempt_age_seconds(cache, NOW), 0.0)
+
+        for step in range(1, 12):
+            live_weather.refresh_live_weather(
+                store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW + step * 5,
+                ingest=self.ingest, client=client,
+            )
+        self.assertEqual(client.calls, 1, "a store error must not trigger a provider retry storm")
+
+    def test_an_unreadable_weather_cache_is_treated_as_stale_not_as_a_crash(self):
+        class BlindStore(LocalStore):
+            def get_weather_cache(self, zone_id):
+                if zone_id == CITY:
+                    raise RuntimeError("cache read failed")
+                return super().get_weather_cache(zone_id)
+
+        client = FakeClient()
+        outcome = live_weather.refresh_live_weather(
+            BlindStore(), mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
+            ingest=self.ingest, client=client,
+        )
+        self.assertTrue(outcome.attempted)
+        self.assertEqual(outcome.failed, ())
+        self.assertEqual(len(outcome.refreshed), 5)
+        self.assertEqual(client.calls, 1)
+
     def test_an_ingest_error_is_contained(self):
         def exploding_ingest(record, obs):
             raise RuntimeError("store is unavailable")
