@@ -651,7 +651,10 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.ok(upWhy.length > 20, `the city detail has no explanation to read (got "${upWhy}")`);
     assert.match(upWhy, /getting worse/, `a rising water level reads "${upWhy}"`);
     assert.match(downWhy, /easing/, `a falling water level reads "${downWhy}"`);
-    assert.ok(!/[0-9]\.[0-9]{2} m/.test(upWhy), 'the plain sentence leaks the trend numbers again');
+    // The sentence states the top driver's value with its unit on purpose ("at 0.42 m"), so the
+    // thing that must not appear is the signed trend delta and its window ("+0.40 m / 5 min").
+    assert.ok(!/[+-][0-9]+\.[0-9]{2} m/.test(upWhy) && !/\/ 5 min/.test(upWhy),
+      `the plain sentence leaks the trend numbers again: "${upWhy}"`);
   });
 
   await checkAsync('the chart can be stepped through with the arrow keys', async () => {

@@ -806,6 +806,33 @@ The history-downsampling fix cannot be observed live: at current volumes `stride
 24-hour window for one city is about 290 points against the 600-point cap). Two unit tests pin
 the property instead — the first and last points of a thinned window are real records, and the
 cap still holds.
+### The demo track, rehearsed against the deployed stack after this pass
+
+The runbook's Track A was played through end to end, because a hardening pass that leaves the
+demo path unexercised has not finished:
+
+1. `infra\deploy.ps1 -ZoneMode demo -WeatherMode off` (existing resources only; two Lambda
+   environment variables and the same code uploaded).
+2. `python tools\live_simulator.py --url <api> --interval 5.0 --steps 100` — the whole arc: calm,
+   watch, warning, critical at all three zones, recovery, closure. Peak 1.0000 CRITICAL on all
+   three zones, ~500 s.
+3. Read back from the deployed API: all three zones NORMAL again, `age_seconds 14`, `stale false`,
+   `stale_zone_ids []`, `stale_after_seconds 1800`, 0 open of 16 incidents, every closed incident
+   `close_reason "zone returned to NORMAL"`, durations 335-345 s for this run.
+4. The demo fleet's `weather` block, with the provider switched off, reports
+   **every metric `SIMULATED`** and a hydraulics note that says so — the live check that this
+   pass's provenance fix is in the deployed code (before it, that block claimed `REAL` rainfall).
+5. `infra\deploy.ps1` back to the live fleet: `zone_mode live_weather`, 5 cities, `mixed`,
+   `tools/live_acceptance.py` 35/35, and `/incidents` still reports only the live fleet's own
+   incidents (4, all `city-kochi`) — the two fleets never appear in one payload.
+
+The rehearsal paid for itself: driving the board against a freshly captured demo payload, rather
+than the M4 fixture it had always been run against, failed one check — and the check was wrong,
+not the page. It asserted that the plain-language sentence contains no `0.42 m`-shaped number,
+intending to catch a *trend delta* leaking into the plain copy; the sentence legitimately names the
+top driver's value with its unit, and the assertion only ever passed because the leading driver in
+that fixture happened to be soil saturation rather than the water level. It now looks for what it
+actually means — a signed delta or a trend window — and prints the sentence when it fails.
 ### Documentation
 
 * `DEMO_RUNBOOK.md` covers the ingest-key tool's `--dry-run` and fingerprint, the env/key
