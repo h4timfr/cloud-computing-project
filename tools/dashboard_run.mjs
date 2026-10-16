@@ -679,6 +679,31 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.equal(dom.node('history-tooltip').hidden, true, 'Escape did not dismiss the tooltip');
   });
 
+  await checkAsync('a burst of window resizes leaves every chart the right size', async () => {
+    // Dragging a window edge fires resize dozens of times a second and each redraw resizes two
+    // canvases per card, reallocating their backing stores. The redraws are coalesced to one per
+    // frame; this proves the last resize of a burst still lands, and that the charts stay usable.
+    const built = boot({ payload, incidents, history, hash: `#/cities/${payload.zones[0].zone_id}` });
+    await built.runtime.settle();
+    const canvas = built.dom.node('history-canvas');
+    const dpr = built.dom.window.devicePixelRatio || 1;
+    for (let i = 0; i < 12; i += 1) {
+      built.dom.window.innerWidth = 900 - i;
+      built.dom.fire(built.dom.window, 'resize', {});
+    }
+    await built.runtime.settle();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(canvas.width, Math.round(canvas.clientWidth * dpr),
+      `after twelve resize events the chart bitmap is ${canvas.width} px for a ${canvas.clientWidth} px box`);
+    const spark = built.dom.node('zones').querySelector('[data-f="spark"]');
+    assert.ok(spark, 'no sparkline to check');
+    assert.equal(spark.width, Math.round(spark.clientWidth * dpr),
+      `after twelve resize events a sparkline bitmap is ${spark.width} px for a ${spark.clientWidth} px box`);
+    built.dom.fire(canvas, 'keydown', { key: 'ArrowRight', preventDefault() {} });
+    assert.match(built.dom.html('history-tooltip'), /score/,
+      'the chart stopped answering after the resize burst');
+  });
+
   await checkAsync('a driver name the page does not know does not blank the city page', async () => {
     // regression: formatMetric dereferenced METRIC_META[metric] unguarded, so one unexpected
     // metric name from the API threw inside the renderer for the whole view.

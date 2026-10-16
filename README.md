@@ -764,14 +764,15 @@ operator's side.
 | The chart answered `mousemove` on a canvas with no tabindex | The per-point values were unreachable by keyboard or touch | Focusable, arrow keys/Home/End/Escape, a label naming the point being shown, touch handlers, and a line saying the arrow keys work |
 | `formatMetric`/`formatValueWithUnit` dereferenced `METRIC_META[metric]` unguarded | One unexpected driver name from the API threw inside the renderer and blanked the city page | A `metricMeta` fallback that uses the raw name with no unit |
 | `<ol id="ranking">` preceded its own heading; `#zones` had no accessible name; the missing-city card started at `<h3>` under an `<h1>` | Screen-reader reading order and heading structure | Heading first, both regions labelled by their headings, the card is an `<h2>` |
+| The `resize` listener redrew every sparkline and the history chart on every event | Dragging a window edge fires dozens of events a second; each redraw resized two canvases per card, reallocating their backing stores for sizes the browser could not paint | Redraws are coalesced to one per animation frame (`requestAnimationFrame`, falling back to `setTimeout` where there is no frame loop), and the check dispatches twelve resize events and asserts the last one still lands |
 
 ### Tests
 
 | Harness | Before this pass | After |
 | --- | --- | --- |
 | `python -m unittest discover -s tests -t .` | 391 | **405** (the last five check that the committed tooling compiles, names its target and carries no secret-looking literal) |
-| `node tools/dashboard_check.mjs` | 78 | **87** on both payloads (the live fixture was re-captured against the deployed API, so it exercises the same checks as the demo one); the live-region rules are negative checks over the real markup |
-| `node tools/dashboard_run.mjs` | 41 live, 39 demo (2 demo checks were mode-blind and failing) | **45** live / **43** demo, 0 failed |
+| `node tools/dashboard_check.mjs` | 78 | **88** on both payloads (the live fixture was re-captured against the deployed API, so it exercises the same checks as the demo one); the live-region rules are negative checks over the real markup |
+| `node tools/dashboard_run.mjs` | 41 live, 39 demo (2 demo checks were mode-blind and failing) | **46** live / **44** demo, 0 failed |
 | `node tools/dashboard_scenarios.mjs` | 35 | **42** |
 | `node tools/story_check.mjs --dir build/story` | 29 | **29** (unchanged: the story arc is untouched) |
 
@@ -792,7 +793,7 @@ without their secrets.
 | `python tools/verify_deployed_code.py` | deployed Lambda package is **byte-identical** to `src/` (13 files, 0 differing) |
 | `python tools/verify_deployed_page.py` | all deployed page contracts hold (22 checks): the quiet live region, the focusable chart, the incident table roles, and the seven negative checks (the ticking line, four volatile lists, the hidden headers, disabled outlines) — the ticking line is not a live region, the column headers are not hidden, focus outlines are not disabled |
 | `python tools/live_acceptance.py` | **35 checks, 0 failed**; median `/zones` latency **1.07 s** (max 1.12 s over five polls); no city failing its fetch; unknown zone 404; out-of-range `minutes` 400; no ARN in any response |
-| `node tools/dashboard_run.mjs --site <dashboard> --api <api>` | **45 checks, 0 failed** with the *deployed* `lib.js`/`app.js` against the *live* API |
+| `node tools/dashboard_run.mjs --site <dashboard> --api <api>` | **46 checks, 0 failed** with the *deployed* `lib.js`/`app.js` against the *live* API |
 | `GET /zones` (live) | `stale_zone_ids []`, `stale_after_seconds 1800`, `highest_risk_zone.age_seconds 68`, `stale false`, `weather.last_attempt_ok` true for all five cities |
 | `GET /incidents` (live) | `counts_scope "returned_page"`, `truncated false`, `open_count 0` of `count 4` |
 | CloudWatch, last 24 h of `/aws/lambda/floodpulse-api` | 0 ERROR lines, 0 tracebacks, 0 timeouts, 0 5xx; every `weather_refresh` line reports `error: null` |

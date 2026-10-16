@@ -1754,6 +1754,22 @@ check('each region of the cities view is labelled by its own heading', () => {
   });
 });
 
+check('a burst of resizes costs one redraw, not one per event', () => {
+  // Dragging a window edge fires resize dozens of times a second; each redraw resizes two
+  // canvases per card, which reallocates their backing stores. The listener has to schedule.
+  const handler = /window\.addEventListener\('resize',([\s\S]*?)\n    \}\);/.exec(appSource);
+  assert.ok(handler, 'the resize listener was not found');
+  const body = handler[0];
+  assert.ok(/requestAnimationFrame/.test(appSource), 'resizes are not scheduled on an animation frame');
+  assert.ok(!/window\.addEventListener\('resize', function \(\) \{\s*drawHistory\(\)/.test(appSource),
+    'every resize event still redraws the history chart synchronously');
+  const queue = /function queueResizeRedraw\(\) \{([\s\S]*?)\n    \}/.exec(appSource);
+  assert.ok(queue, 'the coalescing function is missing');
+  assert.match(queue[1], /if \(resizeQueued\) return;/, 'a queued resize does not drop further events');
+  assert.ok(/window\.requestAnimationFrame/.test(queue[1]) && /setTimeout/.test(body + queue[1]),
+    'the fallback for a runtime without animation frames is missing');
+});
+
 check('controls are real controls and decoration is hidden from assistive tech', () => {
   assert.match(appSource + libSource, /<button/, 'the history controls are not real buttons');
   assert.match(appSource, /addEventListener\('click'/, 'nothing handles clicks explicitly');

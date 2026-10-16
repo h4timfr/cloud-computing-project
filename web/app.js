@@ -1427,13 +1427,31 @@
       if (!el['history-tooltip'].hidden) clearHistoryHover();
     });
 
-    window.addEventListener('resize', function () {
+    function redrawCharts() {
       drawHistory();
       state.zones.forEach(function (zone) {
         var card = el.zones.querySelector('[data-zone="' + zone.zone_id + '"]');
         if (card) drawSpark(card, zone);
       });
-    });
+    }
+
+    /* Dragging a window edge fires resize dozens of times a second and each redraw resizes two
+     * canvases per card, which reallocates their backing stores. Coalescing to one redraw per
+     * frame keeps the last size and drops the events the browser could not paint anyway. */
+    var resizeQueued = false;
+    function queueResizeRedraw() {
+      if (resizeQueued) return;
+      resizeQueued = true;
+      var schedule = window.requestAnimationFrame
+        ? function (fn) { return window.requestAnimationFrame(fn); }
+        : function (fn) { return setTimeout(fn, 16); };
+      schedule(function () {
+        resizeQueued = false;
+        redrawCharts();
+      });
+    }
+
+    window.addEventListener('resize', queueResizeRedraw);
 
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden) {
