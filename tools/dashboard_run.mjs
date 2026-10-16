@@ -654,6 +654,44 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.ok(!/[0-9]\.[0-9]{2} m/.test(upWhy), 'the plain sentence leaks the trend numbers again');
   });
 
+  await checkAsync('the chart can be stepped through with the arrow keys', async () => {
+    // regression: the per-point values existed only behind mousemove on a canvas that could
+    // not be focused, so on a phone or with a keyboard they were unreachable.
+    clickNav(dom, 'cities');
+    openCity(dom, payload.zones[0].zone_id);
+    await runtime.settle(); // let this city's history land first
+    const canvas = dom.node('history-canvas');
+    assert.ok(canvas.getAttribute('aria-label'), 'the chart has no label to fall back on');
+    // The bitmap must match the layout box times the device pixel ratio, or the plotted path
+    // lands off the bitmap: clipped on a HiDPI screen, blurred and stretched on a 1x one.
+    assert.equal(canvas.width, Math.round(canvas.clientWidth * (dom.window.devicePixelRatio || 1)),
+      `the chart bitmap is ${canvas.width} px for a ${canvas.clientWidth} px box`);
+    const before = dom.html('history-tooltip');
+    dom.fire(canvas, 'keydown', { key: 'ArrowRight', preventDefault() {} });
+    const shown = dom.html('history-tooltip');
+    assert.notEqual(shown, before, 'the right arrow key did not reveal a point');
+    assert.match(shown, /score/, `the tooltip reads "${shown}"`);
+    assert.match(canvas.getAttribute('aria-label'), /Showing point \d+ of \d+/,
+      `the canvas label does not say which point is being shown: ${canvas.getAttribute('aria-label')}`);
+    dom.fire(canvas, 'keydown', { key: 'Home', preventDefault() {} });
+    assert.match(dom.html('history-tooltip'), /1 of \d+/, 'Home did not jump to the oldest point');
+    dom.fire(canvas, 'keydown', { key: 'Escape', preventDefault() {} });
+    assert.equal(dom.node('history-tooltip').hidden, true, 'Escape did not dismiss the tooltip');
+  });
+
+  await checkAsync('a driver name the page does not know does not blank the city page', async () => {
+    // regression: formatMetric dereferenced METRIC_META[metric] unguarded, so one unexpected
+    // metric name from the API threw inside the renderer for the whole view.
+    const odd = JSON.parse(JSON.stringify(payload));
+    odd.zones[0].latest.top_drivers = ['mystery_sensor'];
+    const built = boot({ payload: odd, incidents, history, hash: `#/cities/${odd.zones[0].zone_id}` });
+    await built.runtime.settle();
+    const detail = built.dom.html('city-detail');
+    assert.match(detail, new RegExp(odd.zones[0].name), 'the city page did not render at all');
+    assert.match(detail, /data-f="why"/, 'the plain-language explanation is missing');
+    assert.ok(detail.length > 200, 'the city page rendered almost nothing');
+  });
+
   check('the Cities list opens the city it names', () => {
     // regression: #/cities was a dead end (no listener on #zones, no link in the card) even
     // though the cards lifted on hover as if they were clickable.

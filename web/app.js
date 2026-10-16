@@ -830,50 +830,89 @@
     }
   }
 
-  function handleHistoryHover(event) {
+  /* Keyboard and touch path to the same per-point values the mouse tooltip shows. The chart
+   * used to answer `mousemove` only, and the canvas was not focusable, so on a phone or with a
+   * keyboard those numbers were unreachable: nothing else on the page exposes them. */
+  function hoverIndexAt(event) {
+    if (!state.history || !state.history.points || !state.history.points.length) return null;
+    // a touch event carries its coordinates in touches[0], a mouse event on clientX
+    var clientX = event.clientX;
+    if (clientX === undefined || clientX === null) {
+      var touch = event.touches && event.touches[0] ? event.touches[0] : null;
+      if (!touch) return null;
+      clientX = touch.clientX;
+    }
+    var rect = el['history-canvas'].getBoundingClientRect();
+    var plotWidth = rect.width - 42 - 12;
+    if (!(plotWidth > 0)) return null;
+    var ratio = Math.min(1, Math.max(0, (clientX - rect.left - 42) / plotWidth));
+    var count = state.history.points.length;
+    return count === 1 ? 0 : Math.round(ratio * (count - 1));
+  }
+
+  function showPoint(index) {
+    var tooltip = el['history-tooltip'];
     var data = state.history;
-    if (!data || !data.points || data.points.length === 0) {
-      el['history-tooltip'].hidden = true;
+    var point = data && data.points ? data.points[index] : null;
+    if (!point) {
+      tooltip.hidden = true;
+      state.hoverIndex = null;
+      drawHistory();
       return;
     }
-    var canvas = el['history-canvas'];
-    var rect = canvas.getBoundingClientRect();
-    var padLeft = 42;
-    var padRight = 12;
-    var plotWidth = rect.width - padLeft - padRight;
-    var ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - padLeft) / plotWidth));
-    var index = data.points.length === 1 ? 0 : Math.round(ratio * (data.points.length - 1));
     state.hoverIndex = index;
-    var point = data.points[index];
-    var tooltip = el['history-tooltip'];
-    var readings = point.readings || {}; // a point without readings must not throw
-    tooltip.hidden = false;
-    // Every sensor channel the point carries, named as the cards name it, so the chart can
-    // be read without hunting for the same values in a card.
+    var readings = point.readings || {};
     var channels = [
-      ['rainfall_mm_per_hr', 'rain'],
-      ['drain_level_m', 'drain'],
-      ['soil_saturation_pct', 'soil'],
-      ['water_level_m', 'water'],
-      ['flow_rate_m3_s', 'flow']
+      ['rainfall_mm_per_hr', 'rain'], ['drain_level_m', 'drain'], ['soil_saturation_pct', 'soil'],
+      ['water_level_m', 'water'], ['flow_rate_m3_s', 'flow']
     ].map(function (entry) {
       var value = readings[entry[0]];
       if (value === null || value === undefined) return null;
       return entry[1] + ' ' + FP.formatValueWithUnit(entry[0], value);
     }).filter(Boolean);
-    tooltip.innerHTML = FP.escapeHtml(FP.clockLabel(point.timestamp)) + ' · score ' +
+    tooltip.hidden = false;
+    tooltip.innerHTML = '<b>#' + (index + 1) + ' of ' + data.points.length + '</b> ' +
+      FP.escapeHtml(FP.clockLabel(point.timestamp)) + ' · score ' +
       FP.escapeHtml(FP.formatScore(point.risk_score)) + ' · ' + FP.escapeHtml(FP.classLabel(point.risk_class)) +
       (channels.length
         ? '<br><span class="muted">' + FP.escapeHtml(channels.join(' · ')) + '</span>'
         : '<br><span class="muted">no sensor readings stored for this point</span>');
-    // Keep the tooltip inside the panel: it is centred on the cursor, so near an edge it
-    // would otherwise hang outside the card and clip.
-    var half = tooltip.offsetWidth ? tooltip.offsetWidth / 2 : 0;
-    var offsetX = Math.round(event.clientX - rect.left);
-    if (half) offsetX = Math.min(Math.max(offsetX, half + 4), Math.round(rect.width - half - 4));
-    tooltip.style.left = offsetX + 'px';
     drawHistory();
   }
+
+  function handleHistoryKey(event) {
+    var data = state.history;
+    if (!data || !data.points || !data.points.length) return;
+    var last = data.points.length - 1;
+    var index = state.hoverIndex === null ? last : state.hoverIndex;
+    if (event.key === 'ArrowRight') index = Math.min(last, index + 1);
+    else if (event.key === 'ArrowLeft') index = Math.max(0, index - 1);
+    else if (event.key === 'Home') index = 0;
+    else if (event.key === 'End') index = last;
+    else if (event.key === 'Escape') { showPoint(null); return; }
+    else return;
+    event.preventDefault();
+    showPoint(index);
+    var canvas = el['history-canvas'];
+    if (canvas && canvas.setAttribute) {
+      // the label is the only text alternative for a keyboard user, so keep it current
+      canvas.setAttribute('aria-label', historyAriaLabel(data.points) +
+        ' Showing point ' + (index + 1) + ' of ' + data.points.length + ': score ' +
+        FP.formatScore(data.points[index].risk_score) +
+        '. Use the left and right arrow keys to move through the points.');
+    }
+  }
+
+  function handleHistoryHover(event) {
+    var index = hoverIndexAt(event);
+    if (index === null) {
+      el['history-tooltip'].hidden = true;
+      return;
+    }
+    showPoint(index);
+  }
+
+    var data = state.history;
 
   /* ===================================================== views and navigation === */
 
@@ -1031,8 +1070,9 @@
       var signature = 'missing|' + String(zoneId) + '|' + (waiting ? 'loading' : 'known') + '|' + noun;
       if (signature !== state.detailSignature) {
         state.detailSignature = signature;
+        // h2: this card stands in for the city detail view, whose heading is an h2 too
         slot.innerHTML = '<div class="card detail-missing">' +
-          '<h3>' + (waiting ? 'Loading this ' + noun + '…' : 'This ' + noun + ' is not in the current fleet') + '</h3>' +
+          '<h2>' + (waiting ? 'Loading this ' + noun + '…' : 'This ' + noun + ' is not in the current fleet') + '</h2>' +
           '<p class="muted">' + (waiting
             ? 'Waiting for the first response from <code>GET /zones</code>.'
             : 'The API does not report a ' + noun + ' with the id <code>' + FP.escapeHtml(zoneId || '') + '</code>. ' +
@@ -1359,11 +1399,22 @@
       loadHistory();
     });
 
+    // The chart answers a mouse, a keyboard and a fingertip: the per-point values exist
+    // nowhere else on the page, so a pointer-only tooltip hides data from a whole class of
+    // people (a phone user, someone who cannot use a mouse).
     el['history-canvas'].addEventListener('mousemove', handleHistoryHover);
-    el['history-canvas'].addEventListener('mouseleave', function () {
+    el['history-canvas'].addEventListener('keydown', handleHistoryKey);
+    el['history-canvas'].addEventListener('touchstart', handleHistoryHover, { passive: true });
+    el['history-canvas'].addEventListener('touchmove', handleHistoryHover, { passive: true });
+    function clearHistoryHover() {
       state.hoverIndex = null;
       el['history-tooltip'].hidden = true;
       drawHistory();
+    }
+    el['history-canvas'].addEventListener('mouseleave', clearHistoryHover);
+    el['history-canvas'].addEventListener('touchend', clearHistoryHover);
+    el['history-canvas'].addEventListener('blur', function () {
+      if (!el['history-tooltip'].hidden) clearHistoryHover();
     });
 
     window.addEventListener('resize', function () {

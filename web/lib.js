@@ -227,19 +227,25 @@
     return num === null ? 0 : clamp(num, 0, 1) * 100;
   }
 
+  /* An unknown metric name must not throw inside a view renderer: the payload belongs to the
+   * API, and one extra driver name would otherwise blank the whole city page. */
+  function metricMeta(metric) {
+    return METRIC_META[metric] || { label: String(metric), unit: '', decimals: 2 };
+  }
+
   function formatMetric(metric, value) {
-    var meta = METRIC_META[metric];
+    var meta = metricMeta(metric);
     var num = toNumber(value);
     if (num === null) return '–';
     var text = num.toFixed(meta.decimals);
-    return text + (meta.unit === '%' ? '%' : ' ' + meta.unit);
+    return text + (meta.unit === '%' ? '%' : meta.unit ? ' ' + meta.unit : '');
   }
 
   function formatValueWithUnit(metric, value) {
-    var meta = METRIC_META[metric];
+    var meta = metricMeta(metric);
     var num = toNumber(value);
     if (num === null) return '–';
-    return num.toFixed(meta.decimals) + (meta.unit === '%' ? '%' : ' ' + meta.unit);
+    return num.toFixed(meta.decimals) + (meta.unit === '%' ? '%' : meta.unit ? ' ' + meta.unit : '');
   }
 
   function ageLabel(seconds) {

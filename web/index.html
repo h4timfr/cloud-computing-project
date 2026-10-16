@@ -131,11 +131,11 @@
       <p class="view-lede" id="cities-lede">Every monitored city with its current risk level. Open a city for the full picture.</p>
     </header>
 
-    <ol id="ranking" class="ranking"><li class="muted">waiting for data…</li></ol>
     <h3 class="section-title" id="ranking-title">Risk ranking <span class="muted">highest score first</span></h3>
+    <ol id="ranking" class="ranking" aria-labelledby="ranking-title"><li class="muted">waiting for data…</li></ol>
 
     <h3 class="section-title" id="zones-title">City detail <span class="muted">live values from DynamoDB via the API</span></h3>
-    <section id="zones" class="zone-grid" aria-live="polite"></section>
+    <section id="zones" class="zone-grid" aria-live="polite" aria-labelledby="zones-title"></section>
   </section>
 
   <!-- ========================================================== City detail -->
@@ -157,13 +157,14 @@
         </div>
       </header>
       <div class="chart-wrap">
-        <canvas id="history-canvas" height="220" role="img" aria-label="Risk score history chart"></canvas>
+        <canvas id="history-canvas" height="220" role="img" tabindex="0" aria-label="Risk score history chart"></canvas>
         <div id="history-tooltip" class="chart-tooltip" hidden></div>
       </div>
       <p class="muted small">
         Source: <code>GET /zones/{zone_id}/history</code>. The shaded bands are the documented
         <code>heuristic-v1</code> class boundaries (NORMAL &lt; 0.35 · WATCH 0.35–0.60 ·
-        WARNING 0.60–0.80 · CRITICAL ≥ 0.80).
+        WARNING 0.60–0.80 · CRITICAL ≥ 0.80). With the chart focused, the arrow keys read out
+        each point.
       </p>
     </section>
   </section>

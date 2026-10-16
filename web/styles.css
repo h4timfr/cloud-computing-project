@@ -845,6 +845,8 @@ main {
   background: var(--glass-flat);
   border: 1px solid var(--stroke);
 }
+/* The chart is focusable because it is the only place some values can be read. */
+#history-canvas:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 2px; }
 .chart-tooltip {
   position: absolute;
   top: 8px;
@@ -1192,7 +1194,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .metric-tile[data-state="critical"] .tile-value b { color: var(--band-critical-text); }
 
 .detail-missing { padding: 22px 24px; display: grid; gap: 8px; }
-.detail-missing h3 { margin: 0; font-size: 1.16rem; }
+.detail-missing h2 { margin: 0; font-size: 1.16rem; }
 
 /* Technical details: a native <details>, closed by default, so the model inputs never
    compete with the plain-language answer on first read. */

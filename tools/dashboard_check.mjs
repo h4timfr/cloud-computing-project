@@ -1691,6 +1691,51 @@ check('a chart that cannot be drawn says so instead of staying blank', () => {
   assert.match(appSource, /function historyAriaLabel/, 'the chart label is not derived from the series');
 });
 
+check('the chart can be read without a mouse', () => {
+  // regression: the values existed only behind mousemove, and the canvas was not focusable.
+  const canvas = /<canvas id="history-canvas"[^>]*>/.exec(htmlSource);
+  assert.ok(canvas, 'the history canvas was not found');
+  assert.match(canvas[0], /tabindex="0"/, 'the chart cannot be focused with a keyboard');
+  assert.match(appSource, /addEventListener\('keydown', handleHistoryKey\)/,
+    'the chart does not answer the arrow keys');
+  assert.match(appSource, /addEventListener\('touchstart', handleHistoryHover/,
+    'the chart does not answer a fingertip');
+  assert.match(appSource, /function handleHistoryKey/, 'there is no keyboard handler for the chart');
+  const keys = /function handleHistoryKey\(event\)\s*\{([\s\S]{0,900})/.exec(appSource);
+  for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) {
+    assert.ok(keys[1].includes(key), `the chart ignores the ${key} key`);
+  }
+  assert.match(htmlSource, /arrow keys read out|arrow keys to read/i,
+    'nothing tells a keyboard user the chart can be stepped through');
+});
+
+check('a payload naming an unexpected metric does not blank the page', () => {
+  // regression: formatMetric/formatValueWithUnit dereferenced METRIC_META[metric] unguarded, so
+  // one unknown driver name from the API threw inside the view renderer.
+  for (const name of ['formatMetric', 'formatValueWithUnit']) {
+    const body = new RegExp(`function ${name}\\(metric, value\\)\\s*\\{([\\s\\S]{0,320})`).exec(libSource);
+    assert.ok(body, `${name} was not found`);
+    assert.ok(!/var meta = METRIC_META\[metric\];/.test(body[1]),
+      `${name} still dereferences an unknown metric name directly`);
+    assert.match(body[1], /metricMeta\(metric\)/, `${name} does not look the metric up defensively`);
+  }
+  assert.match(libSource, /function metricMeta\(metric\)\s*\{[\s\S]{0,200}METRIC_META\[metric\] \|\|/,
+    'metricMeta has no fallback for an unknown metric');
+});
+
+check('each region of the cities view is labelled by its own heading', () => {
+  // regression: #ranking came before its own <h3 id="ranking-title">, and the live #zones
+  // region had no accessible name at all.
+  const rankingHeading = htmlSource.indexOf('id="ranking-title"');
+  const rankingList = htmlSource.indexOf('id="ranking"');
+  assert.ok(rankingHeading > 0 && rankingList > 0, 'the ranking heading or list is missing');
+  assert.ok(rankingHeading < rankingList, 'the ranking list is announced before its heading');
+  assert.match(htmlSource, /id="ranking"[^>]*aria-labelledby="ranking-title"/,
+    'the ranking list is not named by its heading');
+  assert.match(htmlSource, /id="zones"[^>]*aria-labelledby="zones-title"/,
+    'the city grid is a live region with no name');
+});
+
 check('controls are real controls and decoration is hidden from assistive tech', () => {
   assert.match(appSource + libSource, /<button/, 'the history controls are not real buttons');
   assert.match(appSource, /addEventListener\('click'/, 'nothing handles clicks explicitly');
