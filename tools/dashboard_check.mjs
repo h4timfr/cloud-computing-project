@@ -1632,14 +1632,30 @@ check('every front-end source is valid UTF-8 with no BOM and no mojibake', () =>
 group('Accessibility contract');
 
 check('state changes are announced, not just coloured', () => {
-  // the connection badge changes silently every poll: it has to be a live region
-  const connBlock = /<div class="conn"[^>]*>[\s\S]*?conn-detail[\s\S]*?<\/div>/.exec(htmlSource);
+  // The connection badge and the failure sentences change with the state, so they are
+  // announced. The *ticking* status line is deliberately NOT a live region: it carries a
+  // seconds-resolution age and countdown, so announcing it re-read the top bar once a
+  // second, forever, and made the page unusable with a screen reader.
+  const connBlock = /<div class="conn"[\s\S]*?<\/div>/.exec(htmlSource);
   assert.ok(connBlock, 'the connection block was not found');
-  assert.match(connBlock[0], /role="status"/, 'the connection state is not a live region');
-  assert.match(connBlock[0], /aria-live="polite"/, 'the connection state is not announced politely');
+  assert.match(connBlock[0], /id="conn-announce"[^>]*role="status"/, 'the connection state is not a live region');
+  assert.match(connBlock[0], /id="conn-announce"[^>]*aria-live="polite"/, 'the connection state is not announced politely');
+  assert.ok(!/id="conn-detail"[^>]*aria-live/.test(connBlock[0]), 'the ticking status line is itself a live region');
+  assert.ok(!/<div class="conn"[^>]*aria-live/.test(htmlSource), 'the whole connection block is a live region');
+  assert.match(connBlock[0], /id="conn-detail"/, 'the visible status line was removed');
   assert.match(htmlSource, /id="zones"[^>]*aria-live="polite"/, 'the zone grid does not announce updates');
-  assert.match(htmlSource, /id="incidents"[^>]*aria-live="polite"/, 'the incident list does not announce updates');
   assert.match(htmlSource, /id="band-strip-label"[^>]*role="status"/, 'the strip summary is not announced');
+});
+
+check('the incident record is a table for assistive tech, not just a grid of spans', () => {
+  // The header row was aria-hidden, so each incident was read as six unlabelled values.
+  assert.match(htmlSource, /role="table"[^>]*aria-label="[^"]*[Ii]ncident/, 'the record is not a labelled table');
+  assert.ok(!/incident-head"[^>]*aria-hidden/.test(htmlSource), 'the incident column headers are still hidden');
+  const headerCount = (htmlSource.match(/role="columnheader"/g) || []).length;
+  assert.ok(headerCount >= 6, `only ${headerCount} column headers are exposed`);
+  assert.match(libSource, /role="row"/, 'the data rows have no row role');
+  const cellCount = (libSource.match(/role="cell"/g) || []).length;
+  assert.ok(cellCount >= 6, `only ${cellCount} cells are exposed`);
 });
 
 check('the chart is exposed as an image with a label', () => {
@@ -1649,12 +1665,40 @@ check('the chart is exposed as an image with a label', () => {
   assert.match(canvas[0], /aria-label="[^"]+"/, 'the canvas has no accessible label');
 });
 
+check('both canvases size their bitmap from the layout, not from the markup', () => {
+  // regression: the sparkline drew a dpr-scaled path into the 280x56 bitmap the markup
+  // declares, so on a HiDPI screen the newest half was drawn off the right edge and clipped,
+  // and on a 1x screen a 280 px bitmap was stretched across the whole card.
+  const spark = /function drawSpark\(card, zone\)\{?([\s\S]{0,1400})/.exec(appSource);
+  assert.ok(spark, 'drawSpark was not found');
+  assert.match(spark[1], /clientWidth/, 'the sparkline bitmap is not sized from its layout width');
+  assert.match(spark[1], /devicePixelRatio/, 'the sparkline ignores the device pixel ratio');
+  assert.ok(/canvas\.width\s*=\s*pixelWidth/.test(spark[1]),
+    'the sparkline never resizes its backing store');
+  const history = /function drawHistory\(\)\s*\{([\s\S]{0,900})/.exec(appSource);
+  assert.ok(history, 'drawHistory was not found');
+  assert.match(history[1], /clientWidth/, 'the history bitmap is not sized from its layout width');
+});
+
+check('a chart that cannot be drawn says so instead of staying blank', () => {
+  // regression: on a failed history fetch the canvas kept no height and no axes while AT was
+  // still told there was an image, and the panel kept the previous window's numbers.
+  const load = /function loadHistory\(\)\s*\{([\s\S]{0,2200})/.exec(appSource);
+  assert.ok(load, 'loadHistory was not found');
+  assert.match(load[1], /drawHistory\(\)/, 'a failed history load does not redraw the empty state');
+  assert.match(load[1], /historyError/, 'a failed history load does not record why it failed');
+  assert.match(load[1], /loading/, 'the panel does not say it is loading before the response');
+  assert.match(appSource, /function historyAriaLabel/, 'the chart label is not derived from the series');
+});
+
 check('controls are real controls and decoration is hidden from assistive tech', () => {
   assert.match(appSource + libSource, /<button/, 'the history controls are not real buttons');
   assert.match(appSource, /addEventListener\('click'/, 'nothing handles clicks explicitly');
   assert.ok(!/onclick\s*=/i.test(htmlSource + appSource + libSource), 'a click handler is inlined in markup');
   assert.match(htmlSource, /class="bg-layer" aria-hidden="true"/, 'the backdrop is not hidden from assistive tech');
-  assert.match(htmlSource, /class="incident-head" aria-hidden="true"/, 'the incident table header is read out');
+  assert.match(htmlSource, /class="incident-head" role="rowgroup"/, 'the incident table header lost its roles');
+  assert.ok(!/class="incident-head"[^>]*aria-hidden/.test(htmlSource),
+    'the incident column headers are hidden from assistive tech again');
   assert.match(htmlSource, /<noscript/, 'there is no no-script fallback');
 });
 

@@ -125,6 +125,7 @@ async function loadPayloads() {
         return await response.json();
       };
       const payload = await grab('/zones');
+
       const incidents = await grab('/incidents?limit=20');
       const zoneId = payload.highest_risk_zone ? payload.highest_risk_zone.zone_id : null;
       const history = zoneId ? await grab(`/zones/${zoneId}/history?minutes=60`) : null;
@@ -218,6 +219,12 @@ async function main() {
   }
   apiBaseForRun = apiBase || apiBaseForRun;
   const { payload, incidents, history, source } = await loadPayloads();
+
+/* The fleet's own nouns: the page's sentences follow the mode, so the checks must too.
+ * A simulated zone is a zone, and only the live fleet is a set of Indian cities. */
+const fleetNoun = payload.zone_mode === 'live_weather' ? 'city' : 'zone';
+const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones';
+
   console.log(`  payload source: ${source}`);
 
   const app = boot({ payload, incidents, history });
@@ -620,6 +627,46 @@ async function main() {
     assert.match(detail, /weighted contribution/i, 'the folded table does not explain contributions');
   });
 
+  await checkAsync('the plain-language sentence states which way conditions are going', async () => {
+    // regression: the sentence tested trendLabel() against 'rising'/'falling', which it never
+    // returns, so "Conditions are getting worse" was unreachable dead code on a flood board.
+    const rising = JSON.parse(JSON.stringify(payload));
+    const falling = JSON.parse(JSON.stringify(payload));
+    rising.zones[0].latest.trend = { water_level_delta_m: 0.4, rise_fraction: 0.5 };
+    falling.zones[0].latest.trend = { water_level_delta_m: -0.4, rise_fraction: -0.5 };
+    rising.zones[0].latest.explanation = 'test';
+    falling.zones[0].latest.explanation = 'test';
+
+    const up = boot({ payload: rising, incidents, history, hash: `#/cities/${rising.zones[0].zone_id}` });
+    const down = boot({ payload: falling, incidents, history, hash: `#/cities/${falling.zones[0].zone_id}` });
+    await up.runtime.settle();
+    await down.runtime.settle();
+    assert.equal(up.loadError, null, `the page did not load: ${up.loadError && up.loadError.message}`);
+    const whyOf = (built) => {
+      const match = /data-f="why">([^<]*)</.exec(built.dom.html('city-detail'));
+      return match ? match[1] : '';
+    };
+    const upWhy = whyOf(up);
+    const downWhy = whyOf(down);
+    assert.ok(upWhy.length > 20, `the city detail has no explanation to read (got "${upWhy}")`);
+    assert.match(upWhy, /getting worse/, `a rising water level reads "${upWhy}"`);
+    assert.match(downWhy, /easing/, `a falling water level reads "${downWhy}"`);
+    assert.ok(!/[0-9]\.[0-9]{2} m/.test(upWhy), 'the plain sentence leaks the trend numbers again');
+  });
+
+  check('the Cities list opens the city it names', () => {
+    // regression: #/cities was a dead end (no listener on #zones, no link in the card) even
+    // though the cards lifted on hover as if they were clickable.
+    clickNav(dom, 'cities');
+    const grid = dom.html('zones');
+    const first = payload.zones[0];
+    assert.match(grid, new RegExp(`href="#/cities/${first.zone_id}"`),
+      'the zone card does not link to its own city view');
+    assert.match(grid, /class="zone-link"/, 'the zone card title is not a link');
+    openCity(dom, first.zone_id);
+    assert.equal(dom.node('view-city').hidden, false, 'the link target does not render the city view');
+  });
+
   check('clicking a city card on the overview opens that city', () => {
     clickNav(dom, 'overview');
     const target = payload.zones[payload.zones.length - 1];
@@ -635,7 +682,7 @@ async function main() {
     const detail = dom.html('city-detail');
     assert.match(detail, /not in the current fleet/, 'the unknown city is not reported');
     assert.ok(detail.includes('city-does-not-exist'), 'the unknown id is not shown');
-    assert.match(detail, /Back to all cities/, 'there is no way back to the list');
+    assert.match(detail, new RegExp('Back to all ' + fleetNounPlural), 'there is no way back to the list');
   });
 
   group('The Alerts view separates live alerts from history');
@@ -869,7 +916,7 @@ async function main() {
     };
     const nothing = boot({ payload: emptyFleet, incidents: null, history: null, overrides: {} });
     await nothing.runtime.settle();
-    assert.match(nothing.dom.html('city-cards'), /No city has reported/i,
+    assert.match(nothing.dom.html('city-cards'), new RegExp('No ' + fleetNoun + ' has reported', 'i'),
       `the overview reads "${nothing.dom.html('city-cards')}"`);
     assert.match(nothing.dom.html('hero'), /Awaiting live data/);
     assert.equal(nothing.dom.html('zones'), '', 'the city grid should stay empty');

@@ -51,9 +51,15 @@
   </nav>
 
   <div class="topbar-status">
-    <div class="conn" role="status" aria-live="polite">
+    <div class="conn">
       <span id="conn-badge" class="conn-badge conn-connecting">CONNECTING</span>
       <span id="conn-detail" class="conn-detail">waiting for the first successful poll</span>
+      <!--
+        The status line above carries a seconds-resolution age and countdown, so it must NOT
+        be a live region: announcing it re-read the top bar once per second forever. The
+        polite region below is off-screen and only changes on a real transition.
+      -->
+      <span id="conn-announce" class="sr-only" role="status" aria-live="polite"></span>
     </div>
     <div class="topbar-meta">
       <span class="meta-item">updated <b id="last-update">–</b></span>
@@ -186,18 +192,18 @@
 
     <details class="tech">
       <summary>Full incident record (technical table)</summary>
-      <div class="incident-scroll">
-        <ol class="incident-head" aria-hidden="true">
-          <li class="incident-row">
-            <span class="incident-severity">Severity</span>
-            <span class="incident-zone" id="incidents-zone-header">City</span>
-            <span class="incident-time">Opened (UTC)</span>
-            <span class="incident-status">Status</span>
-            <span class="incident-duration">Duration</span>
-            <span class="incident-detail">Facts at open</span>
+      <div class="incident-scroll" role="table" aria-label="Full incident record, newest first">
+        <ol class="incident-head" role="rowgroup">
+          <li class="incident-row" role="row">
+            <span class="incident-severity" role="columnheader">Severity</span>
+            <span class="incident-zone" role="columnheader" id="incidents-zone-header">City</span>
+            <span class="incident-time" role="columnheader">Opened (UTC)</span>
+            <span class="incident-status" role="columnheader">Status</span>
+            <span class="incident-duration" role="columnheader">Duration</span>
+            <span class="incident-detail" role="columnheader">Facts at open</span>
           </li>
         </ol>
-        <ul id="incidents" class="incident-list" aria-live="polite">
+        <ul id="incidents" class="incident-list" role="rowgroup">
           <li class="incident-row incident-empty muted">waiting for data…</li>
         </ul>
       </div>

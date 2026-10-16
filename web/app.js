@@ -54,13 +54,20 @@
     incidentsSignature: null,
     incidentsMs: null,
     incidentsError: null,
+    // one /incidents request at a time: the poll and the 10 s interval used to overlap
+    incidentsInFlight: false,
     // history bookkeeping: which zone the loaded series belongs to, and when a failed
     // attempt happened, so a broken history route is not retried on every 5 s poll.
     historyZone: null,
     historyMinutesLoaded: null,
     historyInFlight: false,
     historyFailedMs: null,
+    // why the last history load failed, so the empty chart can say "could not be loaded"
+    // rather than the misleading "no history in this window"
+    historyError: null,
     connectionKey: null,
+    // what the off-screen polite region last announced, so it only speaks on real changes
+    connAnnounceKey: null,
     // when the current payload arrived, and how much local time has passed since: the feed
     // ages reported by the API are interpolated forward so the freshness line keeps moving
     payloadReceivedMs: null,
@@ -96,7 +103,7 @@
 
   function cacheDom() {
     [
-      'conn-badge', 'conn-detail', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
+      'conn-badge', 'conn-detail', 'conn-announce', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
       'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
       'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
       'incidents', 'incidents-meta', 'incidents-alerting',
@@ -156,10 +163,8 @@
       state.payloadReceivedMs = Date.now();
       state.payload = payload;
       applyPayload(payload);
-      var nowMs = Date.now();
-      if (state.incidentsMs === null || nowMs - state.incidentsMs >= INCIDENTS_REFRESH_MS) {
-        loadIncidents();
-      }
+      // Incidents have their own 10 s interval. Polling them from here as well meant two
+      // /incidents requests fired together every time the 5 s poll crossed a 10 s boundary.
     }).catch(function (error) {
       state.inFlight = false;
       state.lastError = true;
@@ -373,6 +378,13 @@
     }
     setText('conn-badge', info.label);
     setText('conn-detail', info.detail);
+    // The visible status line ticks with the clock, so it is not a live region. The off-screen
+    // polite region gets a sentence with no ages in it, and only when the state really
+    // changes: announcing the ticking line re-read the top bar once per second, forever.
+    if (state.connAnnounceKey !== info.announceKey) {
+      state.connAnnounceKey = info.announceKey;
+      setText('conn-announce', info.announcement);
+    }
     if (state.lastSuccessMs) {
       setText('last-update', FP.clockLabel(new Date(state.lastSuccessMs).toISOString()));
     }
@@ -545,6 +557,8 @@
 
   /* --------------------------------------------------------------- canvases --- */
 
+  var SPARK_CSS_HEIGHT = 56;
+
   function drawSpark(card, zone) {
     var canvas = card.querySelector('[data-f="spark"]');
     if (!canvas || !canvas.getContext) return;
@@ -552,9 +566,20 @@
     var values = series.map(function (point) { return point.risk_score; });
     var ctx = canvas.getContext('2d');
     var dpr = window.devicePixelRatio || 1;
-    var width = canvas.width;
-    var height = canvas.height;
-    canvas.style.height = height + 'px';
+    // Size the backing store from the laid-out width, like the history chart does. The old
+    // code drew a dpr-scaled path into the 280x56 attribute-sized bitmap, so on a HiDPI
+    // screen the newest samples were drawn past the right edge and silently clipped, and on
+    // a 1x screen a 280 px bitmap was stretched across the card. clientWidth is 0 for a
+    // canvas that is not laid out (a hidden view), so fall back to the attribute size.
+    var width = Math.round(canvas.clientWidth || 0) || Math.round(canvas.width / dpr) || 280;
+    var height = SPARK_CSS_HEIGHT;
+    var pixelWidth = Math.round(width * dpr);
+    var pixelHeight = Math.round(height * dpr);
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+      canvas.style.height = height + 'px';
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
     if (values.length === 0) return;
@@ -613,10 +638,18 @@
     var zone = state.selectedZone;
     var minutes = state.historyMinutes;
     state.historyInFlight = true;
+    // Say we are fetching before the request goes out: the panel used to keep the previous
+    // window's line ("18 points · 1440 min") while showing a chart of a different range.
+    state.history = null;
+    state.historyError = null;
+    state.hoverIndex = null;
+    el['history-meta'].textContent = 'loading the last ' + minutes + ' min…';
+    drawHistory();
     getJson('/zones/' + encodeURIComponent(zone) + '/history?minutes=' + minutes)
       .then(function (data) {
         state.historyInFlight = false;
         state.historyFailedMs = null;
+        state.historyError = null;
         if (zone !== state.selectedZone || minutes !== state.historyMinutes) return; // stale response
         state.history = data;
         state.historyZone = zone;
@@ -630,6 +663,13 @@
       .catch(function (error) {
         state.historyInFlight = false;
         state.historyFailedMs = Date.now();
+        state.historyError = error.message;
+        state.history = null;
+        state.historyZone = null;
+        state.historyMinutesLoaded = null;
+        // Redraw the empty state instead of leaving the previous chart on screen: the canvas
+        // used to stay a blank box carrying a "Risk score history chart" label for AT.
+        drawHistory();
         el['history-meta'].textContent = 'history unavailable (' + error.message + ') — retrying in ' +
           Math.round(HISTORY_RETRY_MS / 1000) + ' s';
       });
@@ -659,6 +699,20 @@
     Array.prototype.forEach.call(el['history-range'].querySelectorAll('[data-range]'), function (button) {
       button.classList.toggle('is-active', Number(button.getAttribute('data-range')) === state.historyMinutes);
     });
+  }
+
+  function historyAriaLabel(points) {
+    var minutes = state.historyMinutes;
+    if (state.historyError) return 'Risk score history could not be loaded.';
+    if (!points.length) return 'Risk score history for the last ' + minutes + ' min: no readings in this window.';
+    var scores = points.map(function (point) { return FP.toNumber(point.risk_score); })
+      .filter(function (score) { return score !== null; });
+    if (!scores.length) return 'Risk score history for the last ' + minutes + ' min: ' + points.length + ' readings.';
+    var lowest = Math.min.apply(null, scores);
+    var highest = Math.max.apply(null, scores);
+    return 'Risk score history for the last ' + minutes + ' min: ' + points.length + ' readings, from ' +
+      FP.clockLabel(points[0].timestamp) + ' to ' + FP.clockLabel(points[points.length - 1].timestamp) +
+      '. Lowest ' + lowest.toFixed(2) + ', highest ' + highest.toFixed(2) + '.';
   }
 
   function drawHistory() {
@@ -714,10 +768,14 @@
 
     var data = state.history;
     var points = data && data.points ? data.points : [];
+    // The chart is the only place the per-point values live, so its label must describe the
+    // series it is actually showing instead of a fixed sentence.
+    canvas.setAttribute('aria-label', historyAriaLabel(points));
     if (points.length === 0) {
       ctx.fillStyle = 'rgba(226, 232, 240, 0.7)';
       ctx.font = '13px system-ui, sans-serif';
-      ctx.fillText('No history in this window yet.', padLeft + 8, padTop + 24);
+      ctx.fillText(state.historyError ? 'History could not be loaded.' : 'No history in this window yet.',
+        padLeft + 8, padTop + 24);
       return;
     }
 
@@ -948,7 +1006,9 @@
     if (signature === state.cityCardSignature) return;
     state.cityCardSignature = signature;
     host.innerHTML = list.length
-      ? list.map(FP.cityStatusCard).join('')
+      ? list.map(function (zone) {
+        return FP.cityStatusCard(zone, { noun: FP.zoneNoun(state.payload) });
+      }).join('')
       : '<p class="muted" data-f="no-cities">No ' + FP.zoneNoun(state.payload) +
         ' has reported a scored reading yet. ' +
         'This page keeps polling the API and fills in as soon as the first reading arrives.</p>';
@@ -987,7 +1047,7 @@
     if (signature === state.detailSignature) return;
     state.detailSignature = signature;
     var feed = state.payload ? FP.feedStatus(state.payload, Date.now(), payloadAgeOffsetSeconds()) : null;
-    slot.innerHTML = FP.cityDetail(zone, { feed: feed });
+    slot.innerHTML = FP.cityDetail(zone, { feed: feed, noun: FP.zoneNoun(state.payload) });
   }
 
   /* The freshness sentence inside the city view moves with the clock, like the one in
@@ -1023,14 +1083,14 @@
           ? '<li class="muted">loading alerts…</li>'
           : (split.active.length
             ? split.active.map(function (incident) { return FP.alertRow(incident, Date.now()); }).join('')
-            : FP.alertsEmptyState('active'));
+            : FP.alertsEmptyState('active', FP.zoneNoun(state.payload)));
       }
       if (el['alerts-closed']) {
         el['alerts-closed'].innerHTML = loading
           ? '<li class="muted">loading incidents…</li>'
           : (split.closed.length
             ? split.closed.map(function (incident) { return FP.alertRow(incident, Date.now()); }).join('')
-            : FP.alertsEmptyState('closed'));
+            : FP.alertsEmptyState('closed', FP.zoneNoun(state.payload)));
       }
       if (el['alerts-summary']) {
         var alertsNoun = FP.zoneNoun(state.payload);
@@ -1163,12 +1223,16 @@
   /* The incident log is read-only and comes straight from GET /incidents: this page
    * never invents or edits an incident, and the SNS topic is never exposed to it. */
   function loadIncidents() {
+    if (state.incidentsInFlight) return; // one request at a time, whoever asked for it
+    state.incidentsInFlight = true;
     state.incidentsMs = Date.now();
     getJson('/incidents?limit=' + INCIDENTS_LIMIT).then(function (payload) {
+      state.incidentsInFlight = false;
       state.incidents = payload;
       state.incidentsError = null;
       renderIncidentsPanel();
     }).catch(function (error) {
+      state.incidentsInFlight = false;
       state.incidentsError = error.message;
       // keep the last good list rather than blanking the panel or inventing history
       renderIncidentsPanel();
@@ -1326,7 +1390,17 @@
     applyRoute({ focus: false });
     renderDataPage(null);
     if (!API_BASE) {
-      el['conn-detail'].textContent = 'no API base configured';
+      // Say why the page will never fill in, in the same status line a failing poll uses:
+      // this used to leave the badge on CONNECTING and five panels on "waiting for data…"
+      // forever, because start() returned before anything could update them.
+      el['conn-badge'].className = 'conn-badge conn-disconnected';
+      setText('conn-badge', 'DISCONNECTED');
+      setText('conn-detail', 'no API base configured — add ?api=https://… to the address');
+      setText('conn-announce',
+        'no API base configured. Add the api parameter to the address to connect this page to a FloodPulse API.');
+      state.connAnnounceKey = 'no-api-base';
+      document.body.classList.add('is-disconnected');
+      setText('summary-freshness', 'not connected');
       return;
     }
     refreshConnection();

@@ -404,9 +404,17 @@ main {
   color: currentColor;
 }
 .band-tile.band-unknown { border-left-color: var(--slate-400); }
-/* An empty band stays visible but recedes: its absence is information too. */
-.band-tile.is-zero { opacity: 0.55; }
-.band-tile.is-zero .band-count { color: var(--slate-400); }
+/* An empty band stays visible but recedes: its absence is information too.
+ * This used to be `opacity: 0.55`, which dimmed the label colours with the tile and dropped
+ * four of five of them to 3.6-4.5:1 (measured against the tile's own gradient). The tile
+ * recedes by losing its gradient and its band colour instead, so every label on it keeps its
+ * contrast: slate-300 on this background is 12:1. */
+.band-tile.is-zero {
+  background: rgba(148, 163, 184, 0.06);
+  box-shadow: none;
+}
+.band-tile.is-zero .band-name { color: var(--slate-300); }
+.band-tile.is-zero .band-count { color: var(--slate-300); }
 .band-strip-label {
   margin: 0 0 0 auto;
   font-family: var(--mono);
@@ -601,12 +609,23 @@ main {
   transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 .zone-card:hover { transform: translateY(-2px); box-shadow: 0 22px 46px rgba(2, 6, 23, 0.6); }
-.zone-card .pill { color: currentColor; }
+/* `.zone-card .pill { color: currentColor }` used to live here and, sitting after the
+ * `.pill.band-*` rules at equal specificity, it won: the card's severity pill rendered in the
+ * vivid band colour (CRITICAL #ef4444 = 4.90:1) while this stylesheet and the checks both
+ * claim small band text always uses the light variant. Only the unknown band inherits now. */
+.zone-card .pill.band-unknown { color: var(--slate-300); }
 .zone-card.is-empty { border-top-color: var(--slate-400); }
 .zone-card.band-unknown { border-top-color: var(--slate-400); }
 
 .zone-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .zone-title h3 { margin: 0; font-size: 1.16rem; color: var(--white); letter-spacing: 0.01em; }
+/* The whole card is the target: the link sits in the heading and stretches over the card, so
+ * the hover lift the card has always had is now backed by a real click and a real tab stop. */
+.zone-card { position: relative; }
+.zone-link { color: inherit; text-decoration: none; }
+.zone-link::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.zone-link:hover { text-decoration: underline; }
+.zone-link:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 3px; }
 .zone-sub {
   margin: 4px 0 0;
   font-family: var(--mono);
@@ -804,9 +823,14 @@ main {
   font-size: 0.76rem;
   color: var(--slate-300);
   background: var(--glass-flat);
-  border: 1px solid var(--stroke-strong);
+  /* --stroke-strong is 0.34 alpha, which composites to 1.89:1 against this button's own
+   * interior: a control boundary needs 3:1. 0.6 gives 3.33:1 over the card. */
+  border: 1px solid rgba(148, 163, 184, 0.6);
   border-radius: 999px;
   padding: 5px 12px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
   cursor: pointer;
   transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
 }
@@ -918,10 +942,12 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   grid-area: toggle;
   display: none;
   align-items: center;
+  justify-content: center;
   gap: 9px;
   padding: 9px 13px;
+  min-height: 40px;
   border-radius: 12px;
-  border: 1px solid var(--stroke-strong);
+  border: 1px solid rgba(148, 163, 184, 0.6);
   background: var(--glass-flat);
   color: var(--slate-200);
   font: inherit;
@@ -985,7 +1011,14 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 
 .crumbs { font-size: 0.84rem; color: var(--slate-400); display: flex; gap: 4px; align-items: center; }
 .crumbs #city-crumb { color: var(--slate-200); }
-.ghost-link { display: inline-block; padding: 7px 14px; border-radius: 999px; border: 1px solid var(--stroke-strong); }
+.ghost-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+}
 .ghost-link:hover { text-decoration: none; border-color: var(--stroke-bright); color: var(--white); }
 
 /* --------------------------------------------------------------- overview --- */
@@ -1179,6 +1212,19 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .tech > summary:hover { color: var(--white); }
 .tech[open] > summary { border-bottom: 1px solid var(--stroke); margin-bottom: 12px; }
 .tech-kv { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); display: grid; gap: 10px; margin-bottom: 14px; }
+/* The six-column technical table has a min-content width of roughly 410 px, so it used to
+ * push the whole page sideways below a 500 px viewport. It scrolls in its own box like the
+ * incident list does, and the box is focusable so a keyboard user can reach the columns that
+ * are off-screen. */
+.table-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  max-width: 100%;
+}
+.table-scroll:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 2px; }
+.table-scroll::-webkit-scrollbar { height: 9px; }
+.table-scroll::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.35); border-radius: 999px; }
+
 .tech-table {
   width: 100%;
   border-collapse: collapse;
@@ -1300,6 +1346,11 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 @media (max-width: 760px) {
   :root { --pad-x: 16px; --gap: 16px; --pad: 16px 16px; }
   main { padding: 16px var(--pad-x) 30px; }
+  /* The phone is where the controls are tapped: the base sizes give the city and range
+     buttons 29.6 px of height and the menu button 34 px, both under the 40 px a fingertip
+     needs. The min-heights below are the floor, in whichever layout they appear. */
+  .ghost, .ghost-link, .nav-toggle, .nav-link { min-height: 40px; }
+  .ghost { padding: 9px 14px; }
   /* The bar stays stuck to the top on a phone: it holds the menu button and the
      connection badge, which are the two things a phone user needs first. */
   .topbar {
@@ -1362,6 +1413,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   .conn-live::before { animation: none; }
   body.is-connecting .band-strip,
   body.is-connecting .ranking { animation: none; }
-  .zone-card, .rank-track i, .metric-fill, .ghost, .conn-badge { transition: none; }
-  .zone-card:hover { transform: none; }
+  .zone-card, .rank-track i, .metric-fill, .ghost, .conn-badge, .city-card { transition: none; }
+  .zone-card:hover, .city-card:hover { transform: none; }
 }

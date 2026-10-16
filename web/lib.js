@@ -329,6 +329,7 @@
 
   function connectionState(nowMs, lastSuccessMs, hadError, payload, options) {
     var opts = options || {};
+    var feed = payload ? feedStatus(payload, nowMs, opts.ageOffsetSeconds) : null;
     if (lastSuccessMs === null || lastSuccessMs === undefined) {
       return {
         state: 'connecting',
@@ -336,23 +337,30 @@
         // a first poll that failed must say why: otherwise the page sits on "waiting"
         // with no sign that the API actually answered with an error
         detail: 'waiting for the first successful poll' +
-          (hadError && opts.lastErrorMessage ? ' — last request failed: ' + opts.lastErrorMessage : '')
+          (hadError && opts.lastErrorMessage ? ' — last request failed: ' + opts.lastErrorMessage : ''),
+        announcement: 'waiting for the first successful poll' +
+          (hadError && opts.lastErrorMessage ? ' — last request failed: ' + opts.lastErrorMessage : ''),
+        announceKey: 'connecting|' + (hadError ? String(opts.lastErrorMessage || '') : '') + '|' +
+          feedAnnounceKey(feed)
       };
     }
     var age = Math.max(0, nowMs - lastSuccessMs);
-    var feed = payload ? feedStatus(payload, nowMs, opts.ageOffsetSeconds) : null;
     // A successful poll proves the API answered, not that the weather in it is new: in live
     // mode the detail always states the feed's own age, so "LIVE" can never be read as
     // "this second's measurement".
     var liveDetail = feed && feed.live ? liveFeedDetail(feed) : null;
+    var feedNote = feed && feed.live ? ' · ' + liveFeedAnnouncement(feed) : '';
     // The most recent request error is part of the state, not a one-off message: a board
     // that has been failing for ten minutes must say so, not repeat one old error forever.
     var errorNote = (hadError && opts.lastErrorMessage) ? ' · last request failed: ' + opts.lastErrorMessage : '';
+    var errorKey = hadError ? String(opts.lastErrorMessage || '') : '';
     if (age <= LIVE_MS && !hadError) {
       return {
         state: 'live',
         label: 'LIVE',
-        detail: liveDetail || ('updated ' + ageLabel(age / 1000))
+        detail: liveDetail || ('updated ' + ageLabel(age / 1000)),
+        announcement: 'live' + feedNote,
+        announceKey: 'live||' + feedAnnounceKey(feed)
       };
     }
     if (age <= STALE_MS) {
@@ -360,7 +368,9 @@
         state: 'stale',
         label: 'STALE',
         detail: 'API answers are late (last good poll ' + ageLabel(age / 1000) + ')' +
-          (liveDetail ? ' · ' + liveDetail : '') + errorNote
+          (liveDetail ? ' · ' + liveDetail : '') + errorNote,
+        announcement: 'API answers are late — the times shown may be behind' + feedNote + errorNote,
+        announceKey: 'stale|' + errorKey + '|' + feedAnnounceKey(feed)
       };
     }
     return {
@@ -368,7 +378,9 @@
       label: 'DISCONNECTED',
       detail: 'no successful poll for ' + ageLabel(age / 1000) +
         ' — the values below may be out of date' +
-        (liveDetail ? ' · ' + liveDetail : '') + errorNote
+        (liveDetail ? ' · ' + liveDetail : '') + errorNote,
+      announcement: 'no successful poll — the values below may be out of date' + feedNote + errorNote,
+      announceKey: 'disconnected|' + errorKey + '|' + feedAnnounceKey(feed)
     };
   }
 
@@ -386,6 +398,23 @@
     }
     if (feed.state === 'stale') parts.push('the provider has missed a full refresh cycle');
     return parts.join(' · ');
+  }
+
+  /* The same state without ages or countdowns, for the screen-reader region: a sentence
+     that never changes while the clock runs is a sentence worth announcing. */
+  function liveFeedAnnouncement(feed) {
+    if (!feed.enabled) return 'weather provider disabled — serving the last fetched values';
+    if (feed.failedZones.length) {
+      return 'latest weather fetch failed (' + feed.failedZones[0].error + ') — showing the last fetched values';
+    }
+    if (feed.feedAgeSeconds === null) return 'no weather fetched yet for this fleet';
+    if (feed.state === 'stale') return 'weather feed is live but the provider has missed a full refresh cycle';
+    return 'weather feed is live from the provider';
+  }
+
+  function feedAnnounceKey(feed) {
+    if (!feed) return 'no-feed';
+    return [feed.enabled, feed.state, feed.failedZones.map(function (zone) { return zone.error; }).join(',')].join('|');
   }
 
   /* -------------------------------------------------------------- ranking --- */
@@ -769,7 +798,10 @@
       '<article class="card zone-card band-' + band + (latest ? '' : ' is-empty') + '" data-zone="' + escapeHtml(zone.zone_id) + '">' +
       '<header class="zone-head">' +
       '<div class="zone-title">' +
-      '<h3>' + escapeHtml(zone.name) + '</h3>' +
+      // The card lifts on hover and on focus, so it has to be a real target: this list used
+      // to be a dead end, with #/cities/<id> only reachable from the Overview grid.
+      '<h3><a class="zone-link" href="#/cities/' + escapeHtml(zone.zone_id) + '">' +
+      escapeHtml(zone.name) + '</a></h3>' +
       '<p class="zone-sub"><span data-f="sensor_node_id">' + escapeHtml(latest ? latest.sensor_node_id : 'no node') + '</span>' +
       '<span class="dot">·</span><span data-f="age">' + escapeHtml(latest ? ageLabel(latest.age_seconds) : 'no data') + '</span></p>' +
       '<p class="zone-provenance" data-f="provenance">' + zoneProvenance(zone) + '</p>' +
@@ -927,18 +959,18 @@
     var alertCount = toNumber(incident.alert_count);
     var escalations = toNumber(incident.escalation_count);
     return (
-      '<li class="incident-row band-' + band + (open ? ' is-open' : ' is-closed') +
+      '<li class="incident-row band-' + band + (open ? ' is-open' : ' is-closed') + ' role="row"' +
         '" data-incident="' + escapeHtml(incident.incident_id) +
         '" data-status="' + (open ? 'OPEN' : 'CLOSED') + '">' +
-        '<span class="incident-severity band-' + band + '" data-f="severity">' + escapeHtml(classLabel(severity)) + '</span>' +
-        '<span class="incident-zone" data-f="zone_name">' + escapeHtml(incident.zone_name || incident.zone_id || 'unknown zone') + '</span>' +
-        '<span class="incident-time" data-f="opened_at" title="' + escapeHtml(incident.opened_at) + '">' +
+        '<span class="incident-severity band-' + band + '" role="cell" data-f="severity">' + escapeHtml(classLabel(severity)) + '</span>' +
+        '<span class="incident-zone" role="cell" data-f="zone_name">' + escapeHtml(incident.zone_name || incident.zone_id || 'unknown zone') + '</span>' +
+        '<span class="incident-time" role="cell" data-f="opened_at" title="' + escapeHtml(incident.opened_at) + '">' +
           escapeHtml(clockLabel(incident.opened_at)) + '</span>' +
-        '<span class="incident-status status-' + (open ? 'open' : 'closed') + '" data-f="status">' +
+        '<span class="incident-status status-' + (open ? 'open' : 'closed') + '" role="cell" data-f="status">' +
           (open ? 'OPEN' : 'CLOSED') + '</span>' +
-        '<span class="incident-duration" data-f="duration">' + escapeHtml(formatDuration(duration)) +
+        '<span class="incident-duration" role="cell" data-f="duration">' + escapeHtml(formatDuration(duration)) +
           (open ? ' and counting' : '') + '</span>' +
-        '<span class="incident-detail" data-f="detail">' +
+        '<span class="incident-detail" role="cell" data-f="detail">' +
           'score at open ' + escapeHtml(formatScore(incident.risk_score_at_open)) +
           ' · driver ' + escapeHtml(driver) +
           ' · alerts ' + escapeHtml(alertCount === null ? 0 : alertCount) +
@@ -949,7 +981,7 @@
   }
 
   function renderIncidents(payload, nowMs, options) {
-    if (!payload) return '<li class="incident-row incident-empty muted">loading incidents…</li>';
+    if (!payload) return '<li class="incident-row incident-empty muted" role="row">loading incidents…</li>';
     var incidents = payload.incidents || [];
     if (!incidents.length) {
       var noun = (options && options.noun) || 'zone';
@@ -1000,7 +1032,7 @@
     WATCH: { headline: 'Conditions are worth watching', tone: 'watch', advice: 'Some measurements are climbing towards their limits.' },
     WARNING: { headline: 'Flooding is possible', tone: 'warning', advice: 'Measurements are at levels where flooding can start.' },
     CRITICAL: { headline: 'Flooding is likely now', tone: 'critical', advice: 'Measurements are at or beyond the level that indicates flooding.' },
-    UNKNOWN: { headline: 'No reading yet', tone: 'unknown', advice: 'This city has not reported a scored reading yet.' }
+    UNKNOWN: { headline: 'No reading yet', tone: 'unknown', advice: 'No scored reading has been reported for it yet.' }
   };
 
   /* Plain words for each channel, for copy that should not read like a spreadsheet. */
@@ -1073,7 +1105,7 @@
     var latest = zone && zone.latest;
     var band = classLabel(latest ? latest.risk_class : null);
     var meaning = BAND_MEANING[band] || BAND_MEANING.UNKNOWN;
-    var noun = String((zone && zone.name) || 'This city');
+    var noun = String((zone && zone.name) || 'This site');
     var summary = {
       band: band,
       tone: meaning.tone,
@@ -1106,9 +1138,14 @@
       }
     }
 
-    var trend = trendLabel(latest.trend);
-    if (trend === 'rising') summary.why += ' Conditions are getting worse.';
-    else if (trend === 'falling') summary.why += ' Conditions are easing.';
+    // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one that
+    // answers "which way is this going". Comparing the label to 'rising'/'falling' never
+    // matched, so neither sentence could ever appear on a flash-flood board. The numbers stay
+    // in the technical table: this sentence is the plain-language one.
+    var direction = trendDirection(latest.trend);
+    if (direction === 'up') summary.why += ' Conditions are getting worse.';
+    else if (direction === 'down') summary.why += ' Conditions are easing.';
+    else if (trendLabel(latest.trend) !== 'no lookback') summary.why += ' Conditions are holding steady.';
     return summary;
   }
 
@@ -1266,12 +1303,15 @@
     var band = bandKey(latest ? latest.risk_class : null);
     var summary = plainRiskSummary(zone);
     var freshness = latest ? ageLabel(latest.age_seconds) : 'no reading';
+    // the card's own words follow the fleet's mode: a simulated zone is never a "city"
+    var noun = (options && options.noun) || 'city';
     var driver = summary.driverLabel
       ? '<span class="city-driver" data-f="top_driver">' + escapeHtml(summary.driverLabel) + ' is the main factor</span>'
       : '<span class="city-driver muted">no scored reading yet</span>';
     return (
       '<a class="card city-card band-' + band + (latest ? '' : ' is-empty') + '" data-zone="' + escapeHtml(zone.zone_id) +
-        '" href="' + escapeHtml(hashFor('city', zone.zone_id)) + '" aria-label="' + escapeHtml(zone.name) + ' city detail">' +
+        '" href="' + escapeHtml(hashFor('city', zone.zone_id)) + '" aria-label="' + escapeHtml(zone.name) + ' ' +
+        escapeHtml(noun) + ' detail">' +
         '<header class="city-head">' +
         '<h3>' + escapeHtml(zone.name) + '</h3>' +
         bandPill(latest ? latest.risk_class : null) +
@@ -1283,7 +1323,7 @@
         '</div>' +
         '<p class="city-meta">' + driver + '</p>' +
         '<p class="city-meta muted" data-f="age">Updated ' + escapeHtml(freshness) + '</p>' +
-        '<span class="city-more">Open city' + CITY_ARROW + '</span>' +
+        '<span class="city-more">Open ' + escapeHtml(noun) + CITY_ARROW + '</span>' +
         '</a>'
     );
   }
@@ -1372,7 +1412,8 @@
       escapeHtml(sources.map(function (entry) { return entry.label; }).join(', ') || 'unknown') +
       '. REAL values come from the weather provider, MODEL values are derived from them, SIM values are generated by FloodPulse.</p>' +
       '<h3 class="block-title">Trend and history</h3>' +
-      '<p class="muted small">The chart below is this city\'s own risk history, fetched from ' +
+      '<p class="muted small">The chart below is this ' + escapeHtml((options && options.noun) || 'site') +
+      '\'s own risk history, fetched from ' +
       '<code>GET /zones/{zone_id}/history</code>.</p>' +
       (opts.technical === false ? '' : technicalDetails(zone)) +
       '</article>'
@@ -1407,12 +1448,14 @@
       '<div><dt>Model</dt><dd>' + escapeHtml((latest && latest.model) || 'heuristic-v1') + '</dd></div>' +
       '<div><dt>Zone id</dt><dd><code>' + escapeHtml(zone.zone_id) + '</code></dd></div>' +
       '</dl>' +
+      '<div class="table-scroll" tabindex="0" role="group" aria-label="Per-metric detail, scrollable">' +
       '<table class="tech-table">' +
       '<caption>Per-metric value, configured limits and weighted contribution to the heuristic score</caption>' +
       '<thead><tr><th scope="col">Measurement</th><th scope="col">Value</th><th scope="col">Watch</th>' +
       '<th scope="col">Flooding</th><th scope="col">Weighted contribution</th><th scope="col">Provenance</th></tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
       '</table>' +
+      '</div>' +
       '<p class="muted small" data-f="explanation">' + escapeHtml(latest ? latest.explanation : 'no reading yet') + '</p>' +
       '<p class="muted small">Provenance per metric: ' +
       escapeHtml(sources.map(function (entry) { return entry.label + ' = ' + entry.count; }).join(' · ') || 'unknown') + '</p>' +
@@ -1457,11 +1500,12 @@
     );
   }
 
-  function alertsEmptyState(what) {
+  function alertsEmptyState(what, noun) {
     var copies = {
       active: {
         title: 'No active alerts',
-        detail: 'No city is at WARNING or CRITICAL risk, so no incident is open. This page updates by itself every few seconds.'
+        detail: 'No ' + (noun || 'zone') + ' is at WARNING or CRITICAL risk, so no incident is open. ' +
+          'This page updates by itself every few seconds.'
       },
       closed: {
         title: 'Nothing resolved yet',
@@ -1533,13 +1577,13 @@
         { metric: 'flow_rate_m3_s', weight: '10%' }
       ],
       steps: [
-        'Each measurement is mapped onto 0-1 with a straight line between its configured watch level (0.5) and its flooding level (1.0), using the thresholds stored per city.',
+        'Each measurement is mapped onto 0-1 against its own configured levels: 1.0 is 110% of that metric\'s flooding level, and the watch and flooding markers drawn on each tile sit at that metric\'s configured watch and flooding levels.',
         'The five sub-scores are combined with the fixed weights above, plus up to 0.10 for a fast rise in water level, and the result is clamped to 0-1. That number is the risk score.',
         'The score is compared with the four bands above to give a candidate class, then a short hysteresis streak confirms it, so one noisy reading cannot move the class on its own.'
       ],
       limitations: [
         'It is a hand-tuned heuristic, not a calibrated hydrological model: the weights and thresholds are chosen, not fitted to measured flood events.',
-        'It is not a forecast. It describes the current reading; it does not predict when or whether a city will flood.',
+        'It is not a forecast. It describes the current reading; it does not predict when or whether flooding will occur.',
         'No real drain, water-level or flow sensors exist in this project, so three of the five inputs are simulated.',
         'The live rainfall comes from a provider grid point near the city centre, not from a street-level gauge, and has the provider\'s own update latency (up to about an hour for the hourly field).',
         'The bands are illustrative levels for a university project. FloodPulse is not an official flood warning service and must never be used as one.'

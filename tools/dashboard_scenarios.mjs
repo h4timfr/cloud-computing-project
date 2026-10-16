@@ -728,6 +728,121 @@ async function main() {
     });
   })();
 
+  /* ------------------------------------------------- announcements and cost --- */
+
+  group('The status line ticks without a screen reader reading it every second');
+
+  await (async () => {
+    const runtime = createRuntime();
+    let zonesAnswer = { body: withFeedAge(live.payload, 120, 120) };
+    runtime.on(zonesRoute, () => zonesAnswer);
+    runtime.on(historyRoute, () => ({ body: live.history }));
+    runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+
+    const dom = boot(runtime);
+    await runtime.settle();
+
+    await check('seventy clock ticks move the visible line and never the announced one', async () => {
+      // regression: the whole `.conn` block was `role="status" aria-live="polite"` and its
+      // text carried a seconds-resolution age and countdown, so the top bar was re-announced
+      // about sixty times a minute, forever, to anyone using a screen reader. The polls keep
+      // succeeding here (LIVE_MS is 10 s), so nothing should be announced during the loop.
+      const announcedBefore = dom.text('conn-announce');
+      assert.ok(announcedBefore.length > 0, 'the page announced nothing at all on a healthy poll');
+      for (let second = 1; second <= 70; second += 1) {
+        await runtime.advance(1000);
+        await runtime.fireDelay(1000); // the one-second ticker
+        if (second % 5 === 0) await runtime.fireDelay(5000); // a healthy poll, so the API stays live
+      }
+      assert.equal(dom.text('conn-badge'), 'LIVE', 'the API was answering, so the badge must say LIVE');
+      assert.equal(dom.text('conn-announce'), announcedBefore,
+        'the polite region was rewritten while only the clock moved');
+      // The visible line must still tick between polls: sampling it right after a poll and
+      // three seconds later is where the seconds-resolution countdown shows up.
+      await runtime.advance(1000);
+      await runtime.fireDelay(5000);
+      const afterPoll = dom.text('conn-detail');
+      for (let second = 0; second < 3; second += 1) {
+        await runtime.advance(1000);
+        await runtime.fireDelay(1000);
+      }
+      assert.notEqual(dom.text('conn-detail'), afterPoll, 'the visible status line is frozen');
+      assert.match(dom.text('conn-detail'), /next provider check in \d+:\d\d/);
+    });
+
+    await check('a real state change is still announced, with the reason', async () => {
+      const before = dom.text('conn-announce');
+      zonesAnswer = { throw: new TypeError('Failed to fetch') };
+      await runtime.advance(60000 * 2);
+      await runtime.driveTimers();
+      await runtime.settle();
+      assert.equal(dom.text('conn-badge'), 'DISCONNECTED');
+      assert.notEqual(dom.text('conn-announce'), before, 'the disconnection was never announced');
+      assert.match(dom.text('conn-announce'), /no successful poll/);
+      assert.match(dom.text('conn-announce'), /Failed to fetch/);
+    });
+  })();
+
+  group('One idle tab does not fetch the same thing twice');
+
+  await (async () => {
+    const runtime = createRuntime();
+    runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 60, 60) }));
+    runtime.on(historyRoute, () => ({ body: live.history }));
+    runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+
+    const dom = boot(runtime);
+    await runtime.settle();
+
+    await check('a simulated minute fetches each route at its own cadence', async () => {
+      // regression: poll() refreshed incidents whenever the 5 s poll crossed the 10 s
+      // boundary, exactly when the incidents interval fired, so /incidents cost double.
+      for (let second = 1; second <= 60; second += 1) {
+        await runtime.advance(1000);
+        await runtime.fireDelay(1000);
+        if (second % 5 === 0) await runtime.fireDelay(5000);
+        if (second % 10 === 0) await runtime.fireDelay(10000);
+        if (second % 30 === 0) await runtime.fireDelay(30000);
+      }
+      const zones = runtime.count(zonesRoute);
+      const incidents = runtime.count(incidentsRoute);
+      const history = runtime.count(historyRoute);
+      assert.ok(zones >= 11 && zones <= 14, `the 5 s poll fired ${zones} times in a minute`);
+      assert.ok(incidents <= 8, `the 10 s incidents cadence cost ${incidents} requests: it is doubled`);
+      assert.ok(incidents >= 6, `incidents were only fetched ${incidents} times in a minute`);
+      assert.ok(history <= 4, `the 30 s history cadence cost ${history} requests`);
+      assert.ok(dom.text('banner-detail').length > 0);
+    });
+  })();
+
+  group('A page with no API base says so instead of loading for ever');
+
+  await (async () => {
+    const runtime = createRuntime();
+    runtime.on(zonesRoute, () => ({ body: live.payload }));
+    const dom = createFakeDom();
+    dom.window.location.search = '';
+    dom.window.FLOODPULSE_API_BASE = '';
+    const sandbox = runtime.sandbox(dom);
+    vm.createContext(sandbox);
+    vm.runInContext(libSource, sandbox, { filename: 'web/lib.js' });
+    vm.runInContext(appSource, sandbox, { filename: 'web/app.js' });
+    await runtime.settle();
+    await runtime.advance(30000);
+    await runtime.driveTimers();
+    await runtime.settle();
+
+    await check('the badge and the sentence explain the missing API base', () => {
+      // regression: start() returned before refreshConnection() and before every interval,
+      // so the badge sat on CONNECTING and five panels on "waiting for data…" indefinitely.
+      assert.equal(runtime.requests.length, 0, 'the page issued a request without an API base');
+      assert.equal(dom.text('conn-badge'), 'DISCONNECTED', `the badge reads "${dom.text('conn-badge')}"`);
+      assert.match(dom.text('conn-detail'), /no API base configured/);
+      assert.match(dom.text('conn-announce'), /no API base configured/);
+      assert.equal(dom.text('summary-freshness'), 'not connected');
+    });
+  })();
+
   await check('no scenario produced an unhandled promise rejection', () => {
     assert.equal(unhandled.length, 0,
       `unhandled rejections: ${unhandled.map((reason) => String(reason && reason.message || reason)).join(' | ')}`);
