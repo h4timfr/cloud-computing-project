@@ -73,6 +73,7 @@
   <section id="view-overview" class="view" tabindex="-1" data-view="overview" aria-labelledby="ov-title">
     <header class="view-head">
       <h2 class="view-title" id="ov-title">Flood risk right now</h2>
+      <p class="view-intro" id="ov-intro">FloodPulse watches rainfall, soil saturation and drainage, and shows how close each monitored zone is to flooding.</p>
       <p class="view-lede" id="ov-headline" role="status" aria-live="polite">Connecting to the FloodPulse API…</p>
       <p class="view-sub muted" id="ov-subline"></p>
     </header>
@@ -87,7 +88,7 @@
     </div>
 
     <section class="band-strip-bar card" aria-label="Fleet risk distribution">
-      <h3 class="block-title">Cities by risk level</h3>
+      <h3 class="block-title" id="band-strip-title">Cities by risk level</h3>
       <ul id="band-strip" class="band-strip">
         <li class="band-tile is-zero band-normal"><span class="band-count" data-f="count-normal">–</span><span class="band-name band-normal">Normal</span></li>
         <li class="band-tile is-zero band-watch"><span class="band-count" data-f="count-watch">–</span><span class="band-name band-watch">Watch</span></li>
@@ -99,7 +100,7 @@
       <p id="change-note" class="change-note" role="status" aria-live="polite" hidden></p>
     </section>
 
-    <h3 class="block-title">City status</h3>
+    <h3 class="block-title" id="city-cards-title">City status</h3>
     <div id="city-cards" class="city-cards" aria-live="polite">
       <p class="muted" data-f="loading">waiting for data…</p>
     </div>
@@ -189,7 +190,7 @@
         <ol class="incident-head" aria-hidden="true">
           <li class="incident-row">
             <span class="incident-severity">Severity</span>
-            <span class="incident-zone">City</span>
+            <span class="incident-zone" id="incidents-zone-header">City</span>
             <span class="incident-time">Opened (UTC)</span>
             <span class="incident-status">Status</span>
             <span class="incident-duration">Duration</span>

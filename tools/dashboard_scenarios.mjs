@@ -658,6 +658,76 @@ async function main() {
     });
   })();
 
+  /* ----------------------------------------------------- simulated fleet --- */
+
+  group('The simulated demo fleet is described as zones, never as cities');
+
+  await (async () => {
+    // The fallback demo path: three simulated zones, one of them not reporting. The copy has
+    // to follow the fleet, or the page promises Indian cities while showing demo zones.
+    const runtime = createRuntime();
+    const demo = {
+      zone_mode: 'simulated', data_classification: 'simulated', zone_count: 3, simulated: true,
+      generated_at: new Date().toISOString(),
+      weather: { enabled: false, provider: null, refresh_seconds: null, live_zones: [] },
+      highest_risk_zone: { zone_id: 'zone-old-town-canal', name: 'Old Town Canal', risk_class: 'WARNING' },
+      zones: [
+        { zone_id: 'zone-old-town-canal', name: 'Old Town Canal', zone_mode: 'simulated', status: 'live',
+          simulated: true, metric_sources: {},
+          latest: { risk_score: 0.71, risk_class: 'WARNING', sequence: 8, sensor_node_id: 'sim-oldtown',
+            age_seconds: 30, readings: { rainfall_mm_per_hr: 22.5, water_level_m: 2.4 }, top_drivers: [] } },
+        { zone_id: 'zone-harbor-east', name: 'Harbor East', zone_mode: 'simulated', status: 'live',
+          simulated: true, metric_sources: {},
+          latest: { risk_score: 0.38, risk_class: 'WATCH', sequence: 8, sensor_node_id: 'sim-harbor',
+            age_seconds: 30, readings: { rainfall_mm_per_hr: 6.0, water_level_m: 1.1 }, top_drivers: [] } },
+        { zone_id: 'zone-riverside-north', name: 'Riverside North', zone_mode: 'simulated', status: 'no_data',
+          simulated: true, metric_sources: {}, latest: null }
+      ]
+    };
+    runtime.on(zonesRoute, () => ({ body: demo }));
+    runtime.on(historyRoute, () => ({ body: { point_count: 0, minutes: 60, model: 'heuristic-v1', points: [], downsampled: false } }));
+    runtime.on(incidentsRoute, () => ({ body: { count: 0, open_count: 0, closed_count: 0, incidents: [] } }));
+
+    const dom = boot(runtime);
+    await runtime.settle();
+
+    await check('the overview speaks about zones when the fleet is simulated', () => {
+      const surfaces = {
+        intro: dom.text('ov-intro'),
+        headline: dom.text('ov-headline'),
+        subline: dom.text('ov-subline'),
+        stripTitle: dom.text('band-strip-title'),
+        cardsTitle: dom.text('city-cards-title'),
+        citiesLede: dom.text('cities-lede'),
+        incidentHeader: dom.text('incidents-zone-header'),
+        stats: dom.html('ov-stats').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+      };
+      Object.entries(surfaces).forEach(([where, text]) => {
+        assert.ok(!/\bcit(y|ies)\b/i.test(text), `the ${where} calls a simulated zone a city: "${text.trim()}"`);
+      });
+      assert.match(surfaces.intro, /3 zones/);
+      assert.ok(!/Open-Meteo|\blive rainfall\b/.test(surfaces.intro),
+        'a simulated fleet must not name a live weather provider');
+      assert.equal(surfaces.stripTitle, 'Zones by risk level');
+      assert.equal(surfaces.cardsTitle, 'Zone status');
+      assert.equal(surfaces.incidentHeader, 'Zone');
+      assert.match(surfaces.citiesLede, /^Every monitored zone /);
+      assert.match(surfaces.stats, /Zones reporting/);
+      assert.match(surfaces.stats, /Highest risk zone/);
+      assert.match(surfaces.subline, /of 3 zones are reporting/);
+      assert.match(surfaces.headline, /\bzones?\b/i);
+    });
+
+    await check('the simulated cards and banner keep saying they are simulated', () => {
+      assert.match(dom.text('banner-detail'), /simulat/i);
+      assert.match(dom.html('zones'), /Old Town Canal/);
+      const quiet = dom.stub('zones', '[data-zone="zone-riverside-north"]');
+      assert.equal(quiet.querySelector('[data-f="risk_class"]').textContent, 'NO DATA',
+        'the zone without a reading must not look like a scored zone');
+      assert.equal(quiet.querySelector('[data-f="age"]').textContent, 'no data');
+    });
+  })();
+
   await check('no scenario produced an unhandled promise rejection', () => {
     assert.equal(unhandled.length, 0,
       `unhandled rejections: ${unhandled.map((reason) => String(reason && reason.message || reason)).join(' | ')}`);

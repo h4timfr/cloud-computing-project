@@ -110,7 +110,8 @@
       // navigation and the four views (M6 information architecture)
       'nav-toggle', 'nav-list', 'nav-overview', 'nav-cities', 'nav-alerts', 'nav-data',
       'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data',
-      'ov-headline', 'ov-subline', 'ov-stats', 'city-cards', 'city-detail', 'city-crumb',
+      'ov-headline', 'ov-subline', 'ov-intro', 'ov-stats', 'band-strip-title',
+    'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
       'alerts-lede', 'alerts-summary', 'alerts-active', 'alerts-closed',
       'provenance-legend', 'attribution-block', 'attribution-detail', 'summary-weather-provider',
       'method-block', 'why-simulated', 'limitations', 'summary-model-data'
@@ -169,6 +170,23 @@
     });
   }
 
+  /* Every label that names the fleet itself is written from the fleet's own mode, in one
+   * place, so no view can drift into calling a simulated zone a city (or the reverse). */
+  function renderFleetLabels(payload) {
+    var singular = FP.zoneNoun(payload);
+    var plural = FP.zoneNounPlural(payload);
+    var Plural = plural.charAt(0).toUpperCase() + plural.slice(1);
+    var Singular = singular.charAt(0).toUpperCase() + singular.slice(1);
+    setText('ov-intro', FP.productIntro(payload));
+    setText('band-strip-title', Plural + ' by risk level');
+    setText('city-cards-title', Singular + ' status');
+    setText('cities-lede', 'Every monitored ' + singular + ' with its current risk level. ' +
+      'Open one for the full picture.');
+    setText('incidents-zone-header', Singular);
+    // the section names ("Cities", the nav label, the window title) are part of the
+    // information architecture and stay fixed; only sentences about the data follow the data
+  }
+
   function applyPayload(payload) {
     state.zones = payload.zones || [];
 
@@ -178,6 +196,7 @@
     }
 
     rememberSeries(state.zones);
+    renderFleetLabels(payload);
     renderSummary(payload);
     renderTitles(payload);
     renderBandStrip(payload);
@@ -883,8 +902,12 @@
    * how much of the fleet is reporting, and how fresh the data is. */
   function renderOverview(payload) {
     var ov = FP.fleetOverview(payload, state.incidents, Date.now());
+    // the fleet's own noun: "cities" for the live India fleet, "zones" for the simulated one,
+    // so the copy never calls a demo zone a city (renderFleetLabels writes the page labels)
+    var noun = FP.zoneNoun(payload);
+    var plural = FP.zoneNounPlural(payload);
     setText('ov-headline', ov.headline);
-    setText('ov-subline', ov.reporting + ' of ' + ov.total + ' cities are reporting a scored reading · updated ' +
+    setText('ov-subline', ov.reporting + ' of ' + ov.total + ' ' + plural + ' are reporting a scored reading · updated ' +
       ov.updated + ' · ' + ov.subline);
 
     if (el['ov-stats']) {
@@ -897,9 +920,10 @@
         ? 'highest severity ' + FP.escapeHtml(state.incidents && state.incidents.incidents ? (FP.alertsSplit(state.incidents).active[0] || {}).severity || '–' : '–')
         : 'nothing needs attention right now';
       var reportingTone = ov.reporting === 0 ? '' : 'normal';
-      var html = statCard('Highest risk city', leaderValue, leaderMeta, FP.bandKey(ov.worst)) +
+      var html = statCard('Highest risk ' + noun, leaderValue, leaderMeta, FP.bandKey(ov.worst)) +
         statCard('Active alerts', String(ov.activeAlerts), FP.escapeHtml(alertMeta), ov.activeAlerts ? 'warning' : '') +
-        statCard('Cities reporting', ov.reporting + ' / ' + ov.total, 'DynamoDB latest reading per city', reportingTone) +
+        statCard(plural.charAt(0).toUpperCase() + plural.slice(1) + ' reporting', ov.reporting + ' / ' + ov.total,
+          'newest stored reading per ' + noun, reportingTone) +
         statCard('Weather freshness', ov.feedValue,
         FP.escapeHtml(ov.freshness || 'waiting for the first provider check'));
       if (el['ov-stats'].getAttribute('data-rendered') !== html) {
@@ -925,7 +949,8 @@
     state.cityCardSignature = signature;
     host.innerHTML = list.length
       ? list.map(FP.cityStatusCard).join('')
-      : '<p class="muted" data-f="no-cities">No city has reported a scored reading yet. ' +
+      : '<p class="muted" data-f="no-cities">No ' + FP.zoneNoun(state.payload) +
+        ' has reported a scored reading yet. ' +
         'This page keeps polling the API and fills in as soon as the first reading arrives.</p>';
   }
 
@@ -939,16 +964,20 @@
     setText('city-crumb', zone ? zone.name : (zoneId || 'city'));
     if (!zone) {
       var waiting = !state.payload;
-      var signature = 'missing|' + String(zoneId) + '|' + (waiting ? 'loading' : 'known');
+      var noun = FP.zoneNoun(state.payload);
+      var nounTitle = noun.charAt(0).toUpperCase() + noun.slice(1);
+      var pluralTitle = FP.zoneNounPlural(state.payload);
+      pluralTitle = pluralTitle.charAt(0).toUpperCase() + pluralTitle.slice(1);
+      var signature = 'missing|' + String(zoneId) + '|' + (waiting ? 'loading' : 'known') + '|' + noun;
       if (signature !== state.detailSignature) {
         state.detailSignature = signature;
         slot.innerHTML = '<div class="card detail-missing">' +
-          '<h3>' + (waiting ? 'Loading this city…' : 'This city is not in the current fleet') + '</h3>' +
+          '<h3>' + (waiting ? 'Loading this ' + noun + '…' : 'This ' + noun + ' is not in the current fleet') + '</h3>' +
           '<p class="muted">' + (waiting
             ? 'Waiting for the first response from <code>GET /zones</code>.'
-            : 'The API does not report a city with the id <code>' + FP.escapeHtml(zoneId || '') + '</code>. ' +
+            : 'The API does not report a ' + noun + ' with the id <code>' + FP.escapeHtml(zoneId || '') + '</code>. ' +
               'It may belong to a different fleet (the simulated demo zones are not part of the live one).') + '</p>' +
-          '<p><a class="ghost-link" href="#/cities">Back to all cities</a></p>' +
+          '<p><a class="ghost-link" href="#/cities">Back to all ' + pluralTitle.toLowerCase() + '</a></p>' +
           '</div>';
       }
       return;
@@ -1004,13 +1033,16 @@
             : FP.alertsEmptyState('closed'));
       }
       if (el['alerts-summary']) {
+        var alertsNoun = FP.zoneNoun(state.payload);
         var html = loading ? '' : statCard('Active alerts', String(split.active.length),
           split.active.length ? '<span class="pill band-' + FP.bandKey(summary.highest) + '">' +
             FP.escapeHtml(summary.highest) + '</span> highest severity'
-            : 'no city above WATCH', summary.tone === 'calm' ? '' : FP.bandKey(summary.highest)) +
+            : 'no ' + alertsNoun + ' above WATCH', summary.tone === 'calm' ? '' : FP.bandKey(summary.highest)) +
           statCard('Resolved incidents', String(split.closed.length), 'kept as history', '') +
           statCard('Total recorded', String(split.total), 'source <code>GET /incidents</code>', '') +
-          statCard('Alert delivery', payload && payload.alerting && payload.alerting.enabled ? 'Armed' : 'Not armed',
+          // "armed" only claims the host-side publish path is configured: the browser is never
+          // told about subscribers, so delivery to a person is never asserted here
+          statCard('Alert publishing', payload && payload.alerting && payload.alerting.enabled ? 'Configured' : 'Not configured',
             FP.escapeHtml(FP.alertingNote(payload ? payload.alerting : null)), payload && payload.alerting && payload.alerting.enabled ? 'normal' : '');
         if (el['alerts-summary'].getAttribute('data-rendered') !== html) {
           el['alerts-summary'].innerHTML = html;
@@ -1027,7 +1059,8 @@
     } else if (!payload) {
       lede = 'Loading alerts…';
     } else if (!split.active.length && !split.closed.length) {
-      lede = 'Nothing has needed an alert yet. FloodPulse opens one automatically when a city reaches WARNING or CRITICAL.';
+      lede = 'Nothing has needed an alert yet. FloodPulse opens one automatically when a ' +
+        FP.zoneNoun(state.payload) + ' reaches WARNING or CRITICAL.';
     } else if (!split.active.length) {
       lede = 'No active alert right now. ' + split.closed.length + ' resolved incident' +
         (split.closed.length === 1 ? ' is' : 's are') + ' kept below for the record.';
@@ -1083,7 +1116,7 @@
       var facts = FP.methodologyFacts();
       if (el['method-block']) {
         el['method-block'].innerHTML =
-          '<p>FloodPulse scores every city with <code>' + FP.escapeHtml(facts.model) + '</code>, a deterministic hand-tuned heuristic. ' +
+          '<p>FloodPulse scores every ' + FP.zoneNoun(state.payload) + ' with <code>' + FP.escapeHtml(facts.model) + '</code>, a deterministic hand-tuned heuristic. ' +
           'Nothing is trained, sampled or guessed at request time: the same readings always produce the same score.</p>' +
           '<h4>Step by step</h4><ol class="method-steps">' + facts.steps.map(function (step) {
             return '<li>' + FP.escapeHtml(step) + '</li>';

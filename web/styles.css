@@ -972,6 +972,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 
 .view-head { display: grid; gap: 6px; }
 .view-title { margin: 0; font-size: 1.62rem; line-height: 1.2; letter-spacing: 0.01em; }
+.view-intro { margin: 0; max-width: 78ch; font-size: 0.9rem; color: var(--slate-300); }
 .view-lede { margin: 0; max-width: 82ch; font-size: 1.04rem; color: var(--slate-200); }
 .view-sub { margin: 0; max-width: 90ch; font-size: 0.84rem; }
 

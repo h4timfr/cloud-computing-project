@@ -446,6 +446,48 @@ async function main() {
     dom.fire(dom.window, 'hashchange', {});
   });
 
+  check('the overview introduces the product in one plain sentence', () => {
+    const intro = dom.text('ov-intro');
+    assert.ok(intro && intro.length > 40, `the overview never introduces the product: "${intro}"`);
+    assert.match(intro, /^FloodPulse combines/);
+    assert.match(intro, /how close each one is to flooding/);
+    assert.ok(!/heuristic|weight|coefficient|trend|risk_score/i.test(intro),
+      `the introduction leaks model jargon: "${intro}"`);
+    // the sentence must describe the mode the API is actually serving
+    const live = payload.zone_mode === 'live_weather';
+    if (live) {
+      assert.match(intro, /Open-Meteo/, 'the live fleet must name its real rainfall source');
+    } else {
+      assert.ok(!/Open-Meteo|\blive rainfall\b/.test(intro),
+        `a simulated fleet must not claim live weather: "${intro}"`);
+    }
+    if (payload.zone_count > 0) {
+      assert.match(intro, new RegExp(`across ${payload.zone_count} ${live ? 'cities' : 'zones'}`),
+        `the introduction lost the fleet size: "${intro}"`);
+    }
+  });
+
+  check('the overview never calls a simulated zone a city', () => {
+    const live = payload.zone_mode === 'live_weather';
+    const plural = live ? 'zones?' : 'cities?';
+    const surfaces = {
+      headline: dom.text('ov-headline'),
+      subline: dom.text('ov-subline'),
+      stripTitle: dom.text('band-strip-title'),
+      stats: dom.html('ov-stats').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    };
+    Object.entries(surfaces).forEach(([where, text]) => {
+      assert.ok(!new RegExp(`\\b${plural}\\b`).test(text),
+        `the ${where} uses the wrong fleet noun: "${text.trim()}"`);
+    });
+    assert.ok(new RegExp(`\\b${live ? 'cities' : 'zones'}\\b`).test(surfaces.subline),
+      `the subline must name the fleet: "${surfaces.subline}"`);
+    assert.match(surfaces.stripTitle, new RegExp(`^${live ? 'Cities' : 'Zones'} by risk level$`),
+      `the risk-strip title reads "${surfaces.stripTitle}"`);
+    assert.match(surfaces.stats, new RegExp(`${live ? 'Cities' : 'Zones'} reporting`),
+      `the reporting figure is mislabelled: "${surfaces.stats}"`);
+  });
+
   group('The Overview answers the public question');
   check('the overview names the fleet answer, the leader and the counts', () => {
     const headline = dom.text('ov-headline');

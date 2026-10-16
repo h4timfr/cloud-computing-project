@@ -904,7 +904,9 @@
     }
     var cooldown = toNumber(alerting.cooldown_seconds);
     var rate = cooldown === null ? '' : ' — max 1 alert per zone and severity every ' + formatDuration(cooldown);
-    return 'SNS alerts armed' + rate;
+    // Publishing being armed is not the same as somebody receiving it, and the browser is
+    // never told about subscribers, so the copy must not promise delivery.
+    return 'SNS alerts armed' + rate + ' · delivery to a subscriber is not confirmed here';
   }
 
   function incidentsMeta(payload) {
@@ -1203,7 +1205,8 @@
       atRisk: counts.WATCH + counts.WARNING + counts.CRITICAL,
       worst: worst,
       worstTone: meaning.tone,
-      headline: fleetHeadline(worst, counts, zones.length),
+      headline: fleetHeadline(worst, counts, zones.length, zoneNounPlural(payload)),
+      headlineIntro: productIntro(payload),
       subline: meaning.advice,
       leader: leader,
       leaderName: leader ? leader.name : '',
@@ -1217,19 +1220,36 @@
     };
   }
 
-  /* One sentence for the top of the page, written for a non-technical reader. */
-  function fleetHeadline(worst, counts, zoneCount) {
+  /* One sentence for the top of the page, written for a non-technical reader. The noun comes
+   * from the fleet's own mode, so demo zones are never described as cities. */
+  function fleetHeadline(worst, counts, zoneCount, plural) {
+    var noun = plural || 'cities';
+    var singular = noun === 'cities' ? 'city' : 'zone';
     if (worst === 'CRITICAL') {
-      return counts.CRITICAL + ' of ' + zoneCount + ' cities are at a critical flood risk right now.';
+      return counts.CRITICAL + ' of ' + zoneCount + ' ' + noun + ' are at a critical flood risk right now.';
     }
     if (worst === 'WARNING') {
-      return 'Flooding is possible in ' + counts.WARNING + ' of ' + zoneCount + ' cities.';
+      return 'Flooding is possible in ' + counts.WARNING + ' of ' + zoneCount + ' ' + noun + '.';
     }
     if (worst === 'WATCH') {
-      return counts.WATCH + ' of ' + zoneCount + ' cities are worth watching.';
+      return counts.WATCH + ' of ' + zoneCount + ' ' + noun + ' are worth watching.';
     }
     if (worst === 'UNKNOWN') return 'Waiting for the first readings.';
-    return 'No city is at flood risk right now.';
+    return 'No ' + singular + ' is at flood risk right now.';
+  }
+
+  /* What this product is, in one sentence a non-technical reader can follow. The sentence
+   * follows the fleet's mode so it never claims real weather where none is being used. */
+  function productIntro(payload) {
+    var live = !!payload && payload.zone_mode === 'live_weather';
+    var count = toNumber(payload && payload.zone_count);
+    var fleet = count === null || count <= 0 ? '' : ' across ' + count + ' ' + zoneNounPlural(payload);
+    if (live) {
+      return 'FloodPulse combines live rainfall from Open-Meteo with modelled soil saturation and ' +
+        'simulated drainage' + fleet + ', and shows how close each one is to flooding.';
+    }
+    return 'FloodPulse combines simulated rainfall, soil saturation and drainage' + fleet +
+      ', and shows how close each one is to flooding.';
   }
 
   /* ------------------------------------------------------------- markup --- */
@@ -1615,6 +1635,7 @@
     viewTitle: viewTitle,
     fleetOverview: fleetOverview,
     fleetHeadline: fleetHeadline,
+    productIntro: productIntro,
     bandPill: bandPill,
     cityStatusCard: cityStatusCard,
     metricTile: metricTile,

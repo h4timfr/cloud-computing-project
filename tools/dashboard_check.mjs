@@ -304,6 +304,11 @@ check('incident meta and alerting notes never leak the topic', () => {
   const armed = FP.alertingNote({ enabled: true, severities: ['WARNING', 'CRITICAL'], cooldown_seconds: 600 });
   assert.match(off, /not configured/);
   assert.match(armed, /10 min/);
+  // Armed publishing is not proof of delivery, and the browser is never told about
+  // subscribers, so the copy must say so rather than imply somebody was notified.
+  assert.match(armed, /not confirmed/, 'the alerting note must not imply delivery');
+  assert.ok(!/\bdelivered\b|has been sent|subscribers? (?:were|will be) notified/i.test(armed),
+    'the alerting note claims a notification that was never observed');
   [off, armed, meta].forEach((text) => {
     assert.ok(!/arn:/i.test(text), 'alerting text mentions an ARN');
     assert.ok(!/topic/i.test(text), 'alerting text mentions the topic');
@@ -1035,6 +1040,83 @@ if (payloadPath) {
     assert.match(label, payload.zone_mode === 'live_weather' ? /cities/ : /zones/);
   });
 }
+
+group('The Overview explains the product in its own fleet\'s words');
+
+check('the product is described in one plain sentence, in both modes', () => {
+  const live = FP.productIntro({ zone_mode: 'live_weather', zone_count: 5 });
+  const demo = FP.productIntro({ zone_mode: 'simulated', zone_count: 3 });
+  assert.match(live, /Open-Meteo/, 'the live sentence must name the real rainfall source');
+  assert.match(live, /across 5 cities/);
+  assert.match(demo, /across 3 zones/);
+  assert.ok(!/Open-Meteo/.test(demo), 'a simulated fleet must not claim a live weather provider');
+  assert.ok(!/\blive\b/i.test(demo), 'a simulated fleet must not call its own data live');
+  [live, demo].forEach((text) => {
+    assert.match(text, /^FloodPulse combines/, `unexpected introduction: ${text}`);
+    assert.match(text, /how close each one is to flooding/);
+    assert.ok(!/heuristic|weight|coefficient|trend|score/i.test(text),
+      `the introduction must avoid model jargon: ${text}`);
+    assert.ok(text.length <= 220, `the introduction must stay one readable sentence: ${text}`);
+  });
+});
+
+check('the introduction survives a missing fleet or zone count', () => {
+  [null, {}, { zone_mode: 'live_weather' }, { zone_count: 0 }, { zone_mode: 'live_weather', zone_count: 0 }]
+    .forEach((partial) => {
+      const text = FP.productIntro(partial);
+      assert.match(text, /^FloodPulse combines/);
+      assert.ok(!/undefined|null|NaN|\d+ undefined/.test(text), `"${text}" leaks a placeholder`);
+    });
+});
+
+check('the headline never calls a simulated zone a city', () => {
+  const critical = { CRITICAL: 1, WARNING: 0, WATCH: 0, UNSET: 0 };
+  const watch = { CRITICAL: 0, WARNING: 0, WATCH: 2, UNSET: 0 };
+  assert.match(FP.fleetHeadline('CRITICAL', critical, 3, 'zones'), /1 of 3 zones are at a critical/);
+  assert.match(FP.fleetHeadline('CRITICAL', critical, 5, 'cities'), /1 of 5 cities are at a critical/);
+  assert.match(FP.fleetHeadline('WATCH', watch, 3, 'zones'), /2 of 3 zones are worth watching/);
+  assert.equal(FP.fleetHeadline('NORMAL', critical, 3, 'zones'), 'No zone is at flood risk right now.');
+  assert.equal(FP.fleetHeadline('NORMAL', critical, 5, 'cities'), 'No city is at flood risk right now.');
+  assert.equal(FP.fleetHeadline('UNKNOWN', critical, 0, 'cities'), 'Waiting for the first readings.');
+});
+
+check('the overview payload carries both sentences, in the right noun', () => {
+  const ov = FP.fleetOverview(payload, null, Date.now());
+  assert.ok(ov.headlineIntro && ov.headlineIntro.length > 60, 'fleetOverview must carry headlineIntro');
+  // the calm headline is deliberately singular ("No city is at flood risk"), the rest plural,
+  // so accept either number but never the wrong noun
+  const live = payload.zone_mode === 'live_weather';
+  const singular = live ? 'city' : 'zone';
+  const plural = live ? 'cities' : 'zones';
+  const other = live ? 'zones?' : 'cities?';
+  assert.ok(new RegExp(`\\b(${singular}|${plural})\\b`).test(ov.headline),
+    `the headline lost its fleet noun: ${ov.headline}`);
+  assert.ok(!new RegExp(`\\b${other}\\b`).test(ov.headline),
+    `the headline used the wrong fleet noun: ${ov.headline}`);
+  if (typeof payload.zone_count === 'number' && payload.zone_count > 0) {
+    assert.match(ov.headlineIntro, new RegExp(`across ${payload.zone_count} ${plural}`),
+      `the introduction lost the fleet size: ${ov.headlineIntro}`);
+  }
+});
+
+check('the page has somewhere to put both, and the strip title is mode-driven', () => {
+  const page = fs.readFileSync(path.join(webDir, 'index.html'), 'utf8');
+  assert.match(page, /id="ov-intro"[^>]*>[^<]{40,}</, 'the intro needs a static sentence for the pre-API state');
+  assert.match(page, /id="band-strip-title"/, 'the risk-strip title is set from the fleet noun at runtime');
+  assert.match(page, /id="city-cards-title"/, 'the card-block title is set from the fleet noun at runtime');
+  assert.match(page, /id="incidents-zone-header"/, 'the incident column header is set from the fleet noun');
+  assert.match(page, /id="cities-lede"/, 'the Cities lede is set from the fleet noun at runtime');
+  const app = fs.readFileSync(path.join(webDir, 'app.js'), 'utf8');
+  ['ov-intro', 'band-strip-title', 'city-cards-title', 'cities-lede', 'incidents-zone-header'].forEach((id) => {
+    assert.ok(app.includes(`setText('${id}'`), `app.js never fills #${id} from the fleet noun`);
+  });
+  assert.ok(!/statCard\('Cities reporting'/.test(app), 'a hardcoded "Cities reporting" label survives');
+  assert.ok(!/'Highest risk city'/.test(app), 'a hardcoded "Highest risk city" label survives');
+  // one place writes the fleet labels, so no view can quietly keep a stale noun
+  assert.equal((app.match(/setText\('band-strip-title'/g) || []).length, 1,
+    'the strip title is written from more than one place');
+  assert.ok(/function renderFleetLabels\(payload\)/.test(app), 'the fleet labels lost their single writer');
+});
 
 group('What changed since the last poll');
 
