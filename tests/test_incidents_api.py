@@ -125,6 +125,23 @@ class IncidentsRouteTest(unittest.TestCase):
         self.assertNotIn("arn:aws", blob)
         self.assertNotIn("floodpulse_sns_topic_arn", blob)
 
+    def test_counts_say_what_they_count_when_the_page_is_cut_off(self) -> None:
+        """regression: open_count/closed_count were sums over the returned slice, so a viewer
+        reading "1 open" could not tell whether the fleet had one open incident or fifty."""
+        for index, zone_id in enumerate(ZONE_IDS):
+            ZoneScenario(self.store, zone_id=zone_id, start_epoch=START_EPOCH + index * 10_000).run_until_open()
+
+        _status, full = self.get()
+        self.assertEqual(full["counts_scope"], "returned_page")
+        self.assertFalse(full["truncated"], "the whole table fits, so nothing was cut off")
+
+        _status, page = self.get({"limit": 2})
+        self.assertEqual(page["count"], 2)
+        self.assertTrue(page["truncated"], "a limit that is hit must be reported")
+        self.assertEqual(page["open_count"] + page["closed_count"], page["count"])
+        self.assertEqual(page["open_count"], sum(1 for item in page["incidents"] if item["is_open"]))
+        self.assertLess(page["count"], full["count"], "the test needs a limit that really truncates")
+
     def test_method_not_allowed(self) -> None:
         status, payload = dispatch("POST", "/incidents", "{}", self.store, float(START_EPOCH), {}, {})
         self.assertEqual(status, 405)

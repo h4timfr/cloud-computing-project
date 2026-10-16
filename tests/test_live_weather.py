@@ -6,6 +6,7 @@ the suite never performs a network call.
 
 from __future__ import annotations
 
+from unittest import mock
 import json
 import logging
 import sys
@@ -25,10 +26,17 @@ from floodpulse.config import (
     WEATHER_MODE_LIVE,
     WEATHER_MODE_OFF,
     WEATHER_REFRESH_SECONDS,
+    WEATHER_REFRESH_ENV,
+    WEATHER_TIMEOUT_ENV,
+    WEATHER_TIMEOUT_MAX_SECONDS,
+    WEATHER_TIMEOUT_MIN_SECONDS,
+    WEATHER_TIMEOUT_SECONDS,
     ZONE_MODE_LIVE,
     ZONE_MODE_ENV,
 )
-from floodpulse.handler import dispatch
+from floodpulse import weather as weather_module
+from floodpulse.handler import _weather_refresh_seconds, dispatch
+from floodpulse.live_weather import refresh_live_weather, weather_timeout_seconds
 from floodpulse.storage import LocalStore
 from floodpulse.weather import Observation, WeatherClient
 
@@ -705,6 +713,33 @@ class LiveZonesEndpointTest(unittest.TestCase):
         for zone in payload["zones"]:
             self.assertTrue(zone["metric_sources"]["rainfall_mm_per_hr"] == "SIMULATED")
 
+    def test_a_fleet_with_no_provider_reading_never_claims_real_rainfall(self):
+        """regression: the top-level weather block hardcoded the live metric sources and the
+        live hydraulics note, so the demo fleet (no provider at all) reported
+        metric_sources.rainfall == "REAL" and called its generated rainfall "the real
+        rainfall"."""
+        demo = self.zones(
+            env={ZONE_MODE_ENV: "demo", WEATHER_MODE_ENV: WEATHER_MODE_OFF}, client=FakeClient()
+        )
+        block = demo["weather"]
+        self.assertFalse(block["enabled"])
+        self.assertEqual(block["live_zones"], [])
+        self.assertEqual(set(block["metric_sources"].values()), {"SIMULATED"})
+        self.assertNotIn("real rainfall", block["hydraulics_note"])
+        self.assertIn("SIMULATED", block["hydraulics_note"])
+        self.assertIn("rainfall", block["hydraulics_note"])
+        self.assertIn("last_attempt_ok", block, "the block does not report attempt success per zone")
+        self.assertEqual(block["last_attempt_ok"], {})
+
+        live = self.zones()
+        live_block = live["weather"]
+        self.assertTrue(live_block["enabled"])
+        self.assertEqual(live_block["metric_sources"]["rainfall_mm_per_hr"], "REAL")
+        self.assertEqual(live_block["metric_sources"]["drain_level_m"], "SIMULATED")
+        self.assertIn("real rainfall", live_block["hydraulics_note"])
+        self.assertEqual(sorted(live_block["last_attempt_ok"]), sorted(live_block["live_zones"]))
+        self.assertTrue(all(value is True for value in live_block["last_attempt_ok"].values()))
+
     def test_no_secret_or_provider_url_leaks_into_the_response(self):
         body = json.dumps(self.zones())
         self.assertNotIn("api.open-meteo.com", body)
@@ -724,6 +759,49 @@ class LiveZonesEndpointTest(unittest.TestCase):
         self.assertEqual(len(logged["refreshed"]), 5)
         self.assertEqual(logged["failed"], [])
         self.assertIsNone(logged["error"])
+
+    def test_a_documented_refresh_interval_is_honoured_or_clamped_to_the_range(self):
+        """regression: the log said "clamping" but the function returned the 600 s default, so
+        an operator setting 30 s or 86400 s got a value the log did not describe."""
+        cases = {
+            "300": 300,
+            "60": 60,
+            "86400": 86400,
+            "30": 60,
+            "999999": 86400,
+            "0": 60,
+            "-5": 60,
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(_weather_refresh_seconds({WEATHER_REFRESH_ENV: raw}), expected)
+        self.assertEqual(_weather_refresh_seconds({}), WEATHER_REFRESH_SECONDS)
+        self.assertEqual(_weather_refresh_seconds(None), WEATHER_REFRESH_SECONDS)
+
+    def test_the_documented_weather_timeout_is_used_for_the_provider_call(self):
+        """regression: FLOODPULSE_WEATHER_TIMEOUT_SECONDS was deployed and documented but never
+        read, so the client always used its own default."""
+        self.assertEqual(weather_timeout_seconds({}), WEATHER_TIMEOUT_SECONDS)
+        self.assertEqual(weather_timeout_seconds({WEATHER_TIMEOUT_ENV: "2.5"}), 2.5)
+        # out of range, unparsable and empty values fall back rather than reaching urlopen
+        self.assertEqual(weather_timeout_seconds({WEATHER_TIMEOUT_ENV: "0.1"}), WEATHER_TIMEOUT_MIN_SECONDS)
+        self.assertEqual(weather_timeout_seconds({WEATHER_TIMEOUT_ENV: "99"}), WEATHER_TIMEOUT_MAX_SECONDS)
+        self.assertEqual(weather_timeout_seconds({WEATHER_TIMEOUT_ENV: "soon"}), WEATHER_TIMEOUT_SECONDS)
+        self.assertEqual(weather_timeout_seconds({WEATHER_TIMEOUT_ENV: "nan"}), WEATHER_TIMEOUT_SECONDS)
+
+        with mock.patch.object(weather_module, "default_transport") as transport:
+            transport.return_value = (200, b'{"current": {"time": "2026-10-15T18:15", "rain": 0.0}}')
+            store = LocalStore()
+            refresh_live_weather(
+                store,
+                mode=ZONE_MODE_LIVE,
+                env={WEATHER_MODE_ENV: WEATHER_MODE_LIVE, WEATHER_TIMEOUT_ENV: "3"},
+                now_epoch=NOW,
+                ingest=lambda record, observation: None,
+                client=None,
+            )
+        self.assertTrue(transport.called, "the provider was never called")
+        self.assertEqual(transport.call_args[0][1], 3.0, "the configured timeout was not passed on")
 
     def test_the_refresh_logger_is_actually_enabled_for_info(self):
         """Lambda leaves the root logger at WARNING: an unconfigured logger would drop it."""

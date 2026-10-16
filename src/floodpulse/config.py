@@ -282,6 +282,19 @@ HYDRAULICS_NOTE = (
     "no real drain, water-level or flow sensors."
 )
 
+#: The same explanation for a fleet with no provider reading at all: everything is generated,
+#: rainfall included, so the live-weather note above would overstate where the numbers came from.
+SIMULATED_HYDRAULICS_NOTE = (
+    "Every channel is SIMULATED for this fleet: rainfall, drain level, water level and flow "
+    "rate all come from the deterministic sensor simulator, not from a weather provider. "
+    "FloodPulse has no real drain, water-level or flow sensors."
+)
+
+#: When a stored reading stops being recent enough to describe "now". The live fleet is
+#: refreshed every ten minutes, so this is three missed refreshes: a zone past it is still
+#: listed (its last values are real, historical values) but is never presented as current.
+STALE_READING_SECONDS = 1800
+
 # --------------------------------------------------------------------------- #
 # Risk bands and hysteresis
 # --------------------------------------------------------------------------- #

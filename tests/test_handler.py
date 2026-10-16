@@ -13,7 +13,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 import floodpulse.handler as handler_module
-from floodpulse.config import DEFERRED_FEATURES, METRIC_ORDER, ZONE_DEFINITIONS, ZONE_IDS
+from floodpulse.config import (
+    DEFERRED_FEATURES,
+    METRIC_ORDER,
+    STALE_READING_SECONDS,
+    ZONE_DEFINITIONS,
+    ZONE_IDS,
+)
 from floodpulse.handler import dispatch, lambda_handler, set_store
 from floodpulse.risk import class_rank
 from floodpulse.storage import LATEST_SORT_KEY, LocalStore
@@ -260,6 +266,40 @@ class ZonesEndpointTests(HandlerTestCase):
         self.assertEqual(status, 405)
 
 
+class StalenessReportingTests(HandlerTestCase):
+    """A reading is real for ever, but it stops describing the present. The board said
+    "highest risk zone: <name> <score>" with no time attached, so a zone that had stopped
+    reporting still read as a present-tense fact."""
+
+    def test_a_fresh_reading_is_not_reported_as_stale(self) -> None:
+        self.post_json(payload(offset_seconds=0))
+        status, body = self.get("/zones", now_epoch=BASE_EPOCH + 5)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["stale_zone_ids"], [])
+        self.assertEqual(body["stale_after_seconds"], STALE_READING_SECONDS)
+        self.assertEqual(body["highest_risk_zone"]["age_seconds"], 5)
+        self.assertFalse(body["highest_risk_zone"]["stale"])
+
+    def test_an_old_reading_is_flagged_with_its_age(self) -> None:
+        self.post_json(payload(offset_seconds=0))
+        age = STALE_READING_SECONDS + 60
+        status, body = self.get("/zones", now_epoch=BASE_EPOCH + age)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["stale_zone_ids"], ["zone-riverside-north"])
+        self.assertEqual(body["highest_risk_zone"]["age_seconds"], age)
+        self.assertTrue(body["highest_risk_zone"]["stale"], "an hour-old reading is not current")
+        # the values are still there: the reading is old, not wrong
+        zone = body["zones"][0]
+        self.assertEqual(zone["latest"]["age_seconds"], age)
+        self.assertIsNotNone(zone["latest"]["risk_score"])
+
+    def test_a_zone_with_no_reading_is_missing_rather_than_stale(self) -> None:
+        status, body = self.get("/zones", now_epoch=BASE_EPOCH)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["stale_zone_ids"], [], "no reading is not the same as an old reading")
+        self.assertIsNone(body["highest_risk_zone"])
+
+
 class HistoryEndpointTests(HandlerTestCase):
     def test_history_returns_points_ascending(self) -> None:
         for index, offset in enumerate((0, 60, 120)):
@@ -294,6 +334,43 @@ class HistoryEndpointTests(HandlerTestCase):
             self.assertEqual(body["point_count"], 5)
             self.assertEqual(body["stride"], 2)
             self.assertTrue(body["downsampled"])
+        finally:
+            handler_module.MAX_HISTORY_POINTS = original
+
+    def test_downsampling_keeps_the_newest_reading(self) -> None:
+        """regression: ``records[::stride]`` dropped the last record, so the newest reading --
+        the one the chart's right-hand edge is drawn from -- vanished exactly when a window
+        needed thinning (9 records with a cap of 5 sampled indices 0, 2, 4, 6, 8)."""
+        original = handler_module.MAX_HISTORY_POINTS
+        handler_module.MAX_HISTORY_POINTS = 5
+        try:
+            offsets = (0, 20, 40, 60, 80, 100, 120, 140, 160)
+            for offset in offsets:
+                self.post_json(payload(offset_seconds=offset))
+            status, body = self.get("/zones/zone-riverside-north/history", now_epoch=BASE_EPOCH + 200)
+            self.assertEqual(status, 200)
+            self.assertTrue(body["downsampled"])
+            epochs = [point["ts_epoch"] for point in body["points"]]
+            self.assertEqual(epochs, sorted(epochs), "the points are not ascending")
+            self.assertLessEqual(len(epochs), 5)
+            self.assertEqual(
+                epochs[-1],
+                BASE_EPOCH + 160,
+                "the newest reading is missing from a downsampled window",
+            )
+            self.assertEqual(epochs[0], BASE_EPOCH, "the oldest reading in the window was dropped")
+        finally:
+            handler_module.MAX_HISTORY_POINTS = original
+
+    def test_downsampling_never_exceeds_the_cap(self) -> None:
+        original = handler_module.MAX_HISTORY_POINTS
+        handler_module.MAX_HISTORY_POINTS = 4
+        try:
+            for offset in range(13):
+                self.post_json(payload(offset_seconds=offset))
+            _status, body = self.get("/zones/zone-riverside-north/history", now_epoch=BASE_EPOCH + 20)
+            self.assertLessEqual(body["point_count"], 4)
+            self.assertEqual(body["points"][-1]["ts_epoch"], BASE_EPOCH + 12)
         finally:
             handler_module.MAX_HISTORY_POINTS = original
 

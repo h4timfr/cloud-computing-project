@@ -27,6 +27,7 @@ so the dashboard has a plausible drain/flow story driven by real rainfall.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -46,7 +47,9 @@ from .config import (
     HYDRAULICS_WATER_SOIL_PER_FRACTION,
     METRICS,
     METRIC_SOURCES_LIVE,
+    METRIC_SOURCES_SIMULATED,
     SCHEMA_VERSION,
+    SIMULATED_HYDRAULICS_NOTE,
     WEATHER_ATTRIBUTION,
     WEATHER_CACHE_SORT_KEY,
     WEATHER_DOCS_URL,
@@ -55,11 +58,17 @@ from .config import (
     WEATHER_MODE_OFF,
     WEATHER_PROVIDER,
     WEATHER_REFRESH_SECONDS,
+    WEATHER_TIMEOUT_MAX_SECONDS,
+    WEATHER_TIMEOUT_MIN_SECONDS,
+    WEATHER_TIMEOUT_SECONDS,
+    WEATHER_TIMEOUT_ENV,
     zone_definitions_for_mode,
 )
 from .storage import build_zone_pk
 from .validation import validate_reading
 from .weather import Observation, WeatherClient
+
+LOGGER = logging.getLogger("floodpulse.live_weather")
 
 #: Identifies readings that came from the live-weather path rather than a client POST.
 LIVE_SOURCE = "open-meteo-live"
@@ -401,6 +410,39 @@ def weather_zones(mode: str, env: Mapping[str, str] | None = None) -> tuple[dict
     return tuple(zone for zone in definitions if str(zone["zone_id"]).startswith("city-"))
 
 
+def weather_timeout_seconds(env: Mapping[str, str] | None) -> float:
+    """How long one provider call may take, from the environment, clamped to a safe range.
+
+    ``FLOODPULSE_WEATHER_TIMEOUT_SECONDS`` is deployed and documented, and the Lambda is
+    given 15 s, so the timeout has to stay well inside that: a provider that hangs must not
+    hold the whole request open, and a nonsensical value must not be honoured.
+    """
+    environment = {} if env is None else env
+    raw = environment.get(WEATHER_TIMEOUT_ENV)
+    if raw is None or str(raw).strip() == "":
+        return WEATHER_TIMEOUT_SECONDS
+    try:
+        seconds = float(str(raw).strip())
+    except (TypeError, ValueError):
+        LOGGER.warning("ignoring invalid %s value", WEATHER_TIMEOUT_ENV)
+        return WEATHER_TIMEOUT_SECONDS
+    if not math.isfinite(seconds):
+        LOGGER.warning("ignoring non-finite %s value", WEATHER_TIMEOUT_ENV)
+        return WEATHER_TIMEOUT_SECONDS
+    if not WEATHER_TIMEOUT_MIN_SECONDS <= seconds <= WEATHER_TIMEOUT_MAX_SECONDS:
+        clamped = min(max(seconds, WEATHER_TIMEOUT_MIN_SECONDS), WEATHER_TIMEOUT_MAX_SECONDS)
+        LOGGER.warning(
+            "clamping %s=%s to %s seconds (allowed %s..%s)",
+            WEATHER_TIMEOUT_ENV,
+            seconds,
+            clamped,
+            WEATHER_TIMEOUT_MIN_SECONDS,
+            WEATHER_TIMEOUT_MAX_SECONDS,
+        )
+        return clamped
+    return seconds
+
+
 def refresh_live_weather(
     store: Any,
     *,
@@ -444,7 +486,7 @@ def refresh_live_weather(
     if not stale:
         return RefreshOutcome(enabled=True, attempted=False, skipped_fresh=tuple(fresh), reason="cache_fresh")
 
-    provider = client if client is not None else WeatherClient()
+    provider = client if client is not None else WeatherClient(timeout=weather_timeout_seconds(environment))
     result = provider.fetch(stale)
     if not result.ok:
         error = result.error or "provider_failed"
@@ -539,6 +581,7 @@ def weather_view(
     ages: dict[str, int | None] = {}
     attempts: dict[str, int | None] = {}
     failed: dict[str, str | None] = {}
+    ok: dict[str, bool | None] = {}
     for zone in zones:
         zone_id = str(zone["zone_id"])
         cache = caches.get(zone_id)
@@ -547,19 +590,26 @@ def weather_view(
         ages[zone_id] = None if age is None else int(age)
         attempts[zone_id] = None if attempt is None else int(attempt)
         failed[zone_id] = (cache or {}).get("last_attempt_error")
+        ok[zone_id] = (cache or {}).get("last_attempt_ok")
+    # With no live zone there is no provider reading anywhere in the fleet, so the block must
+    # not claim rainfall is REAL: in simulator mode (and with the provider switched off) every
+    # metric is generated, and the note has to describe the rainfall this fleet actually uses.
+    live = bool(zones)
     return {
         "provider": WEATHER_PROVIDER,
         "attribution": WEATHER_ATTRIBUTION,
         "docs": WEATHER_DOCS_URL,
-        "enabled": bool(zones),
+        "enabled": live,
         "refresh_seconds": int(refresh_seconds),
         "live_zones": [str(zone["zone_id"]) for zone in zones],
         "cache_age_seconds": ages,
         "last_attempt_age_seconds": attempts,
         "last_attempt_error": failed,
+        # per zone, like the per-zone blocks: did the last provider attempt succeed?
+        "last_attempt_ok": ok,
         "last_refresh": outcome.as_view(refresh_seconds=refresh_seconds) if outcome else None,
-        "hydraulics_note": HYDRAULICS_NOTE,
-        "metric_sources": dict(METRIC_SOURCES_LIVE),
+        "hydraulics_note": HYDRAULICS_NOTE if live else SIMULATED_HYDRAULICS_NOTE,
+        "metric_sources": dict(METRIC_SOURCES_LIVE if live else METRIC_SOURCES_SIMULATED),
     }
 
 

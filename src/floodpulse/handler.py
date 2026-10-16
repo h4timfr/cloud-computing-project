@@ -54,6 +54,7 @@ from .config import (
     RISK_MODEL_ID,
     SIMULATION_DISCLAIMER,
     SMOOTHING_WINDOW,
+    STALE_READING_SECONDS,
     TREND_LOOKBACK_SECONDS,
     TREND_LOOKBACK_TOLERANCE_SECONDS,
     WEATHER_PROVIDER,
@@ -703,8 +704,16 @@ def _weather_refresh_seconds(env: Mapping[str, str] | None) -> int:
         LOGGER.warning("ignoring invalid %s value", WEATHER_REFRESH_ENV)
         return WEATHER_REFRESH_SECONDS
     if not WEATHER_REFRESH_MIN_SECONDS <= seconds <= WEATHER_REFRESH_MAX_SECONDS:
-        LOGGER.warning("clamping %s to the allowed range", WEATHER_REFRESH_ENV)
-        return WEATHER_REFRESH_SECONDS
+        clamped = min(max(seconds, WEATHER_REFRESH_MIN_SECONDS), WEATHER_REFRESH_MAX_SECONDS)
+        LOGGER.warning(
+            "clamping %s=%s to %s seconds (allowed %s..%s)",
+            WEATHER_REFRESH_ENV,
+            seconds,
+            clamped,
+            WEATHER_REFRESH_MIN_SECONDS,
+            WEATHER_REFRESH_MAX_SECONDS,
+        )
+        return clamped
     return seconds
 
 
@@ -820,13 +829,26 @@ def _handle_zones(
     highest: dict[str, Any] | None = None
     if ranked:
         top = ranked[0]
+        leader_age = int(top["latest"]["age_seconds"])
         highest = {
             "zone_id": top["zone_id"],
             "name": top["name"],
             "risk_score": top["latest"]["risk_score"],
             "risk_class": top["latest"]["risk_class"],
             "timestamp": top["latest"]["timestamp"],
+            # How old the reading behind this score is, so "highest risk" is never read as
+            # "right now" when the zone stopped reporting half an hour ago.
+            "age_seconds": leader_age,
+            "stale": leader_age > STALE_READING_SECONDS,
         }
+
+    # Zones whose newest stored reading is too old to describe the present. They still appear
+    # with their real values; this says which ones are no longer current (no extra reads: the
+    # LATEST items are already in hand).
+    stale_zones = [
+        view["zone_id"] for view in with_data
+        if int(view["latest"]["age_seconds"]) > STALE_READING_SECONDS
+    ]
 
     classification = data_classification_for_mode(active_mode)
     notes = [MIXED_DATA_DISCLAIMER if classification == "mixed" else SIMULATION_DISCLAIMER]
@@ -855,6 +877,9 @@ def _handle_zones(
         ),
         "highest_risk_zone": highest,
         "zone_ranking": ranking,
+        # a fleet-level answer to "is anything on this board out of date?"
+        "stale_zone_ids": stale_zones,
+        "stale_after_seconds": STALE_READING_SECONDS,
         "zone_count": len(views),
         "zones": views,
         "deferred_features": list(DEFERRED_FEATURES),
@@ -922,7 +947,13 @@ def _handle_history(
     records = store.get_history(zone_id, since_epoch=since_epoch)
 
     stride = max(1, math.ceil(len(records) / MAX_HISTORY_POINTS))
-    sampled = records[::stride]
+    if stride > 1:
+        # Anchor the sample at the newest record: the plain ``records[::stride]`` slice drops
+        # the reading the chart's right-hand edge is drawn from, so the most recent point —
+        # the one a viewer looks at first — vanished exactly when a window needed thinning.
+        sampled = records[len(records) - 1 :: -stride][::-1]
+    else:
+        sampled = list(records)
 
     classification = provenance_of_records(sampled, data_classification_for_mode(active_mode))
 
@@ -1030,6 +1061,11 @@ def _handle_incidents(
         "zone_id": zone_id,
         "limit": limit,
         "count": len(incidents),
+        # The counts below describe the incidents this response returns, not the whole table:
+        # say so, or "3 open" reads as "the fleet has three open incidents" when the list was
+        # cut off at `limit`.
+        "counts_scope": "returned_page",
+        "truncated": len(incidents) >= limit,
         "open_count": open_count,
         "closed_count": len(incidents) - open_count,
         "alerting": alerting_view(notifier is not None and getattr(notifier, "enabled", False), cooldown_seconds),
