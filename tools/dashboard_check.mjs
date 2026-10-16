@@ -7,8 +7,12 @@
  *   - renders zone cards / ranking from a real API payload (--payload) and asserts the HTML
  *   - asserts the site can only read: no POST, no /readings, no secret anywhere in web/
  *   - asserts every local asset referenced by the HTML/CSS exists and the page stays small
+ *   - asserts the product information architecture: four navigable views, a total hash
+ *     router, a phone menu, plain language before model detail, and methodology copy that
+ *     still matches the constants in src/floodpulse/config.py
  *
  * Usage:  node tools/dashboard_check.mjs [--payload build/zones-live.json]
+ *         (the runtime half is tools/dashboard_run.mjs: this file never executes app.js)
  */
 
 import assert from 'node:assert/strict';
@@ -807,17 +811,40 @@ check('dashboard never writes: no POST, no /readings, no key handling', () => {
 });
 
 check('dashboard has no remote dependencies or CDN assets', () => {
-  // data: URIs (the inline favicon) are not remote fetches, so they are stripped first;
-  // every remaining absolute URL still has to be the project's own API endpoint.
+  // data: URIs (the inline favicon) are not remote fetches, so they are stripped first.
   const withoutDataUris = (source) => source
     .replace(/href="data:[^"]*"/gi, 'href="data:"')
     .replace(/url\(data:[^)]*\)/gi, 'url(data:)');
-  const remote = /https?:\/\/(?!2rg2u8quzd\.execute-api\.eu-north-1\.amazonaws\.com)[a-z0-9.-]+/i;
-  assert.ok(!remote.test(withoutDataUris(htmlSource)), 'index.html references a remote asset');
-  assert.ok(!remote.test(withoutDataUris(cssSource)), 'styles.css references a remote asset');
-  assert.ok(!remote.test(withoutDataUris(appSource)), 'app.js references a remote asset');
+  // Nothing the browser has to fetch may be remote: no <script src>, no stylesheet, no
+  // font, no image, no module import, no fetched URL literal. This is the invariant that
+  // keeps the first load fast and the page independent of a third party being up.
+  const remoteAsset = /(?:src|url\()\s*=?\s*["']?https?:\/\//i;
+  [['index.html', htmlSource], ['styles.css', cssSource], ['app.js', appSource]].forEach(([name, source]) => {
+    const text = withoutDataUris(source);
+    assert.ok(!remoteAsset.test(text), `${name} fetches a remote asset`);
+    assert.ok(!/@import\s+url\(\s*["']?https?:/i.test(text), `${name} imports a remote stylesheet`);
+    assert.ok(!/import\s+[^;]*from\s*['"]https?:/i.test(text), `${name} imports a remote module`);
+  });
   assert.ok(!/cdn|unpkg|jsdelivr|googleapis/i.test(htmlSource), 'index.html mentions a CDN');
-  assert.ok(!/import\s+.*from\s+['"]https?:/i.test(appSource), 'app.js imports a remote module');
+
+  // A documentation *link* is allowed (it is not fetched), but only to the weather
+  // provider, only over https, and only with rel="noreferrer": every other absolute URL
+  // in the sources must be the project's own API endpoint.
+  const allowedRemoteHosts = ['2rg2u8quzd.execute-api.eu-north-1.amazonaws.com', 'open-meteo.com'];
+  [['index.html', htmlSource], ['styles.css', cssSource], ['lib.js', libSource], ['app.js', appSource]]
+    .forEach(([name, source]) => {
+      const found = [...withoutDataUris(source).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((match) => match[1]);
+      const stray = [...new Set(found)].filter((host) => !allowedRemoteHosts.includes(host));
+      assert.deepEqual(stray, [], `${name} references an unexpected remote host: ${stray.join(', ')}`);
+    });
+  // the whole tag is captured, so the rel/target checks see the attributes that follow href
+  const docLinks = [...htmlSource.matchAll(/<a\b[^>]*href="(https?:[^"]+)"[^>]*>/gi)];
+  docLinks.forEach((match) => {
+    assert.match(match[0], /rel="noreferrer"/, `external link ${match[1]} is missing rel="noreferrer"`);
+    assert.match(match[0], /target="_blank"/, `external link ${match[1]} does not open in a new tab`);
+    assert.ok(/^https:\/\//.test(match[1]), `external link ${match[1]} is not https`);
+  });
+  assert.ok(docLinks.length <= 1, 'the page links to more than one external site');
 });
 
 check('site contains no credentials, keys or tokens', () => {
@@ -878,10 +905,11 @@ check('every element id app.js uses exists in index.html', () => {
 });
 
 check('every data-* attribute app.js queries is actually written somewhere', () => {
-  // lib.js writes the structural markup and app.js writes the history controls, so the
-  // invariant is: anything queried is emitted by one of the two, never by neither.
+  // index.html writes the static hooks (nav, view sections), lib.js writes the structural
+  // markup and app.js writes the history controls and its own state attributes, so the
+  // invariant is: anything queried is emitted by one of the three, never by none.
   const written = new Set();
-  for (const source of [libSource, appSource]) {
+  for (const source of [htmlSource, libSource, appSource]) {
     for (const match of source.matchAll(/data-([a-z-]+)="/g)) written.add(match[1]);
     for (const match of source.matchAll(/setAttribute\(['"]data-([a-z-]+)['"]/g)) written.add(match[1]);
   }
@@ -1192,7 +1220,9 @@ check('the stylesheet styles every class the page emits', () => {
     }
   });
   // Prefix families are emitted by concatenation: base names are listed here instead.
-  const prefixes = ['band-', 'conn-', 'mode-', 'src-', 'status-', 'is-'];
+  // `view-` is the router's runtime body class (body.view-cities …), which the runtime
+  // harness asserts per view; no stylesheet rule depends on it.
+  const prefixes = ['band-', 'conn-', 'mode-', 'src-', 'status-', 'is-', 'view-'];
   const missing = [...emitted].filter((name) => {
     if (prefixes.some((prefix) => name.endsWith(prefix))) return false;
     return !new RegExp(`\\.${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(cssSource);
@@ -1238,6 +1268,283 @@ check('the page pins the fleet strip and headings to the payload', () => {
   const listBody = /<ul id="band-strip"[\s\S]*?<\/ul>/.exec(htmlSource);
   assert.ok(listBody && !listBody[0].includes('band-strip-label'),
     'the strip label must not be inside the element whose innerHTML is replaced');
+});
+
+group('Information architecture: four pages instead of one long scroll');
+
+const VIEW_IDS = ['view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data'];
+
+check('every section is a real view, and only the first one is shown at load', () => {
+  VIEW_IDS.forEach((id) => {
+    const tag = new RegExp(`<section id="${id}"[^>]*>`).exec(htmlSource);
+    assert.ok(tag, `index.html has no ${id} section`);
+    assert.match(tag[0], /class="view"/, `${id} is not part of the view system`);
+    assert.match(tag[0], /tabindex="-1"/, `${id} cannot take focus when it is opened`);
+    assert.match(tag[0], /aria-labelledby="[^"]+"/, `${id} has no accessible name`);
+    assert.match(tag[0], /data-view="[a-z]+"/, `${id} is not identifiable to the router`);
+  });
+  // only the default view is visible without JavaScript: a page whose first section is
+  // hidden looks broken until the router runs, and the no-JS <noscript> note is not a view
+  const first = new RegExp(`<section id="${VIEW_IDS[0]}"[^>]*>`).exec(htmlSource)[0];
+  assert.ok(!/\bhidden\b/.test(first), 'the default view is hidden at load');
+  VIEW_IDS.slice(1).forEach((id) => {
+    const tag = new RegExp(`<section id="${id}"[^>]*>`).exec(htmlSource)[0];
+    assert.match(tag, /\bhidden\b/, `${id} would be visible before it was chosen`);
+  });
+});
+
+check('the navigation offers exactly the sections the router knows', () => {
+  const links = [...htmlSource.matchAll(/<a id="nav-([a-z-]+)"[^>]*data-nav="([a-z-]+)"[^>]*href="([^"]+)"/g)];
+  assert.equal(links.length, 4, `the navigation has ${links.length} section links, expected 4`);
+  const offered = links.map((match) => ({ view: match[2], hash: match[3] }));
+  // compared as JSON: these objects come out of the VM realm, where deepEqual is unreliable
+  assert.equal(JSON.stringify(offered), JSON.stringify(FP.NAV_ITEMS.map((item) => ({ view: item.view, hash: item.hash }))),
+    'the navigation and the router disagree about the sections');
+  assert.match(htmlSource, /<nav class="nav" aria-label="[^"]+">/, 'the sections are not inside a labelled nav');
+  assert.match(htmlSource, /<ul id="nav-list"/, 'the section links are not a list');
+  assert.equal(FP.NAV_ITEMS.length, 4, 'the router should know four top-level sections');
+  assert.match(htmlSource, /id="nav-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="nav-list"/,
+    'the mobile menu button is not wired to the list it opens');
+  assert.match(htmlSource, /<button id="nav-toggle"[^>]*type="button"/, 'the menu control is not a real button');
+});
+
+check('each section is titled for people and for the window', () => {
+  const titles = ['overview', 'cities', 'alerts', 'data'].map((view) => FP.viewTitle({ view, zoneId: null }, null));
+  assert.equal(new Set(titles).size, 4, 'two sections share a document title');
+  titles.forEach((title) => assert.match(title, /FloodPulse/, `a section title does not name the product: ${title}`));
+  assert.match(FP.viewTitle({ view: 'city', zoneId: 'city-kochi' }, { zones: [{ zone_id: 'city-kochi', name: 'Kochi' }] }), /Kochi/,
+    'a city page does not name the city in the window title');
+  // a heading per view, so the page has one outline instead of one long document
+  ['ov-title', 'cities-title', 'alerts-title', 'data-title'].forEach((id) => {
+    assert.match(htmlSource, new RegExp(`<h2[^>]*id="${id}"`), `no section heading with id ${id}`);
+  });
+  const named = [...htmlSource.matchAll(/<h2[^>]*class="view-title"[^>]*id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(named.length, 4, `expected four visible section headings, found ${named.length}`);
+});
+
+check('nothing was added to satisfy the routing: no framework, no new request', () => {
+  assert.ok(!/\bpushState\b|\breplaceState\b/.test(appSource), 'the router rewrites browser history');
+  assert.ok(!/\bimport\s+[^;]*from\b|\brequire\(/.test(libSource + appSource), 'a module system was introduced');
+  // word-bounded: 'reacts' in the simulator prose is not React
+  assert.ok(!/\b(react|react-dom|vue|svelte|preact|jquery|angular|htmx|alpinejs|bootstrap|tailwind)\b/i
+    .test(libSource + appSource + htmlSource), 'a front-end framework or library was introduced');
+  const scripts = [...htmlSource.matchAll(/<script\b[^>]*>/g)].map((match) => match[0]);
+  const external = scripts.filter((tag) => /src=/.test(tag));
+  assert.equal(external.length, 2, `expected lib.js and app.js only, found ${external.length} script files`);
+  external.forEach((tag) => assert.match(tag, /src="(lib|app)\.js"/, `unexpected script: ${tag}`));
+  assert.ok(!scripts.some((tag) => /type="module"/.test(tag)), 'a module script was introduced');
+  const stylesheets = [...htmlSource.matchAll(/<link\b[^>]*rel="stylesheet"[^>]*>/g)];
+  assert.equal(stylesheets.length, 1, `expected one stylesheet, found ${stylesheets.length}`);
+  assert.match(stylesheets[0][0], /href="styles\.css"/);
+});
+
+check('the router answers any URL, including nonsense, without throwing', () => {
+  const cases = [
+    ['', 'overview'], ['#', 'overview'], ['#/', 'overview'], ['#/overview', 'overview'],
+    ['#/cities', 'cities'], ['#/alerts', 'alerts'], ['#/data', 'data'],
+    ['#/DATA', 'data'], ['#/cities/', 'cities'], ['#/not-a-section', 'overview'],
+    ['#/cities/city-does-not-exist', 'city'], ['#/cities/city-chennai/extra', 'city']
+  ];
+  cases.forEach(([hash, view]) => {
+    const route = FP.routeFromHash(hash);
+    assert.equal(route.view, view, `${JSON.stringify(hash)} routed to ${route.view}, expected ${view}`);
+  });
+  assert.equal(FP.routeFromHash('#/cities/city-kochi').zoneId, 'city-kochi', 'the city id was lost in routing');
+  // an id with characters that need escaping still survives the round trip
+  ['city-chennai', 'city says hi', 'zone/a'].forEach((zoneId) => {
+    const hash = FP.hashFor('city', zoneId);
+    assert.equal(hash, '#/cities/' + encodeURIComponent(zoneId), `${zoneId} was not escaped`);
+    assert.equal(FP.routeFromHash(hash).zoneId, zoneId, `${zoneId} did not survive the round trip`);
+  });
+  assert.equal(FP.hashFor('nonsense', null), '#/overview', 'an unknown section must fall back, not emit a broken URL');
+  // exactly one section is marked current, and a city page keeps Cities marked
+  [['overview'], ['cities'], ['alerts'], ['data'], ['city']].forEach(([view]) => {
+    const state = FP.navState({ view, zoneId: view === 'city' ? 'city-kochi' : null });
+    const current = state.filter((entry) => entry.current);
+    assert.equal(current.length, 1, `${view}: ${current.length} sections are marked current`);
+    assert.equal(current[0].ariaCurrent, 'page', `${view}: the current section is not exposed as aria-current`);
+    state.filter((entry) => !entry.current).forEach((entry) => {
+      assert.notEqual(entry.ariaCurrent, 'page', `${view}: ${entry.view} is also marked current`);
+    });
+  });
+  assert.equal(FP.navState({ view: 'city', zoneId: 'city-kochi' })[1].view, 'cities',
+    'a city page should keep the Cities section marked as current');
+});
+
+check('the phone layout replaces the links with a menu that is styled for it', () => {
+  assert.match(cssSource, /\.sr-only\s*\{/, 'there is no screen-reader-only class for the menu button label');
+  assert.match(htmlSource, /<span class="sr-only">/, 'the menu button has no readable label');
+  assert.match(cssSource, /\.nav-toggle\s*\{/, 'the menu button is not styled');
+  assert.match(cssSource, /@media \(max-width: 760px\)[\s\S]*\.nav-list\s*\{/, 'the section list is not re-laid-out on a phone');
+  assert.match(cssSource, /\.nav-list\.is-open\s*\{/, 'the opened menu has no visible state');
+  assert.match(cssSource, /\.nav-link\[aria-current="page"\]/, 'the current section is not styled as current');
+  assert.ok(!/is-open/.test(htmlSource), 'the menu must start closed');
+});
+
+group('The city and methodology views say the right thing in the right place');
+
+check('the city view leads with plain language and folds the model away', () => {
+  const zone = zoneFixture({});
+  const detail = FP.cityDetail(zone, { feed: null });
+  const foldAt = detail.indexOf('<details class="tech"');
+  assert.ok(foldAt > 0, 'the city view has no folded technical section');
+  const visible = detail.slice(0, foldAt);
+  const folded = detail.slice(foldAt);
+  assert.match(visible, /data-f="why"/, 'the visible part has no plain-language explanation');
+  assert.match(visible, /data-f="advice"/, 'the visible part has no advice line');
+  ['weighted contribution', 'hysteresis', 'rise_fraction', 'explanation', 'top_drivers'].forEach((term) => {
+    assert.ok(!visible.includes(term), `the visible city view exposes model detail: ${term}`);
+  });
+  assert.match(folded, /\bexplanation\b|data-f="explanation"/, 'the folded section does not carry the API explanation');
+  assert.match(folded, /weighted contribution/i, 'the folded section does not explain the contributions');
+  assert.ok(!/<details[^>]*\sopen/.test(detail), 'the technical detail must be collapsed by default');
+  assert.match(folded, /<summary>/, 'the folded section cannot be opened from the keyboard alone');
+  // the score and class always come from the payload, never recomputed here
+  assert.ok(detail.includes(FP.formatScore(zone.latest.risk_score)), 'the city view lost the API risk score');
+  assert.match(detail, new RegExp(zone.latest.risk_class, 'i'), 'the city view lost the API class');
+});
+
+check('each measurement is one tile with its own icon, value and provenance', () => {
+  const zone = zoneFixture({});
+  const tiles = FP.metricTiles(zone);
+  const metrics = ['rainfall_mm_per_hr', 'drain_level_m', 'soil_saturation_pct', 'water_level_m', 'flow_rate_m3_s'];
+  assert.equal((tiles.match(/class="tile metric-tile/g) || []).length, metrics.length,
+    'expected one tile per sensor channel');
+  const icons = metrics.map((metric) => FP.metricIcon(metric));
+  icons.forEach((svg, index) => {
+    assert.match(svg, /^<svg /, `${metrics[index]} has no icon`);
+    assert.match(svg, /aria-hidden="true"/, `${metrics[index]} icon is not hidden from screen readers`);
+    assert.match(svg, /stroke="currentColor"/, `${metrics[index]} icon cannot inherit the text colour`);
+    assert.ok(!/https?:|\.png|\.svg"/.test(svg), `${metrics[index]} icon is a remote or file asset`);
+  });
+  assert.equal(new Set(icons).size, metrics.length, 'two channels share an icon');
+  assert.equal(FP.metricIcon('unknown_metric'), '', 'an unknown channel must not get an invented icon');
+  metrics.forEach((metric) => {
+    assert.ok(tiles.includes(`data-metric="${metric}"`), `no tile for ${metric}`);
+    assert.ok(tiles.includes(`data-state=`), `${metric} tile has no state attribute`);
+    assert.ok(tiles.includes('src-chip'), `${metric} tile has no provenance chip`);
+  });
+  assert.match(tiles, /data-state="(normal|watch|critical|unknown)"/);
+});
+
+check('the methodology page cannot drift from the backend constants', () => {
+  const configPath = path.join(repoRoot, 'src', 'floodpulse', 'config.py');
+  const config = fs.readFileSync(configPath, 'utf8');
+  const weightBlock = /METRIC_WEIGHTS[^=]*=\s*\{([^}]*)\}/.exec(config);
+  assert.ok(weightBlock, 'the backend weight table was not found');
+  const backend = [...weightBlock[1].matchAll(/"([a-z_0-9]+)":\s*([0-9.]+)/g)]
+    .map((match) => ({ metric: match[1], weight: Number(match[2]) }));
+  assert.equal(backend.length, 5, `the backend defines ${backend.length} weights, expected 5`);
+
+  const facts = FP.methodologyFacts();
+  assert.equal(facts.model, 'heuristic-v1', 'the dashboard names a different model');
+  // the invariant is the metric -> weight mapping, not the row order: the page deliberately
+  // lists the heaviest factor first, which is not the order the backend defines them in
+  const pair = (entry) => entry.metric + '=' + entry.weight;
+  const byMetric = (entry) => entry.metric;
+  assert.equal(
+    JSON.stringify(facts.weights.slice().sort((a, b) => byMetric(a).localeCompare(byMetric(b))).map(pair)),
+    JSON.stringify(backend.map((entry) => entry.metric + '=' + Math.round(entry.weight * 100) + '%')
+      .sort((a, b) => a.localeCompare(b))),
+    'the dashboard states weights the backend does not use');
+  const order = facts.weights.map((entry) => parseFloat(entry.weight));
+  assert.equal(JSON.stringify(order), JSON.stringify(order.slice().sort((a, b) => b - a)),
+    'the weights should be shown heaviest first');
+  const total = facts.weights.reduce((sum, entry) => sum + parseFloat(entry.weight), 0);
+  assert.equal(total, 100, `the stated weights sum to ${total}%`);
+
+  const bands = /RISK_BANDS[^=]*=\s*\(([\s\S]*?)\n\)/.exec(config);
+  assert.ok(bands, 'the backend band table was not found');
+  const backendBands = [...bands[1].matchAll(/\("([A-Z]+)",\s*([0-9.]+),\s*([0-9.]+)\)/g)]
+    .map((match) => ({ band: match[1], lower: Number(match[2]), upper: Number(match[3]) }));
+  assert.equal(backendBands.length, 4, 'the backend does not define four bands');
+  assert.equal(JSON.stringify(facts.bands.map((entry) => entry.band)),
+    JSON.stringify(backendBands.map((entry) => entry.band)),
+    'the dashboard describes different bands than the backend applies');
+  facts.bands.forEach((entry, index) => {
+    const { lower, upper } = backendBands[index];
+    const bounds = index === 0 ? [upper] : (index === 3 ? [lower] : [lower, upper]);
+    bounds.forEach((bound) => {
+      assert.ok(entry.range.includes(bound.toFixed(2)),
+        `the dashboard does not state the backend bound ${bound} for ${entry.band} (${entry.range})`);
+    });
+  });
+  const trend = /TREND_WEIGHT\s*=\s*([0-9.]+)/.exec(config);
+  assert.ok(trend, 'the backend trend weight was not found');
+  assert.ok(facts.steps.join(' ').includes(Number(trend[1]).toFixed(2)),
+    `the dashboard does not state the trend bonus the backend adds (${trend[1]})`);
+});
+
+check('the data view states what is real, what is simulated and what it is not', () => {
+  const legend = FP.provenanceLegend();
+  assert.equal(legend.length, 3, 'the legend must explain exactly the three provenance tags');
+  assert.equal(JSON.stringify(legend.map((entry) => entry.tag)), '["REAL","MODEL_DERIVED","SIMULATED"]',
+    'the legend does not explain the tags the payload can carry');
+  legend.forEach((entry) => {
+    assert.ok(entry.body.length > 80, `${entry.tag} is explained in ${entry.body.length} characters`);
+    assert.ok(entry.title.length > 10, `${entry.tag} has no short title`);
+  });
+  assert.match(legend[0].body, /Open-Meteo/, 'the REAL entry does not name the data source');
+  assert.match(legend[2].body, /simulator/i, 'the SIMULATED entry does not say where the values come from');
+  assert.match(legend[2].body, /no real sensor/i, 'the SIMULATED entry does not admit there is no sensor');
+
+  const facts = FP.methodologyFacts();
+  assert.ok(facts.limitations.length >= 4, `only ${facts.limitations.length} limitations are listed`);
+  const limits = facts.limitations.join(' ').toLowerCase();
+  assert.match(limits, /not a calibrated hydrological model/, 'the heuristic is not described as unvalidated');
+  assert.match(limits, /not a forecast/, 'the page does not say the score is not a forecast');
+  assert.match(limits, /not an official flood warning/, 'the page does not disclaim official warning status');
+  assert.match(facts.whySimulated, /physical sensors/, 'the page does not explain why hydraulics are simulated');
+  assert.match(facts.whySimulated, /rainfall stays real/, 'the page does not say which channel is real');
+  assert.match(htmlSource, /id="footer-disclaimer"[^>]*>[\s\S]{40,}/, 'the permanent disclaimer is missing');
+});
+
+check('the data view names the provider and its licence only when used', () => {
+  // built here, so this check says the same thing with or without a --payload fixture
+  const liveBoard = {
+    zone_mode: 'live_weather',
+    zone_count: 1,
+    weather: {
+      provider: 'open-meteo',
+      enabled: true,
+      refresh_seconds: 600,
+      live_zones: ['city-kochi'],
+      cache_age_seconds: { 'city-kochi': 120 }
+    },
+    zones: [zoneFixture({ zone_id: 'city-kochi', name: 'Kochi', zone_mode: 'live_weather' })]
+  };
+  const withWeather = FP.attributionLine(liveBoard);
+  assert.match(withWeather.text, /Open-Meteo/, 'the provider is not named');
+  assert.match(withWeather.text, /CC BY/, 'the licence is not stated');
+  assert.match(withWeather.text, /10 minutes/, 'the refresh cadence the payload reports is not stated');
+  assert.match(withWeather.docs, /^https:\/\//, 'there is no https documentation link');
+  // a payload with no provider data has nothing to attribute
+  const withoutWeather = FP.attributionLine({ zone_mode: 'simulated', zones: [] });
+  assert.equal(withoutWeather.text, '', 'the page claims attribution for data it never fetched');
+  assert.equal(FP.attributionLine(null).text, '', 'a payload-less page claims attribution');
+});
+
+check('every front-end source is valid UTF-8 with no BOM and no mojibake', () => {
+  // The dashboard is served byte-for-byte from S3 with no build step, and a PowerShell
+  // round-trip once corrupted these files (en dashes became "â€“" and a BOM appeared).
+  // Nothing else in the pipeline would notice, so it is checked here.
+  const decode = new TextDecoder('utf-8', { fatal: true });
+  ['index.html', 'styles.css', 'lib.js', 'app.js'].forEach((name) => {
+    const bytes = fs.readFileSync(path.join(webDir, name));
+    assert.notEqual(bytes[0], 0xEF, `${name} starts with a UTF-8 BOM`);
+    let text = null;
+    try {
+      text = decode.decode(bytes);
+    } catch (error) {
+      assert.fail(`${name} is not valid UTF-8: ${error.message}`);
+    }
+    // sequences that only appear when UTF-8 has been decoded as CP-1252 and re-encoded
+    const mojibake = /â€|Ã[\u0080-\u00BF]|Â[\u00A0-\u00BF]|ï»¿/.exec(text);
+    assert.equal(mojibake, null,
+      `${name} contains mojibake at character ${mojibake ? mojibake.index : -1}: ${mojibake ? JSON.stringify(mojibake[0]) : ''}`);
+  });
+  // the en dash and middle dot the copy relies on must survive as single characters
+  assert.match(appSource + libSource, /\u2013/, 'the en dash used in the copy was lost');
 });
 
 group('Accessibility contract');

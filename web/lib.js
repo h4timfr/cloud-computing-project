@@ -967,6 +967,574 @@
     }).join('|');
   }
 
+  /* ============================================================== product IA === */
+  /* The public-facing layer. Everything below is still pure and DOM-free, and still
+   * invents nothing: plain-language copy is derived from the class, the dominant driver,
+   * the reading against its own threshold, and the trend the API reported. */
+
+  var NAV_ITEMS = [
+    { view: 'overview', label: 'Overview', hash: '#/overview' },
+    { view: 'cities', label: 'Cities', hash: '#/cities' },
+    { view: 'alerts', label: 'Alerts', hash: '#/alerts' },
+    { view: 'data', label: 'Data & Methodology', hash: '#/data' }
+  ];
+
+  var DEFAULT_VIEW = 'overview';
+
+  /* What each band means to somebody who is not a hydrologist. */
+  var BAND_MEANING = {
+    NORMAL: { headline: 'No flood risk right now', tone: 'calm', advice: 'Conditions are within normal limits.' },
+    WATCH: { headline: 'Conditions are worth watching', tone: 'watch', advice: 'Some measurements are climbing towards their limits.' },
+    WARNING: { headline: 'Flooding is possible', tone: 'warning', advice: 'Measurements are at levels where flooding can start.' },
+    CRITICAL: { headline: 'Flooding is likely now', tone: 'critical', advice: 'Measurements are at or beyond the level that indicates flooding.' },
+    UNKNOWN: { headline: 'No reading yet', tone: 'unknown', advice: 'This city has not reported a scored reading yet.' }
+  };
+
+  /* Plain words for each channel, for copy that should not read like a spreadsheet. */
+  var METRIC_PLAIN = {
+    rainfall_mm_per_hr: { noun: 'rainfall', phrase: 'how hard it is raining' },
+    drain_level_m: { noun: 'drain level', phrase: 'how full the drains are' },
+    soil_saturation_pct: { noun: 'soil saturation', phrase: 'how waterlogged the ground is' },
+    water_level_m: { noun: 'water level', phrase: 'how high the water has risen' },
+    flow_rate_m3_s: { noun: 'flow rate', phrase: 'how fast water is moving' }
+  };
+
+  function metricPlain(metric) {
+    return METRIC_PLAIN[metric] || { noun: String(metric || 'reading').replace(/_/g, ' '), phrase: 'this measurement' };
+  }
+
+  /* Inline SVG per channel: one small path set, stroked in currentColor so it inherits
+   * the band colour. No icon font, no library, no request. */
+  var METRIC_ICON_PATHS = {
+    rainfall_mm_per_hr: 'M7 15a4.2 4.2 0 0 1 .5-8.3 5.6 5.6 0 0 1 10.6 1.4A3.6 3.6 0 0 1 17.4 15Z|M8.5 18.4l-1 2.2|M12 18.4l-1 2.2|M15.5 18.4l-1 2.2',
+    soil_saturation_pct: 'M4 19h16|M6.5 19v-4.2|M11 19v-7|M15.5 19v-5.4|M20 19V8.6|M4.6 15.4c1.8-2.4 3.4-2.4 5.2 0s3.4 2.4 5.2 0 3.4-2.4 5.2 0',
+    drain_level_m: 'M4 6h16|M4 10h16|M4 14h16|M4 18h9|M6 6v12|M12 6v12|M18 6v12',
+    water_level_m: 'M3 14c2-2.6 4-2.6 6 0s4 2.6 6 0 4-2.6 6 0|M3 19c2-2.6 4-2.6 6 0s4 2.6 6 0 4-2.6 6 0|M13 10V4|M13 4l-2.2 2.4|M13 4l2.2 2.4',
+    flow_rate_m3_s: 'M3 8h9a3 3 0 1 1-3 3H6a5 5 0 1 0 5 5h9'
+  };
+
+  function metricIcon(metric, size) {
+    var paths = METRIC_ICON_PATHS[metric];
+    if (!paths) return '';
+    var px = toNumber(size);
+    var width = px === null ? 22 : px;
+    return '<svg class="metric-icon" viewBox="0 0 24 24" width="' + width + '" height="' + width +
+      '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" ' +
+      'stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+      paths.split('|').map(function (d) { return '<path d="' + d + '"/>'; }).join('') +
+      '</svg>';
+  }
+
+  /* Where one reading sits against its own configured threshold. Used for the tile caption
+   * and the state colour: never for the score, which always comes from the API. */
+  function metricState(zone, metric) {
+    var latest = zone && zone.latest;
+    var value = toNumber(latest && latest.readings ? latest.readings[metric] : null);
+    var limits = (zone && zone.thresholds ? zone.thresholds[metric] : null) || {};
+    var watch = toNumber(limits.watch);
+    var critical = toNumber(limits.critical);
+    var state = 'unknown';
+    if (value !== null && critical !== null && value >= critical) state = 'critical';
+    else if (value !== null && watch !== null && value >= watch) state = 'watch';
+    else if (value !== null) state = 'normal';
+    return { metric: metric, value: value, watch: watch, critical: critical, state: state };
+  }
+
+  function metricStateCaption(zone, metric) {
+    var meta = METRIC_META[metric] || { label: String(metric || ''), unit: '' };
+    var state = metricState(zone, metric);
+    if (state.value === null) return 'No reading yet';
+    if (state.state === 'critical') {
+      return 'At or above the ' + formatMetric(metric, state.critical) + ' flooding level';
+    }
+    if (state.state === 'watch') {
+      return 'Above the ' + formatMetric(metric, state.watch) + ' watch level';
+    }
+    if (state.state === 'unknown') return 'No configured limit for this reading';
+    return 'Below the ' + formatMetric(metric, state.watch) + ' watch level';
+  }
+
+  /* One plain sentence explaining *why* the city is in its band, plus one line of advice.
+   * No weights, no formula: those live in the collapsible technical section. */
+  function plainRiskSummary(zone) {
+    var latest = zone && zone.latest;
+    var band = classLabel(latest ? latest.risk_class : null);
+    var meaning = BAND_MEANING[band] || BAND_MEANING.UNKNOWN;
+    var noun = String((zone && zone.name) || 'This city');
+    var summary = {
+      band: band,
+      tone: meaning.tone,
+      headline: noun + ': ' + meaning.headline.toLowerCase(),
+      short: meaning.headline.charAt(0).toUpperCase() + meaning.headline.slice(1).toLowerCase(),
+      advice: meaning.advice,
+      why: '',
+      driver: null,
+      driverLabel: ''
+    };
+    if (!latest) return summary;
+
+    var drivers = latest.top_drivers || [];
+    var driver = drivers.length ? drivers[0] : null;
+    summary.driver = driver;
+    if (driver) {
+      summary.driverLabel = (METRIC_META[driver] || { label: String(driver) }).label;
+      var plain = metricPlain(driver);
+      var state = metricState(zone, driver);
+      var valueText = formatValueWithUnit(driver, state.value);
+      if (state.state === 'critical') {
+        summary.why = 'The main reason is ' + plain.noun + ' — ' + plain.phrase + ' — at ' + valueText +
+          ', at or above the level where flooding starts.';
+      } else if (state.state === 'watch') {
+        summary.why = 'The main reason is ' + plain.noun + ' — ' + plain.phrase + ' — at ' + valueText +
+          ', above the watch level.';
+      } else {
+        summary.why = 'The largest contribution comes from ' + plain.noun + ' — ' + plain.phrase +
+          ' — at ' + valueText + '.';
+      }
+    }
+
+    var trend = trendLabel(latest.trend);
+    if (trend === 'rising') summary.why += ' Conditions are getting worse.';
+    else if (trend === 'falling') summary.why += ' Conditions are easing.';
+    return summary;
+  }
+
+  /* "5 min ago" from an ISO timestamp the API reported. ageLabel already speaks in
+   * relative terms, so nothing is appended to it twice. */
+  function relativeTime(isoTimestamp, nowMs) {
+    var ms = Date.parse(String(isoTimestamp || ''));
+    if (isNaN(ms)) return 'unknown';
+    var now = toNumber(nowMs);
+    var seconds = Math.max(0, ((now === null ? Date.now() : now) - ms) / 1000);
+    var label = ageLabel(seconds);
+    if (label === 'just now') return 'just now';
+    if (label === 'no data') return 'unknown';
+    return label;
+  }
+
+  /* ---------------------------------------------------------- routing --- */
+
+  /* '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknown ->
+   * the default view. Kept tiny and total: the router can never throw on a bad URL. */
+  function routeFromHash(hash) {
+    var raw = String(hash === null || hash === undefined ? '' : hash).replace(/^#\/?/, '');
+    var parts = raw.split('/').filter(function (part) { return part.length > 0; });
+    var view = parts.length ? parts[0].toLowerCase() : DEFAULT_VIEW;
+    // a city lives inside the cities section: #/cities/<zone_id>
+    if ((view === 'city' || view === 'cities') && parts[1]) {
+      return { view: 'city', zoneId: decodeURIComponent(parts[1]) };
+    }
+    if (view === 'city') return { view: 'cities', zoneId: null };
+    var known = NAV_ITEMS.map(function (item) { return item.view; });
+    if (known.indexOf(view) < 0) return { view: DEFAULT_VIEW, zoneId: null };
+    return { view: view, zoneId: null };
+  }
+
+  function hashFor(view, zoneId) {
+    if (view === 'city' && zoneId) return '#/cities/' + encodeURIComponent(zoneId);
+    var known = NAV_ITEMS.filter(function (item) { return item.view === view; });
+    return known.length ? known[0].hash : NAV_ITEMS[0].hash;
+  }
+
+  function navState(route) {
+    var active = route.view === 'city' ? 'cities' : route.view;
+    return NAV_ITEMS.map(function (item) {
+      var current = item.view === active;
+      return {
+        view: item.view,
+        label: item.label,
+        hash: item.hash,
+        current: current,
+        ariaCurrent: current ? 'page' : 'false'
+      };
+    });
+  }
+
+  function viewTitle(route, payload) {
+    var base = 'FloodPulse';
+    if (route.view === 'city') {
+      var zone = null;
+      ((payload && payload.zones) || []).forEach(function (entry) {
+        if (entry.zone_id === route.zoneId) zone = entry;
+      });
+      return (zone ? zone.name : 'City') + ' — ' + base;
+    }
+    if (route.view === 'cities') return 'Cities — ' + base;
+    if (route.view === 'alerts') return 'Alerts — ' + base;
+    if (route.view === 'data') return 'Data & Methodology — ' + base;
+    return base + ' — Live flood monitoring';
+  }
+
+  /* ------------------------------------------------------- fleet answers --- */
+
+  /* The four numbers a visitor wants first, each traceable to the payload. */
+  function fleetOverview(payload, incidents, nowMs) {
+    var zones = (payload && payload.zones) || [];
+    var counts = bandCounts(payload || {});
+    var ranked = ranking(zones);
+    var leader = (payload && payload.highest_risk_zone) || (ranked[0] ? {
+      zone_id: ranked[0].zone_id,
+      name: ranked[0].name,
+      risk_class: ranked[0].latest ? ranked[0].latest.risk_class : null,
+      risk_score: ranked[0].latest ? ranked[0].latest.risk_score : null
+    } : null);
+    var worst = classLabel(leader ? leader.risk_class : null);
+    var open = incidents ? toNumber(incidents.open_count) : null;
+    var activeAlerts = incidents ? ((incidents.incidents || []).filter(incidentIsOpen)) : [];
+    var feed = feedStatus(payload, nowMs, 0);
+    var meaning = BAND_MEANING[worst] || BAND_MEANING.UNKNOWN;
+    var reporting = liveCount(zones);
+    var total = toNumber(payload && payload.zone_count);
+    return {
+      total: total === null ? zones.length : total,
+      reporting: reporting,
+      counts: counts,
+      atRisk: counts.WATCH + counts.WARNING + counts.CRITICAL,
+      worst: worst,
+      worstTone: meaning.tone,
+      headline: fleetHeadline(worst, counts, zones.length),
+      subline: meaning.advice,
+      leader: leader,
+      leaderName: leader ? leader.name : '',
+      leaderScore: leader ? formatScore(leader.risk_score) : '–',
+      openIncidents: open === null ? 0 : open,
+      activeAlerts: activeAlerts.length,
+      feed: feed,
+      freshness: freshnessLine(feed),
+      updated: payload ? clockLabel(payload.generated_at) : '–'
+    };
+  }
+
+  /* One sentence for the top of the page, written for a non-technical reader. */
+  function fleetHeadline(worst, counts, zoneCount) {
+    if (worst === 'CRITICAL') {
+      return counts.CRITICAL + ' of ' + zoneCount + ' cities are at a critical flood risk right now.';
+    }
+    if (worst === 'WARNING') {
+      return 'Flooding is possible in ' + counts.WARNING + ' of ' + zoneCount + ' cities.';
+    }
+    if (worst === 'WATCH') {
+      return counts.WATCH + ' of ' + zoneCount + ' cities are worth watching.';
+    }
+    if (worst === 'UNKNOWN') return 'Waiting for the first readings.';
+    return 'No city is at flood risk right now.';
+  }
+
+  /* ------------------------------------------------------------- markup --- */
+
+  function bandPill(riskClass, extraClass) {
+    var band = bandKey(riskClass);
+    return '<span class="pill band-' + band + (extraClass ? ' ' + extraClass : '') + '" data-f="risk_class">' +
+      escapeHtml(classLabel(riskClass)) + '</span>';
+  }
+
+  /* Overview card: enough to answer "is this city okay?" and nothing more. */
+  function cityStatusCard(zone, options) {
+    var latest = zone && zone.latest;
+    var band = bandKey(latest ? latest.risk_class : null);
+    var summary = plainRiskSummary(zone);
+    var freshness = latest ? ageLabel(latest.age_seconds) : 'no reading';
+    var driver = summary.driverLabel
+      ? '<span class="city-driver" data-f="top_driver">' + escapeHtml(summary.driverLabel) + ' is the main factor</span>'
+      : '<span class="city-driver muted">no scored reading yet</span>';
+    return (
+      '<a class="card city-card band-' + band + (latest ? '' : ' is-empty') + '" data-zone="' + escapeHtml(zone.zone_id) +
+        '" href="' + escapeHtml(hashFor('city', zone.zone_id)) + '" aria-label="' + escapeHtml(zone.name) + ' city detail">' +
+        '<header class="city-head">' +
+        '<h3>' + escapeHtml(zone.name) + '</h3>' +
+        bandPill(latest ? latest.risk_class : null) +
+        '</header>' +
+        '<p class="city-headline" data-f="headline">' + escapeHtml(summary.short) + '</p>' +
+        '<div class="city-figures">' +
+        '<span class="city-score" data-f="risk_score">' + escapeHtml(formatScore(latest ? latest.risk_score : null)) + '</span>' +
+        '<span class="city-score-unit">risk score</span>' +
+        '</div>' +
+        '<p class="city-meta">' + driver + '</p>' +
+        '<p class="city-meta muted" data-f="age">Updated ' + escapeHtml(freshness) + '</p>' +
+        '<span class="city-more">Open city' + CITY_ARROW + '</span>' +
+        '</a>'
+    );
+  }
+
+  var CITY_ARROW = '<svg class="arrow" viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ' +
+    'aria-hidden="true" focusable="false"><path d="M3 8h9"/><path d="M8.5 4.5 12 8l-3.5 3.5"/></svg>';
+
+  /* One measurement tile: icon, value, provenance, distance to its own limits. */
+  function metricTile(zone, metric) {
+    var value = toNumber(zone.latest && zone.latest.readings ? zone.latest.readings[metric] : null);
+    var scale = metricScale(metric, value, (zone && zone.thresholds) || {});
+    var state = metricState(zone, metric);
+    var meta = METRIC_META[metric] || {};
+    // the number and its unit are separate elements (the unit is set smaller), so the unit
+    // must not also be baked into the number: a bare value has no unit to show
+    var valueText = value === null ? '\u2013' : value.toFixed(isFiniteNumber(meta.decimals) ? meta.decimals : 2);
+    var valuePct = scale.valuePct === null ? 0 : scale.valuePct;
+    var watchPct = scale.watchPct === null ? 0 : scale.watchPct;
+    var criticalPct = scale.criticalPct === null ? 0 : scale.criticalPct;
+    return (
+      '<article class="tile metric-tile" data-state="' + state.state + '" data-metric="' + escapeHtml(metric) + '">' +
+      '<header class="tile-head">' +
+      metricIcon(metric) +
+      '<h3>' + escapeHtml(meta.label || metric) + '</h3>' +
+      '<span class="src-chip-slot" data-f="metric-source">' + sourceChip(metricSource(zone, metric)) + '</span>' +
+      '</header>' +
+      '<p class="tile-value" data-f="metric-value">' +
+      '<b>' + escapeHtml(valueText) + '</b>' +
+      '<span class="tile-unit">' + escapeHtml(value === null ? '' : (meta.unit || '')) + '</span>' +
+      '</p>' +
+      '<span class="metric-track" aria-hidden="true">' +
+      '<i class="metric-fill" data-f="metric-fill" style="--pct:' + valuePct.toFixed(1) + '"></i>' +
+      '<i class="metric-tick watch" style="--pct:' + watchPct.toFixed(1) + '"></i>' +
+      '<i class="metric-tick critical" style="--pct:' + criticalPct.toFixed(1) + '"></i>' +
+      '</span>' +
+      '<p class="tile-caption" data-f="metric-state">' + escapeHtml(metricStateCaption(zone, metric)) + '</p>' +
+      '</article>'
+    );
+  }
+
+  function metricTiles(zone) {
+    return METRIC_ORDER.map(function (metric) { return metricTile(zone, metric); }).join('');
+  }
+
+  /* The city page: the answer first, then the measurements, then (collapsed) the raw model. */
+  function cityDetail(zone, options) {
+    var opts = options || {};
+    var latest = zone && zone.latest;
+    var band = bandKey(latest ? latest.risk_class : null);
+    var summary = plainRiskSummary(zone);
+    var feed = opts.feed || null;
+    var sources = zoneSources(zone);
+    var driverList = (latest && latest.top_drivers ? latest.top_drivers : []).map(function (metric) {
+      return (METRIC_META[metric] || { label: metric }).label;
+    });
+    return (
+      '<article class="city-detail band-' + band + '" data-zone="' + escapeHtml(zone.zone_id) + '">' +
+      '<header class="detail-head">' +
+      '<div>' +
+      '<p class="detail-kicker">Current flood risk</p>' +
+      '<h2 data-f="zone_name">' + escapeHtml(zone.name) + '</h2>' +
+      '<p class="detail-sub" data-f="zone_description">' + escapeHtml(zone.description || '') + '</p>' +
+      '</div>' +
+      '<div class="detail-score band-' + band + '">' +
+      '<span class="detail-class" data-f="risk_class">' + escapeHtml(classLabel(latest ? latest.risk_class : null)) + '</span>' +
+      '<span class="detail-value" data-f="risk_score">' + escapeHtml(formatScore(latest ? latest.risk_score : null)) + '</span>' +
+      '<span class="detail-caption">heuristic score 0-1</span>' +
+      '</div>' +
+      '</header>' +
+      '<section class="explain-block band-' + band + '">' +
+      '<h3 data-f="headline">' + escapeHtml(summary.headline) + '</h3>' +
+      '<p data-f="why">' + escapeHtml(summary.why || summary.advice) + '</p>' +
+      '<p class="muted" data-f="advice">' + escapeHtml(summary.advice) + '</p>' +
+      '</section>' +
+      '<div class="freshness-row">' +
+      '<span class="live-dot" aria-hidden="true"></span>' +
+      '<span data-f="freshness">' + escapeHtml(feed ? freshnessLine(feed) : (latest ? ageLabel(latest.age_seconds) : 'no reading')) + '</span>' +
+      (driverList.length
+        ? '<span class="detail-drivers">Main factors: ' + escapeHtml(driverList.join(', ')) + '</span>'
+        : '') +
+      '</div>' +
+      '<h3 class="block-title">Measurements</h3>' +
+      '<div class="tile-grid" data-f="tiles">' + metricTiles(zone) + '</div>' +
+      '<p class="muted small">Each measurement carries its own provenance: ' +
+      escapeHtml(sources.map(function (entry) { return entry.label; }).join(', ') || 'unknown') +
+      '. REAL values come from the weather provider, MODEL values are derived from them, SIM values are generated by FloodPulse.</p>' +
+      '<h3 class="block-title">Trend and history</h3>' +
+      '<p class="muted small">The chart below is this city\'s own risk history, fetched from ' +
+      '<code>GET /zones/{zone_id}/history</code>.</p>' +
+      (opts.technical === false ? '' : technicalDetails(zone)) +
+      '</article>'
+    );
+  }
+
+  /* The raw model, folded away by default. Native <details>: keyboard accessible, no JS. */
+  function technicalDetails(zone) {
+    var latest = (zone && zone.latest) || null;
+    var sources = zoneSources(zone);
+    var limits = (zone && zone.thresholds) || {};
+    var rows = METRIC_ORDER.map(function (metric) {
+      var limitsForMetric = limits[metric] || {};
+      var contribution = contributionMap(zone)[metric];
+      return '<tr><th scope="row">' + escapeHtml((METRIC_META[metric] || {}).label || metric) + '</th>' +
+        '<td>' + escapeHtml(formatValueWithUnit(metric, latest && latest.readings ? latest.readings[metric] : null)) + '</td>' +
+        '<td>' + escapeHtml(formatMetric(metric, limitsForMetric.watch)) + '</td>' +
+        '<td>' + escapeHtml(formatMetric(metric, limitsForMetric.critical)) + '</td>' +
+        '<td>' + escapeHtml(contribution ? formatScore(contribution.contribution) : '–') + '</td>' +
+        '<td>' + escapeHtml(sourceMeta(metricSource(zone, metric)).label) + '</td></tr>';
+    }).join('');
+    return (
+      '<details class="tech" data-f="technical">' +
+      '<summary>Technical details (model inputs and thresholds)</summary>' +
+      '<dl class="kv tech-kv">' +
+      '<div><dt>Class before hysteresis</dt><dd>' + escapeHtml(classLabel(latest ? latest.risk_class_candidate : null)) + '</dd></div>' +
+      '<div><dt>Effective class</dt><dd>' + escapeHtml(classLabel(latest ? latest.risk_class : null)) + '</dd></div>' +
+      '<div><dt>Reading number</dt><dd>' + escapeHtml(latest ? latest.sequence : '–') + '</dd></div>' +
+      '<div><dt>Sensor node</dt><dd>' + escapeHtml(latest ? latest.sensor_node_id : '–') + '</dd></div>' +
+      '<div><dt>Observed at</dt><dd>' + escapeHtml(latest ? clockLabel(latest.timestamp) : '–') + '</dd></div>' +
+      '<div><dt>Provider observed at</dt><dd>' + escapeHtml(latest && latest.provider_observed_at ? clockLabel(latest.provider_observed_at) : 'not provider-derived') + '</dd></div>' +
+      '<div><dt>Model</dt><dd>' + escapeHtml((latest && latest.model) || 'heuristic-v1') + '</dd></div>' +
+      '<div><dt>Zone id</dt><dd><code>' + escapeHtml(zone.zone_id) + '</code></dd></div>' +
+      '</dl>' +
+      '<table class="tech-table">' +
+      '<caption>Per-metric value, configured limits and weighted contribution to the heuristic score</caption>' +
+      '<thead><tr><th scope="col">Measurement</th><th scope="col">Value</th><th scope="col">Watch</th>' +
+      '<th scope="col">Flooding</th><th scope="col">Weighted contribution</th><th scope="col">Provenance</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+      '<p class="muted small" data-f="explanation">' + escapeHtml(latest ? latest.explanation : 'no reading yet') + '</p>' +
+      '<p class="muted small">Provenance per metric: ' +
+      escapeHtml(sources.map(function (entry) { return entry.label + ' = ' + entry.count; }).join(' · ') || 'unknown') + '</p>' +
+      '</details>'
+    );
+  }
+
+  /* Alerts: what is happening now, then what has already been resolved. */
+  function alertsSplit(payload) {
+    var incidents = (payload && payload.incidents) || [];
+    var active = incidents.filter(incidentIsOpen).sort(function (a, b) {
+      return classRank(b.severity) - classRank(a.severity);
+    });
+    var closed = incidents.filter(function (incident) { return !incidentIsOpen(incident); });
+    return { active: active, closed: closed, total: incidents.length };
+  }
+
+  function alertRow(incident, nowMs) {
+    var severity = classLabel(incident.severity);
+    var band = severityBand(incident.severity);
+    var open = incidentIsOpen(incident);
+    var duration = incidentDurationSeconds(incident, nowMs);
+    var driver = incident.top_driver_label || metricPlain(incident.top_driver).noun || 'not recorded';
+    return (
+      '<li class="alert-row band-' + band + (open ? ' is-open' : ' is-closed') +
+        '" data-incident="' + escapeHtml(incident.incident_id) + '" data-status="' + (open ? 'OPEN' : 'CLOSED') + '">' +
+        '<span class="alert-severity band-' + band + '" data-f="severity">' + escapeHtml(severity) + '</span>' +
+        '<div class="alert-body">' +
+        '<p class="alert-title"><b data-f="zone_name">' + escapeHtml(incident.zone_name || incident.zone_id) + '</b>' +
+        ' · <span data-f="status">' + (open ? 'active' : 'resolved') + '</span>' +
+        ' · <span data-f="duration">' + escapeHtml(formatDuration(duration)) + (open ? ' so far' : '') + '</span></p>' +
+        '<p class="alert-meta">Opened ' + escapeHtml(clockLabel(incident.opened_at)) +
+        (open ? '' : ' · closed ' + escapeHtml(clockLabel(incident.closed_at))) +
+        ' · main factor ' + escapeHtml(driver) +
+        ' · score at open ' + escapeHtml(formatScore(incident.risk_score_at_open)) +
+        '</p>' +
+        (incident.close_reason
+          ? '<p class="alert-meta muted" data-f="close_reason">' + escapeHtml(incident.close_reason) + '</p>'
+          : '') +
+        '</div>' +
+        '</li>'
+    );
+  }
+
+  function alertsEmptyState(what) {
+    var copies = {
+      active: {
+        title: 'No active alerts',
+        detail: 'No city is at WARNING or CRITICAL risk, so no incident is open. This page updates by itself every few seconds.'
+      },
+      closed: {
+        title: 'Nothing resolved yet',
+        detail: 'When an incident closes, its full record (opened, closed, duration and the factor that drove it) is kept here.'
+      }
+    };
+    var copy = copies[what] || copies.active;
+    return '<div class="empty-state" data-empty="' + escapeHtml(what) + '">' +
+      '<p class="empty-title">' + escapeHtml(copy.title) + '</p>' +
+      '<p class="muted">' + escapeHtml(copy.detail) + '</p></div>';
+  }
+
+  function alertSummary(alerts) {
+    var active = alerts.active.length;
+    var highest = alerts.active.length ? classLabel(alerts.active[0].severity) : null;
+    if (!active) return { count: 0, highest: null, text: 'No active alerts', tone: 'calm' };
+    return {
+      count: active,
+      highest: highest,
+      text: active + (active === 1 ? ' active alert' : ' active alerts') + ' · highest ' + highest,
+      tone: bandKey(highest)
+    };
+  }
+
+  /* --------------------------------------------------------- methodology --- */
+
+  /* The provenance legend, as data so the page and the checks read the same words. */
+  function provenanceLegend() {
+    return [
+      {
+        tag: 'REAL',
+        key: 'real',
+        title: 'Measured upstream, passed through unchanged',
+        body: 'Rainfall (and the provider\'s soil moisture field) comes from Open-Meteo for the city\'s coordinates. ' +
+          'FloodPulse does not modify these numbers before scoring them.'
+      },
+      {
+        tag: 'MODEL_DERIVED',
+        key: 'model',
+        title: 'Derived from the real fields',
+        body: 'Soil saturation is computed from the provider\'s soil-moisture value with a unit conversion. ' +
+          'It is derived data, not a direct measurement, so it is labelled separately from REAL.'
+      },
+      {
+        tag: 'SIMULATED',
+        key: 'simulated',
+        title: 'Generated by FloodPulse',
+        body: 'Drain level, water level and flow rate have no real sensor in this project. They are produced by a ' +
+          'documented simulator that reacts to the real rainfall, and are always labelled SIM.'
+      }
+    ];
+  }
+
+  /* heuristic-v1, described exactly as the backend implements it. */
+  function methodologyFacts() {
+    return {
+      model: 'heuristic-v1',
+      bands: [
+        { band: 'NORMAL', range: 'score < 0.35', meaning: 'within normal limits' },
+        { band: 'WATCH', range: '0.35 – 0.60', meaning: 'climbing towards the limits' },
+        { band: 'WARNING', range: '0.60 – 0.80', meaning: 'flooding is possible' },
+        { band: 'CRITICAL', range: 'score ≥ 0.80', meaning: 'flooding is likely' }
+      ],
+      weights: [
+        { metric: 'rainfall_mm_per_hr', weight: '30%' },
+        { metric: 'water_level_m', weight: '25%' },
+        { metric: 'soil_saturation_pct', weight: '20%' },
+        { metric: 'drain_level_m', weight: '15%' },
+        { metric: 'flow_rate_m3_s', weight: '10%' }
+      ],
+      steps: [
+        'Each measurement is mapped onto 0-1 with a straight line between its configured watch level (0.5) and its flooding level (1.0), using the thresholds stored per city.',
+        'The five sub-scores are combined with the fixed weights above, plus up to 0.10 for a fast rise in water level, and the result is clamped to 0-1. That number is the risk score.',
+        'The score is compared with the four bands above to give a candidate class, then a short hysteresis streak confirms it, so one noisy reading cannot move the class on its own.'
+      ],
+      limitations: [
+        'It is a hand-tuned heuristic, not a calibrated hydrological model: the weights and thresholds are chosen, not fitted to measured flood events.',
+        'It is not a forecast. It describes the current reading; it does not predict when or whether a city will flood.',
+        'No real drain, water-level or flow sensors exist in this project, so three of the five inputs are simulated.',
+        'The live rainfall comes from a provider grid point near the city centre, not from a street-level gauge, and has the provider\'s own update latency (up to about an hour for the hourly field).',
+        'The bands are illustrative levels for a university project. FloodPulse is not an official flood warning service and must never be used as one.'
+      ],
+      whySimulated: 'A real telemetry network for drains, water level and flow would need physical sensors in each city. ' +
+        'FloodPulse drives those channels from a simulator so the whole pipeline (ingest, scoring, incidents, alerts) can be ' +
+        'built and demonstrated end to end, while rainfall stays real. Every simulated value is tagged SIM wherever it appears.'
+    };
+  }
+
+  function attributionLine(payload) {
+    var evidence = (payload && payload.weather) || {};
+    var provider = evidence.provider || 'open-meteo';
+    var docs = evidence.docs || 'https://open-meteo.com/';
+    // CC BY requires attribution *while provider data is displayed*: a simulated board shows
+    // no provider data, so it must not credit a provider it never used.
+    var feed = feedStatus(payload || {}, null);
+    if (!feed.live || !feed.enabled) return { provider: '', text: '', docs: '' };
+    return {
+      provider: providerLabel(provider),
+      text: 'Live rainfall and soil moisture from Open-Meteo, used under CC BY 4.0. ' +
+        'FloodPulse keeps the provider\'s own observation time for each city and refreshes at most every ' +
+        ((toNumber(evidence.refresh_seconds) || 600) / 60) + ' minutes.',
+      docs: docs
+    };
+  }
+
   var api = {
     BANDS: BANDS,
     METRIC_ORDER: METRIC_ORDER,
@@ -1020,6 +1588,34 @@
     bandStripLabel: bandStripLabel,
     fleetClasses: fleetClasses,
     fleetChange: fleetChange,
+    NAV_ITEMS: NAV_ITEMS,
+    DEFAULT_VIEW: DEFAULT_VIEW,
+    BAND_MEANING: BAND_MEANING,
+    metricPlain: metricPlain,
+    metricIcon: metricIcon,
+    metricState: metricState,
+    metricStateCaption: metricStateCaption,
+    plainRiskSummary: plainRiskSummary,
+    relativeTime: relativeTime,
+    routeFromHash: routeFromHash,
+    hashFor: hashFor,
+    navState: navState,
+    viewTitle: viewTitle,
+    fleetOverview: fleetOverview,
+    fleetHeadline: fleetHeadline,
+    bandPill: bandPill,
+    cityStatusCard: cityStatusCard,
+    metricTile: metricTile,
+    metricTiles: metricTiles,
+    cityDetail: cityDetail,
+    technicalDetails: technicalDetails,
+    alertsSplit: alertsSplit,
+    alertRow: alertRow,
+    alertsEmptyState: alertsEmptyState,
+    alertSummary: alertSummary,
+    provenanceLegend: provenanceLegend,
+    methodologyFacts: methodologyFacts,
+    attributionLine: attributionLine,
     providerLabel: providerLabel,
     weatherEvidence: weatherEvidence,
     zoneProvenance: zoneProvenance,

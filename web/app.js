@@ -64,7 +64,17 @@
     // when the current payload arrived, and how much local time has passed since: the feed
     // ages reported by the API are interpolated forward so the freshness line keeps moving
     payloadReceivedMs: null,
-    lastErrorMessage: null
+    lastErrorMessage: null,
+    // which view the URL asks for, and what each view currently shows (so a poll that
+    // changed nothing does not rewrite the DOM). The route starts empty so the first
+    // applyRoute() always installs the view the URL asked for.
+    route: { view: null, zoneId: null },
+    overviewSignature: null,
+    cityCardSignature: null,
+    detailSignature: null,
+    alertsSignature: null,
+    dataSignature: null,
+    menuOpen: false
   };
 
   /* Seconds elapsed since the payload was received, added to the ages inside it. */
@@ -92,7 +102,18 @@
       'incidents', 'incidents-meta', 'incidents-alerting',
       'data-banner', 'banner-title', 'banner-detail', 'summary-mode', 'summary-weather', 'attribution',
       'brand-subtitle', 'summary-freshness', 'footer-disclaimer', 'ranking-title', 'zones-title',
-      'change-note'
+      'change-note',
+      // fleet distribution strip: renderBandStrip() and bandStripLabel() are guards on
+      // these two entries, so leaving them out of this list silently froze the strip at
+      // its static placeholders (found by the runtime harness, not by the static checks)
+      'band-strip', 'band-strip-label',
+      // navigation and the four views (M6 information architecture)
+      'nav-toggle', 'nav-list', 'nav-overview', 'nav-cities', 'nav-alerts', 'nav-data',
+      'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data',
+      'ov-headline', 'ov-subline', 'ov-stats', 'city-cards', 'city-detail', 'city-crumb',
+      'alerts-lede', 'alerts-summary', 'alerts-active', 'alerts-closed',
+      'provenance-legend', 'attribution-block', 'attribution-detail', 'summary-weather-provider',
+      'method-block', 'why-simulated', 'limitations', 'summary-model-data'
     ].forEach(function (id) { el[id] = $(id); });
   }
 
@@ -165,6 +186,12 @@
     renderCards(state.zones);
     renderRanking(state.zones);
     renderHistoryButtons(state.zones);
+    // every view is rendered on every successful poll, not only the visible one: the
+    // sections are small, and switching a view must never show a stale answer
+    renderOverview(payload);
+    renderDataPage(payload);
+    renderAlerts();
+    if (state.route.view === 'city') renderCityDetail();
     refreshConnection();
 
     if (state.historyZone !== state.selectedZone || state.historyMinutesLoaded !== state.historyMinutes) {
@@ -244,7 +271,8 @@
   function renderSummary(payload) {
     var live = FP.liveCount(state.zones);
     var mode = FP.modeMeta(payload.zone_mode);
-    setText('summary-live', live + ' / ' + (payload.zone_count || state.zones.length) + ' zones reporting');
+    setText('summary-live', live + ' / ' + (payload.zone_count || state.zones.length) + ' ' +
+      FP.zoneNounPlural(payload) + ' reporting');
     setText('summary-model', payload.model || 'heuristic-v1');
     setText('summary-generated', FP.clockLabel(payload.generated_at));
     setText('summary-mode', mode.label + (payload.data_classification ? ' · ' + payload.data_classification : ''));
@@ -331,6 +359,7 @@
     }
     // the feed countdown ticks here, once per second, on the panel row only
     if (state.payload) renderFreshness(state.payload);
+    if (state.route.view === 'city') tickDetailFreshness();
   }
 
   /* ------------------------------------------------------------------- hero --- */
@@ -769,6 +798,330 @@
     drawHistory();
   }
 
+  /* ===================================================== views and navigation === */
+
+  /* The site is one document with five views. The URL hash is the only source of
+   * truth for which one is visible, so a link, a reload or the back button all land in
+   * the same place; nothing here fetches, it only decides what is on screen. */
+  var VIEWS = ['overview', 'cities', 'city', 'alerts', 'data'];
+
+  function navigate(hash) {
+    if (window.location.hash !== hash) window.location.hash = hash;
+    applyRoute({ focus: true });
+  }
+
+  /* The mobile menu: a real button with aria-expanded, closed by a second press, by
+   * Escape, by choosing a section, or by the viewport growing past the breakpoint. */
+  function setMenu(open) {
+    var button = el['nav-toggle'];
+    var list = el['nav-list'];
+    if (!button || !list) return;
+    var expanded = !!open;
+    state.menuOpen = expanded;
+    button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    list.classList.toggle('is-open', expanded);
+    document.body.classList.toggle('is-menu-open', expanded);
+  }
+
+  function applyRoute(options) {
+    var opts = options || {};
+    var route = FP.routeFromHash(window.location.hash);
+    var viewChanged = route.view !== state.route.view;
+    var zoneChanged = route.zoneId !== state.route.zoneId;
+    state.route = route;
+
+    VIEWS.forEach(function (view) {
+      var section = el['view-' + view];
+      if (section) section.hidden = view !== route.view;
+      document.body.classList.toggle('view-' + view, view === route.view);
+    });
+
+    FP.navState(route).forEach(function (item) {
+      var link = el['nav-' + item.view];
+      if (!link) return;
+      if (item.current) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+
+    setMenu(false);
+    document.title = FP.viewTitle(route, state.payload);
+
+    if (route.view === 'city' && route.zoneId) {
+      state.selectedZone = route.zoneId;
+      state.userSelected = true;
+      renderHistoryButtons(state.zones);
+      if (zoneChanged || !state.history) loadHistory();
+    }
+
+    if (viewChanged || zoneChanged) {
+      if (route.view === 'city') renderCityDetail();
+      if (route.view === 'alerts') renderAlerts();
+      if (opts.focus !== false) focusView();
+    }
+  }
+
+  /* Moving between views moves the keyboard focus with the content, the way a page
+   * navigation would: the next Tab lands inside the view just opened, not in the nav. */
+  function focusView() {
+    var section = el['view-' + state.route.view];
+    if (!section || typeof section.focus !== 'function') return;
+    section.focus();
+    if (typeof window.scrollTo === 'function') window.scrollTo(0, 0);
+  }
+
+  /* ------------------------------------------------------------------ overview --- */
+
+  function statCard(label, value, meta, tone) {
+    return '<article class="stat' + (tone ? ' band-' + tone : '') + '">' +
+      '<p class="stat-label">' + FP.escapeHtml(label) + '</p>' +
+      '<p class="stat-value">' + FP.escapeHtml(value) + '</p>' +
+      '<p class="stat-meta">' + meta + '</p>' +
+      '</article>';
+  }
+
+  /* The four answers a visitor wants before any table: who is worst, how many alerts,
+   * how much of the fleet is reporting, and how fresh the data is. */
+  function renderOverview(payload) {
+    var ov = FP.fleetOverview(payload, state.incidents, Date.now());
+    setText('ov-headline', ov.headline);
+    setText('ov-subline', ov.reporting + ' of ' + ov.total + ' cities are reporting a scored reading · updated ' +
+      ov.updated + ' · ' + ov.subline);
+
+    if (el['ov-stats']) {
+      var leaderValue = ov.leaderName || 'No reading yet';
+      var leaderMeta = ov.leaderName
+        ? '<span class="pill band-' + FP.bandKey(ov.worst) + '">' + FP.escapeHtml(ov.worst) + '</span>' +
+          ' score ' + FP.escapeHtml(ov.leaderScore)
+        : 'The first reading will appear here';
+      var alertMeta = ov.activeAlerts
+        ? 'highest severity ' + FP.escapeHtml(state.incidents && state.incidents.incidents ? (FP.alertsSplit(state.incidents).active[0] || {}).severity || '–' : '–')
+        : 'nothing needs attention right now';
+      var reportingTone = ov.reporting === 0 ? '' : 'normal';
+      var html = statCard('Highest risk city', leaderValue, leaderMeta, FP.bandKey(ov.worst)) +
+        statCard('Active alerts', String(ov.activeAlerts), FP.escapeHtml(alertMeta), ov.activeAlerts ? 'warning' : '') +
+        statCard('Cities reporting', ov.reporting + ' / ' + ov.total, 'DynamoDB latest reading per city', reportingTone) +
+        statCard('Weather freshness', ov.feed && ov.feed.live ? (ov.feed.ageSeconds === null || ov.feed.ageSeconds === undefined ? 'pending' : FP.ageLabel(ov.feed.ageSeconds)) : 'simulator', FP.escapeHtml(ov.freshness || 'waiting for the first provider check'));
+      if (el['ov-stats'].getAttribute('data-rendered') !== html) {
+        el['ov-stats'].innerHTML = html;
+        el['ov-stats'].setAttribute('data-rendered', html);
+      }
+    }
+
+    renderCityCards(state.zones);
+  }
+
+  /* Five compact cards: name, band, one plain sentence, score and freshness. The full
+   * detail lives on the city view, one click away. */
+  function renderCityCards(zones) {
+    var host = el['city-cards'];
+    if (!host) return;
+    var list = zones || [];
+    var signature = list.map(function (zone) {
+      var latest = zone.latest;
+      return zone.zone_id + ':' + (latest ? latest.risk_class + ':' + latest.ts_epoch : 'none');
+    }).join('|') || 'empty';
+    if (signature === state.cityCardSignature) return;
+    state.cityCardSignature = signature;
+    host.innerHTML = list.length
+      ? list.map(FP.cityStatusCard).join('')
+      : '<p class="muted" data-f="no-cities">No city has reported a scored reading yet. ' +
+        'This page keeps polling the API and fills in as soon as the first reading arrives.</p>';
+  }
+
+  /* -------------------------------------------------------------- city detail --- */
+
+  function renderCityDetail() {
+    var slot = el['city-detail'];
+    if (!slot) return;
+    var zoneId = state.route.zoneId;
+    var zone = findZone(zoneId);
+    setText('city-crumb', zone ? zone.name : (zoneId || 'city'));
+    if (!zone) {
+      var waiting = !state.payload;
+      var signature = 'missing|' + String(zoneId) + '|' + (waiting ? 'loading' : 'known');
+      if (signature !== state.detailSignature) {
+        state.detailSignature = signature;
+        slot.innerHTML = '<div class="card detail-missing">' +
+          '<h3>' + (waiting ? 'Loading this city…' : 'This city is not in the current fleet') + '</h3>' +
+          '<p class="muted">' + (waiting
+            ? 'Waiting for the first response from <code>GET /zones</code>.'
+            : 'The API does not report a city with the id <code>' + FP.escapeHtml(zoneId || '') + '</code>. ' +
+              'It may belong to a different fleet (the simulated demo zones are not part of the live one).') + '</p>' +
+          '<p><a class="ghost-link" href="#/cities">Back to all cities</a></p>' +
+          '</div>';
+      }
+      return;
+    }
+    var latest = zone.latest;
+    var signature = zoneId + '|' + (latest ? latest.ts_epoch : 'none') + '|' + (state.payload ? state.payload.generated_at : '');
+    if (signature === state.detailSignature) return;
+    state.detailSignature = signature;
+    var feed = state.payload ? FP.feedStatus(state.payload, Date.now(), payloadAgeOffsetSeconds()) : null;
+    slot.innerHTML = FP.cityDetail(zone, { feed: feed });
+  }
+
+  /* The freshness sentence inside the city view moves with the clock, like the one in
+   * the snapshot panel; the rest of the panel is only rewritten when data changes. */
+  function tickDetailFreshness() {
+    var slot = el['city-detail'];
+    if (!slot || !state.payload || !slot.querySelector) return;
+    var node = slot.querySelector('[data-f="freshness"]');
+    if (!node) return;
+    var feed = FP.feedStatus(state.payload, Date.now(), payloadAgeOffsetSeconds());
+    var line = feed.live ? (FP.freshnessLine(feed) || 'no weather fetched yet') : 'simulator feed';
+    if (node.textContent !== line) node.textContent = line;
+  }
+
+  /* -------------------------------------------------------------------- alerts --- */
+
+  function renderAlerts() {
+    var payload = state.incidents;
+    var split = FP.alertsSplit(payload);
+    var summary = FP.alertSummary(split);
+    // "nothing loaded yet" and "loaded, and there are no incidents" are different states
+    // that happen to have the same empty incident list: the loading flag keeps them apart,
+    // otherwise the view would stay on the loading placeholder forever.
+    var signature = (payload ? 'loaded' : 'loading') + '|' + (FP.incidentsSignature(payload) || 'none') + '|' +
+      (state.incidentsError || '') + '|' + (state.payload ? FP.zoneNounPlural(state.payload) : '');
+    if (signature !== state.alertsSignature) {
+      state.alertsSignature = signature;
+      // before the first response the view says so: an empty list must never be shown as
+      // "no alerts" when the truth is "not answered yet"
+      var loading = !payload;
+      if (el['alerts-active']) {
+        el['alerts-active'].innerHTML = loading
+          ? '<li class="muted">loading alerts…</li>'
+          : (split.active.length
+            ? split.active.map(function (incident) { return FP.alertRow(incident, Date.now()); }).join('')
+            : FP.alertsEmptyState('active'));
+      }
+      if (el['alerts-closed']) {
+        el['alerts-closed'].innerHTML = loading
+          ? '<li class="muted">loading incidents…</li>'
+          : (split.closed.length
+            ? split.closed.map(function (incident) { return FP.alertRow(incident, Date.now()); }).join('')
+            : FP.alertsEmptyState('closed'));
+      }
+      if (el['alerts-summary']) {
+        var html = loading ? '' : statCard('Active alerts', String(split.active.length),
+          split.active.length ? '<span class="pill band-' + FP.bandKey(summary.highest) + '">' +
+            FP.escapeHtml(summary.highest) + '</span> highest severity'
+            : 'no city above WATCH', summary.tone === 'calm' ? '' : FP.bandKey(summary.highest)) +
+          statCard('Resolved incidents', String(split.closed.length), 'kept as history', '') +
+          statCard('Total recorded', String(split.total), 'source <code>GET /incidents</code>', '') +
+          statCard('Alert delivery', payload && payload.alerting && payload.alerting.enabled ? 'Armed' : 'Not armed',
+            FP.escapeHtml(FP.alertingNote(payload ? payload.alerting : null)), payload && payload.alerting && payload.alerting.enabled ? 'normal' : '');
+        if (el['alerts-summary'].getAttribute('data-rendered') !== html) {
+          el['alerts-summary'].innerHTML = html;
+          el['alerts-summary'].setAttribute('data-rendered', html);
+        }
+      }
+    } else {
+      tickAlertDurations();
+    }
+
+    var lede;
+    if (state.incidentsError) {
+      lede = 'Alerts unavailable (' + state.incidentsError + ') — showing the last list that loaded.';
+    } else if (!payload) {
+      lede = 'Loading alerts…';
+    } else if (!split.active.length && !split.closed.length) {
+      lede = 'Nothing has needed an alert yet. FloodPulse opens one automatically when a city reaches WARNING or CRITICAL.';
+    } else if (!split.active.length) {
+      lede = 'No active alert right now. ' + split.closed.length + ' resolved incident' +
+        (split.closed.length === 1 ? ' is' : 's are') + ' kept below for the record.';
+    } else {
+      lede = summary.text + ' — ' + split.active.map(function (incident) {
+        return incident.zone_name || incident.zone_id;
+      }).join(', ') + '.';
+    }
+    setText('alerts-lede', lede);
+  }
+
+  /* Active alerts keep counting between polls without re-rendering the list. */
+  function tickAlertDurations() {
+    if (!el['alerts-active'] || !state.incidents) return;
+    var nowMs = Date.now();
+    Array.prototype.forEach.call(el['alerts-active'].querySelectorAll('[data-incident][data-status="OPEN"]'), function (row) {
+      var incidentId = row.getAttribute('data-incident');
+      var incident = (state.incidents.incidents || []).filter(function (candidate) {
+        return candidate.incident_id === incidentId;
+      })[0];
+      if (!incident) return;
+      var node = row.querySelector('[data-f="duration"]');
+      if (node) node.textContent = FP.formatDuration(FP.incidentDurationSeconds(incident, nowMs)) + ' so far';
+    });
+  }
+
+  /* --------------------------------------------------------- data and method --- */
+
+  /* The whole methodology page is static prose plus the live provenance per metric, so
+   * it renders from the helper data even before the first successful poll: this page has
+   * to be readable when the API is down, which is exactly when somebody looks at it. */
+  function renderDataPage(payload) {
+    var metricSources = (payload && payload.metric_sources) || null;
+    var signature = (payload ? [payload.model, payload.zone_mode, payload.data_classification].join('|') : 'none');
+    if (signature !== state.dataSignature) {
+      state.dataSignature = signature;
+      var usedBy = function (tag) {
+        if (!metricSources) return '';
+        var names = FP.METRIC_ORDER.filter(function (metric) { return metricSources[metric] === tag; })
+          .map(function (metric) { return (FP.METRIC_META[metric] || { label: metric }).label; });
+        if (!names.length) return '<p class="legend-used muted small">Not used in this mode</p>';
+        return '<p class="legend-used muted small">Used for: ' + FP.escapeHtml(names.join(', ')) + '</p>';
+      };
+      if (el['provenance-legend']) {
+        el['provenance-legend'].innerHTML = FP.provenanceLegend().map(function (entry) {
+          return '<article class="card legend-card src-' + entry.key + '">' +
+            '<header class="legend-head"><span class="src-chip src-' + entry.key + '">' + FP.escapeHtml(FP.sourceMeta(entry.tag).label) + '</span>' +
+            '<span class="legend-tag"><code>' + FP.escapeHtml(entry.tag) + '</code></span></header>' +
+            '<h4>' + FP.escapeHtml(entry.title) + '</h4>' +
+            '<p>' + FP.escapeHtml(entry.body) + '</p>' + usedBy(entry.tag) + '</article>';
+        }).join('');
+      }
+      var facts = FP.methodologyFacts();
+      if (el['method-block']) {
+        el['method-block'].innerHTML =
+          '<p>FloodPulse scores every city with <code>' + FP.escapeHtml(facts.model) + '</code>, a deterministic hand-tuned heuristic. ' +
+          'Nothing is trained, sampled or guessed at request time: the same readings always produce the same score.</p>' +
+          '<h4>Step by step</h4><ol class="method-steps">' + facts.steps.map(function (step) {
+            return '<li>' + FP.escapeHtml(step) + '</li>';
+          }).join('') + '</ol>' +
+          '<h4>Fixed weights</h4><ul class="weight-list">' + facts.weights.map(function (weight) {
+            return '<li><span class="weight-name">' + FP.escapeHtml((FP.METRIC_META[weight.metric] || { label: weight.metric }).label) + '</span>' +
+              '<span class="weight-bar" aria-hidden="true"><i style="--pct:' + parseFloat(weight.weight) + '"></i></span>' +
+              '<span class="weight-pct">' + FP.escapeHtml(weight.weight) + '</span></li>';
+          }).join('') + '</ul>' +
+          '<h4>Risk bands</h4><table class="tech-table"><thead><tr><th scope="col">Class</th>' +
+          '<th scope="col">Score</th><th scope="col">What it means</th></tr></thead><tbody>' +
+          facts.bands.map(function (band) {
+            return '<tr><th scope="row" class="band-' + band.band.toLowerCase() + '">' + FP.escapeHtml(band.band) + '</th>' +
+              '<td>' + FP.escapeHtml(band.range) + '</td><td>' + FP.escapeHtml(band.meaning) + '</td></tr>';
+          }).join('') + '</tbody></table>';
+      }
+      if (el['why-simulated']) setText('why-simulated', facts.whySimulated);
+      if (el['limitations']) {
+        el['limitations'].innerHTML = facts.limitations.map(function (limitation) {
+          return '<li>' + FP.escapeHtml(limitation) + '</li>';
+        }).join('');
+      }
+    }
+    if (el['attribution-detail'] && payload) {
+      var attribution = FP.attributionLine(payload);
+      setText('attribution-detail', attribution.text);
+      setText('summary-weather-provider', attribution.provider);
+      // no provider data on this board means no attribution card to show
+      if (el['attribution-block']) el['attribution-block'].hidden = !attribution.text;
+      if (attribution.docs) {
+        var link = el['attribution-block'].querySelector('[data-f="attribution-docs"]');
+        if (link) {
+          link.setAttribute('href', attribution.docs);
+          link.textContent = attribution.docs;
+        }
+      }
+    }
+  }
+
   /* ----------------------------------------------------------------- wiring --- */
 
   /* ------------------------------------------------------------- incidents --- */
@@ -812,6 +1165,8 @@
         payload && payload.alerting && payload.alerting.enabled ? 'armed' : 'off'
       );
     }
+    // the alerts view reads the same payload, split into active and resolved
+    renderAlerts();
   }
 
   /* Open incidents keep counting between polls; only the duration text is patched so
@@ -834,14 +1189,65 @@
   }
 
   function bind() {
+    // ---- navigation ------------------------------------------------------------------
+    // The links are real anchors, so a click, a paste of the URL or the back button all
+    // work; these handlers only make the switch immediate and announce it accessibly.
+    function followNav(event) {
+      var link = event.target && event.target.closest ? event.target.closest('[data-nav]') : null;
+      if (!link) return false;
+      event.preventDefault();
+      navigate(FP.hashFor(link.getAttribute('data-nav')));
+      return true;
+    }
+
+    // Choosing a city from the Overview cards or the city switcher opens its city view.
+    function followCity(event) {
+      var card = event.target && event.target.closest ? event.target.closest('[data-zone]') : null;
+      if (!card) return false;
+      var zoneId = card.getAttribute('data-zone');
+      if (!zoneId) return false;
+      event.preventDefault();
+      navigate(FP.hashFor('city', zoneId));
+      return true;
+    }
+
+    if (el['nav-list']) {
+      el['nav-list'].addEventListener('click', function (event) {
+        followNav(event);
+      });
+    }
+    if (el['nav-toggle']) {
+      el['nav-toggle'].addEventListener('click', function (event) {
+        event.preventDefault();
+        setMenu(!state.menuOpen);
+      });
+    }
+    if (el['city-cards']) {
+      el['city-cards'].addEventListener('click', function (event) {
+        followCity(event);
+      });
+    }
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && state.menuOpen) setMenu(false);
+    });
+    window.addEventListener('hashchange', function () {
+      applyRoute({ focus: true });
+    });
+
     el['history-zone'].addEventListener('click', function (event) {
       var button = event.target.closest('[data-zone-pick]');
       if (!button) return;
-      state.selectedZone = button.getAttribute('data-zone-pick');
+      var picked = button.getAttribute('data-zone-pick');
+      state.selectedZone = picked;
       state.userSelected = true;
       state.history = null;
       state.historyFailedMs = null; // an explicit click always retries immediately
       renderHistoryButtons(state.zones);
+      // keep the URL on the city that is actually on screen; the browser then fires
+      // hashchange, which re-renders the detail panel for the same city
+      if (window.location.hash !== FP.hashFor('city', picked)) {
+        window.location.hash = FP.hashFor('city', picked);
+      }
       loadHistory();
     });
 
@@ -882,6 +1288,9 @@
   function start() {
     cacheDom();
     bind();
+    // the route decides which of the five views is visible, before any data arrives
+    applyRoute({ focus: false });
+    renderDataPage(null);
     if (!API_BASE) {
       el['conn-detail'].textContent = 'no API base configured';
       return;
