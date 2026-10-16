@@ -20,7 +20,15 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from tools.init_ingest_key import ENV_VAR, fingerprint, main as init_main, read_key, write_lambda_env
+from tools import init_ingest_key as init_ingest_key_module
+from tools.init_ingest_key import (
+    ENV_VAR,
+    EnvDocumentError,
+    fingerprint,
+    main as init_main,
+    read_key,
+    write_lambda_env,
+)
 from tools.live_simulator import DRIFT_WARN_SECONDS, KEY_HEADER, clock_drift, post_reading, resolve_key
 from tools.storm_demo import STAGES, band_counts, export_story, main as storm_main, run_arc, verify_arc
 
@@ -56,6 +64,8 @@ class KeyFileTests(unittest.TestCase):
 
     def test_lambda_env_contains_the_secret_and_the_store_config(self) -> None:
         path = scratch("lambda-env") / "env-prod.json"
+        if path.exists():  # start from "no document yet", or a merge would preserve its contents
+            path.unlink()
         write_lambda_env(path, SECRET, "floodpulse")
         document = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(
@@ -67,8 +77,9 @@ class KeyFileTests(unittest.TestCase):
         directory = scratch("cli-secret")
         key_path = directory / ".floodpulse-key"
         env_path = directory / "env-prod.json"
-        if key_path.exists():
-            key_path.unlink()
+        for path in (key_path, env_path):
+            if path.exists():
+                path.unlink()
         argv = [
             "init_ingest_key.py",
             "--key-file", str(key_path),
@@ -100,6 +111,220 @@ class KeyFileTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(init_main(), 0)
         self.assertEqual(read_key(key_path), SECRET)
+
+
+class IngestKeyEnvDocumentTests(unittest.TestCase):
+    """The environment document is merged, never replaced (M7 hardening).
+
+    A freshly generated three-variable document applied over the real deployment would drop
+    zone mode, weather settings, the alert cooldown and the SNS topic, so every one of these
+    tests is about *preserving* what is already there — and failing closed when the file
+    cannot be understood.
+    """
+
+    NEW_KEY = "abcdef0123456789" * 4
+
+    def path(self, name: str) -> Path:
+        target = scratch(name) / "env-prod.json"
+        if target.exists():
+            target.unlink()
+        return target
+
+    def write(self, target: Path, document: object) -> bytes:
+        text = document if isinstance(document, str) else json.dumps(document, indent=2)
+        target.write_text(text, encoding="utf-8")
+        return target.read_bytes()
+
+    def deployment_document(self) -> dict[str, object]:
+        return {"Variables": {
+            "FLOODPULSE_ALERT_COOLDOWN_SECONDS": "600",
+            "FLOODPULSE_INGEST_KEY": "0" * 64,
+            "FLOODPULSE_SNS_TOPIC_ARN": "arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts",
+            "FLOODPULSE_STORE": "dynamodb",
+            "FLOODPULSE_TABLE": "floodpulse",
+            "FLOODPULSE_WEATHER": "open-meteo",
+            "FLOODPULSE_WEATHER_REFRESH_SECONDS": "600",
+            "FLOODPULSE_WEATHER_TIMEOUT_SECONDS": "4",
+            "FLOODPULSE_ZONE_MODE": "live",
+        }}
+
+    def test_an_existing_nine_variable_document_keeps_all_nine(self) -> None:
+        target = self.path("env-merge-nine")
+        self.write(target, self.deployment_document())
+        report = write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        variables = json.loads(target.read_text(encoding="utf-8"))["Variables"]
+        self.assertEqual(len(variables), 9)
+        self.assertEqual(report["variables"], 9)
+        self.assertTrue(report["changed"])
+
+    def test_only_the_ingestion_key_changes(self) -> None:
+        target = self.path("env-merge-only-key")
+        before = self.deployment_document()["Variables"]
+        self.write(target, self.deployment_document())
+        write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        after = json.loads(target.read_text(encoding="utf-8"))["Variables"]
+        self.assertEqual(variables_changed := sorted(
+            name for name in set(before) | set(after) if before.get(name) != after.get(name)
+        ), [ENV_VAR], f"unexpected changes: {variables_changed}")
+        self.assertEqual(after[ENV_VAR], self.NEW_KEY)
+
+    def test_unrelated_values_survive_byte_for_byte(self) -> None:
+        target = self.path("env-merge-values")
+        before = self.deployment_document()["Variables"]
+        self.write(target, self.deployment_document())
+        write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        after = json.loads(target.read_text(encoding="utf-8"))["Variables"]
+        self.assertEqual({k: v for k, v in after.items() if k != ENV_VAR},
+                         {k: v for k, v in before.items() if k != ENV_VAR})
+
+    def test_malformed_json_is_rejected_and_the_file_is_untouched(self) -> None:
+        target = self.path("env-bad-json")
+        original = self.write(target, '{"Variables": {"FLOODPULSE_INGEST_KEY": "x"},,')
+        with self.assertRaises(EnvDocumentError):
+            write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_a_missing_variables_object_is_rejected(self) -> None:
+        target = self.path("env-no-variables")
+        original = self.write(target, {"Other": {"FLOODPULSE_INGEST_KEY": "x"}})
+        with self.assertRaises(EnvDocumentError):
+            write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_variables_that_is_not_an_object_is_rejected(self) -> None:
+        for index, bad in enumerate(({"Variables": ["not", "an", "object"]},
+                                     {"Variables": "a string"},
+                                     {"Variables": 7},
+                                     {"Variables": None})):
+            with self.subTest(document=bad):
+                target = self.path(f"env-bad-variables-{index}")
+                original = self.write(target, bad)
+                with self.assertRaises(EnvDocumentError):
+                    write_lambda_env(target, self.NEW_KEY, "floodpulse")
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_an_empty_file_is_rejected_rather_than_guessed(self) -> None:
+        target = self.path("env-empty")
+        original = self.write(target, "   \n")
+        with self.assertRaises(EnvDocumentError):
+            write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_new_file_creation_writes_the_bootstrap_document(self) -> None:
+        target = self.path("env-create")
+        self.assertFalse(target.exists())
+        report = write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        document = json.loads(target.read_text(encoding="utf-8"))
+        self.assertTrue(report["created"])
+        self.assertEqual(document, {"Variables": {
+            "FLOODPULSE_STORE": "dynamodb", "FLOODPULSE_TABLE": "floodpulse", ENV_VAR: self.NEW_KEY}})
+        self.assertEqual(report["preserved"], [])
+
+    def test_rewriting_the_same_key_changes_nothing(self) -> None:
+        target = self.path("env-idempotent")
+        self.write(target, self.deployment_document())
+        write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        first = target.read_bytes()
+        report = write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        self.assertFalse(report["changed"])
+        self.assertEqual(target.read_bytes(), first)
+
+    def test_written_document_is_what_the_aws_cli_expects(self) -> None:
+        target = self.path("env-shape")
+        self.write(target, self.deployment_document())
+        write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        raw = target.read_text(encoding="utf-8")
+        self.assertFalse(raw.startswith("\ufeff"), "a BOM breaks the AWS CLI --environment file:// form")
+        document = json.loads(raw)
+        self.assertEqual(set(document), {"Variables"})
+        for name, value in document["Variables"].items():
+            self.assertIsInstance(value, str, f"{name} must be a string for the AWS CLI")
+
+    def test_non_string_values_are_reported_but_not_altered(self) -> None:
+        target = self.path("env-non-string")
+        self.write(target, {"Variables": {"FLOODPULSE_INGEST_KEY": "0" * 64,
+                                          "FLOODPULSE_ALERT_COOLDOWN_SECONDS": 600}})
+        report = write_lambda_env(target, self.NEW_KEY, "floodpulse")
+        self.assertEqual(report["non_string"], ["FLOODPULSE_ALERT_COOLDOWN_SECONDS"])
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["Variables"]
+                         ["FLOODPULSE_ALERT_COOLDOWN_SECONDS"], 600)
+
+    def test_generated_keys_are_cryptographically_random(self) -> None:
+        directory = scratch("key-entropy")
+        generated = []
+        for index in range(2):
+            key_path = directory / f"probe-{index}.key"
+            if key_path.exists():
+                key_path.unlink()
+            with mock.patch.object(sys, "argv", ["init_ingest_key.py", "--key-file", str(key_path)]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(init_main(), 0)
+            value = read_key(key_path)
+            self.assertIsNotNone(value)
+            assert value is not None
+            self.assertRegex(value, r"^[0-9a-f]{64}$")  # 256 bits, hex encoded
+            generated.append(value)
+        self.assertNotEqual(generated[0], generated[1])
+        source = Path(init_ingest_key_module.__file__).read_text(encoding="utf-8")
+        self.assertIn("secrets.token_hex", source)
+        self.assertNotIn("random.", source, "the secret must come from secrets, not random")
+
+    def test_cli_prints_neither_the_secret_nor_a_preserved_value(self) -> None:
+        directory = scratch("env-cli-quiet")
+        key_path = directory / ".floodpulse-key"
+        env_path = directory / "env-prod.json"
+        for path in (key_path, env_path):
+            if path.exists():
+                path.unlink()
+        document = self.deployment_document()["Variables"]
+        self.write(env_path, {"Variables": document})
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["init_ingest_key.py", "--key-file", str(key_path),
+                "--lambda-env", str(env_path), "--show-fingerprint"]
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(init_main(), 0)
+        combined = out.getvalue() + err.getvalue()
+        fresh = read_key(key_path)
+        self.assertIsNotNone(fresh)
+        self.assertNotIn(fresh or "", combined)
+        self.assertNotIn(document[ENV_VAR], combined)          # the replaced value
+        self.assertNotIn(document["FLOODPULSE_SNS_TOPIC_ARN"], combined)
+        self.assertIn("sha256:", combined)                     # fingerprint only
+        self.assertIn("preserved", combined)                   # names, not values
+        self.assertEqual(len(json.loads(env_path.read_text(encoding="utf-8"))["Variables"]), 9)
+
+    def test_dry_run_writes_nothing_at_all(self) -> None:
+        directory = scratch("env-dry-run")
+        key_path = directory / ".floodpulse-key"
+        env_path = directory / "env-prod.json"
+        for path in (key_path, env_path):
+            if path.exists():
+                path.unlink()
+        env_bytes = self.write(env_path, {"Variables": self.deployment_document()["Variables"]})
+        buffer = io.StringIO()
+        argv = ["init_ingest_key.py", "--key-file", str(key_path), "--lambda-env", str(env_path),
+                "--force", "--dry-run", "--show-fingerprint"]
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(buffer):
+            self.assertEqual(init_main(), 0)
+        self.assertFalse(key_path.exists(), "a dry run must not create the key file")
+        self.assertEqual(env_path.read_bytes(), env_bytes, "a dry run must not touch the env file")
+        self.assertIn("dry run", buffer.getvalue())
+
+    def test_a_bad_environment_file_does_not_rotate_the_key_file(self) -> None:
+        directory = scratch("env-fail-closed")
+        key_path = directory / ".floodpulse-key"
+        env_path = directory / "env-prod.json"
+        for path in (key_path, env_path):
+            if path.exists():
+                path.unlink()
+        original = self.write(env_path, '{"Variables": [,')
+        argv = ["init_ingest_key.py", "--key-file", str(key_path), "--lambda-env", str(env_path), "--force"]
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                init_main()
+        self.assertIn("refusing to continue", str(caught.exception))
+        self.assertFalse(key_path.exists(), "the key file must not be rotated when the env file is unusable")
+        self.assertEqual(env_path.read_bytes(), original)
 
 
 class ResolveKeyTests(unittest.TestCase):

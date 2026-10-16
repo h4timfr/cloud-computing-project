@@ -82,6 +82,23 @@ function Write-Ok { param([string]$Message) Write-Host "  [ok]   $Message" -Fore
 function Write-Info { param([string]$Message) Write-Host "  [info] $Message" }
 function Write-Warn2 { param([string]$Message) Write-Host "  [warn] $Message" -ForegroundColor Yellow }
 
+function Get-SecretFingerprint {
+    <#
+      A short one-way id for a secret, so two copies can be compared and reported without
+      either value ever being printed. Mirrors tools/init_ingest_key.py's fingerprint().
+    #>
+    param([string]$Value)
+    if (-not $Value) { return 'sha256:(empty)' }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Value))
+    } finally {
+        $sha.Dispose()
+    }
+    $hex = ([System.BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
+    return 'sha256:' + $hex.Substring(0, 12)
+}
+
 function Write-JsonFile {
     <#
       Writes a JSON file as UTF-8 *without* a BOM. Windows PowerShell's
@@ -176,6 +193,21 @@ Write-Info "lambda environment variables: $($envNames -join ', ') (values not di
 if ($envNames -notcontains 'FLOODPULSE_INGEST_KEY') {
     Write-Warn2 'the environment file has no FLOODPULSE_INGEST_KEY: cloud ingestion will fail closed with HTTP 503.'
     Write-Warn2 "regenerate it with: python tools/init_ingest_key.py --key-file $IngestKeyFile --lambda-env build\env-prod.json"
+}
+
+# This deploy applies the *environment file*. The key file is the documented source of truth,
+# so a rotation that updated only the key file would be silently undone here. Report the
+# disagreement (fingerprints only, never the values) and leave both files alone.
+if ($envNames -contains 'FLOODPULSE_INGEST_KEY') {
+    $envKey = (Get-Content -Raw -Path $envPath | ConvertFrom-Json).Variables.FLOODPULSE_INGEST_KEY
+    $fileKey = (Get-Content -Raw -Path $keyFilePath).Trim()
+    if ($envKey -ne $fileKey) {
+        Write-Warn2 "the environment file and $IngestKeyFile carry different ingestion keys ($(Get-SecretFingerprint $envKey) vs $(Get-SecretFingerprint $fileKey))."
+        Write-Warn2 'this deploy would apply the environment file key, which would undo a rotation made only in the key file.'
+        Write-Warn2 "fix it with: python tools/init_ingest_key.py --reuse --key-file $IngestKeyFile --lambda-env build\env-prod.json"
+    } else {
+        Write-Ok "environment file and $IngestKeyFile agree on the ingestion key ($(Get-SecretFingerprint $fileKey))"
+    }
 }
 
 # --------------------------------------------------------------------------- sns topic --------------------------------------------------------------------------- #
