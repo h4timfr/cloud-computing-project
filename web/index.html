@@ -107,9 +107,9 @@
     </section>
 
     <h3 class="block-title" id="city-cards-title">City status</h3>
-    <div id="city-cards" class="city-cards" aria-live="polite">
+    <section id="city-cards" class="city-cards" aria-labelledby="city-cards-title">
       <p class="muted" data-f="loading">waiting for data…</p>
-    </div>
+    </section>
 
     <section class="card snapshot-panel">
       <h3 class="block-title">Snapshot</h3>
@@ -135,7 +135,7 @@
     <ol id="ranking" class="ranking" aria-labelledby="ranking-title"><li class="muted">waiting for data…</li></ol>
 
     <h3 class="section-title" id="zones-title">City detail <span class="muted">live values from DynamoDB via the API</span></h3>
-    <section id="zones" class="zone-grid" aria-live="polite" aria-labelledby="zones-title"></section>
+    <section id="zones" class="zone-grid" aria-labelledby="zones-title"></section>
   </section>
 
   <!-- ========================================================== City detail -->
@@ -179,13 +179,13 @@
 
     <div id="alerts-summary" class="stat-row"></div>
 
-    <h3 class="block-title">Active alerts</h3>
-    <ul id="alerts-active" class="alert-list" aria-live="polite">
+    <h3 class="block-title" id="alerts-active-title">Active alerts</h3>
+    <ul id="alerts-active" class="alert-list" aria-labelledby="alerts-active-title">
       <li class="muted">waiting for data…</li>
     </ul>
 
-    <h3 class="block-title">Recently resolved</h3>
-    <ul id="alerts-closed" class="alert-list" aria-live="polite">
+    <h3 class="block-title" id="alerts-closed-title">Recently resolved</h3>
+    <ul id="alerts-closed" class="alert-list" aria-labelledby="alerts-closed-title">
       <li class="muted">waiting for data…</li>
     </ul>
 

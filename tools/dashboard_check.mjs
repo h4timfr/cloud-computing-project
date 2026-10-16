@@ -1643,8 +1643,17 @@ check('state changes are announced, not just coloured', () => {
   assert.ok(!/id="conn-detail"[^>]*aria-live/.test(connBlock[0]), 'the ticking status line is itself a live region');
   assert.ok(!/<div class="conn"[^>]*aria-live/.test(htmlSource), 'the whole connection block is a live region');
   assert.match(connBlock[0], /id="conn-detail"/, 'the visible status line was removed');
-  assert.match(htmlSource, /id="zones"[^>]*aria-live="polite"/, 'the zone grid does not announce updates');
   assert.match(htmlSource, /id="band-strip-label"[^>]*role="status"/, 'the strip summary is not announced');
+  assert.match(htmlSource, /id="change-note"[^>]*role="status"/, 'what changed between polls is not announced');
+
+  // The lists themselves must NOT be live regions: they are re-rendered whole on every poll and
+  // every row carries a value that moves with the clock (reading ages, incident durations), so a
+  // polite region over them re-announced the same rows every few seconds, for ever.
+  ['city-cards', 'zones', 'alerts-active', 'alerts-closed', 'incidents'].forEach((id) => {
+    const tag = new RegExp('id="' + id + '"[^>]*>').exec(htmlSource);
+    assert.ok(tag, `#${id} is missing from the page`);
+    assert.ok(!/aria-live/.test(tag[0]), `#${id} is a live region, so its ticking values are announced`);
+  });
 });
 
 check('the incident record is a table for assistive tech, not just a grid of spans', () => {
@@ -1733,7 +1742,16 @@ check('each region of the cities view is labelled by its own heading', () => {
   assert.match(htmlSource, /id="ranking"[^>]*aria-labelledby="ranking-title"/,
     'the ranking list is not named by its heading');
   assert.match(htmlSource, /id="zones"[^>]*aria-labelledby="zones-title"/,
-    'the city grid is a live region with no name');
+    'the city grid has no accessible name');
+  assert.match(htmlSource, /id="city-cards"[^>]*aria-labelledby="city-cards-title"/,
+    'the city status block has no accessible name');
+  assert.match(htmlSource, /id="alerts-active"[^>]*aria-labelledby="alerts-active-title"/,
+    'the active-alerts list has no accessible name');
+  assert.match(htmlSource, /id="alerts-closed"[^>]*aria-labelledby="alerts-closed-title"/,
+    'the resolved-incidents list has no accessible name');
+  ['alerts-active-title', 'alerts-closed-title'].forEach((id) => {
+    assert.ok(htmlSource.includes('id="' + id + '"'), `the heading ${id} is missing`);
+  });
 });
 
 check('controls are real controls and decoration is hidden from assistive tech', () => {

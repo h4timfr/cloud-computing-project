@@ -26,6 +26,12 @@ EXPECTED = {
 FORBIDDEN = {
     # a marker left over from the fix would mean the ticking line is still being announced
     "the ticking status line is a live region": 'class="conn" role="status"',
+    # the lists are re-rendered whole every poll and their rows carry reading ages and
+    # incident durations, so a live region over them re-announced the same rows for ever
+    "the city card list is a live region": 'id="city-cards" class="city-cards" aria-live',
+    "the zone grid is a live region": 'id="zones" class="zone-grid" aria-live',
+    "the active alert list is a live region": 'id="alerts-active" class="alert-list" aria-live',
+    "the resolved incident list is a live region": 'id="alerts-closed" class="alert-list" aria-live',
     "the incident column headers are hidden from assistive tech": 'class="incident-head" aria-hidden="true"',
     "the page disables focus outlines": "outline: none",
 }

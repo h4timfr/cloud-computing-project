@@ -750,6 +750,7 @@ operator's side.
 | Defect | Effect it had | Fix |
 | --- | --- | --- |
 | `role="status" aria-live="polite"` wrapped the whole connection block, whose text carried a seconds-resolution age and countdown | About 60 polite announcements a minute, for ever, to anyone using a screen reader | The live region is one off-screen sentence with no ages in it, written only on a real state change; the visible ticker is unchanged |
+| `aria-live="polite"` also sat on `#city-cards`, `#zones`, `#alerts-active` and `#alerts-closed`, which are re-rendered whole on every poll | The same cards and incidents were re-announced every 5 s, for ever: the reading ages and incident durations change with the clock, so the region was never quiet | Those four lists are ordinary named regions now (each is labelled by its own heading). The announcement surfaces are `#change-note` for real band movements - including a zone that stopped reporting - plus the strip summary and the connection state |
 | Sparklines drew a dpr-scaled path into the 280x56 bitmap the markup declared | Clipped on a HiDPI screen, stretched on a 1x one | Both canvases size their backing store from their laid-out width (asserted in the runtime harness) |
 | A failed history fetch left a blank box labelled `role="img"` | AT heard "chart" over an empty rectangle, and the previous window's numbers stayed on screen | A loading line before the request, an empty state that says why on failure, and a label describing the series actually drawn |
 | The plain-language sentence tested `trendLabel()` against `'rising'`/`'falling'` | "Conditions are getting worse" was unreachable dead code on a flood board | Branches on `trendDirection()`; the numbers stay in the technical table |
@@ -769,7 +770,7 @@ operator's side.
 | Harness | Before this pass | After |
 | --- | --- | --- |
 | `python -m unittest discover -s tests -t .` | 391 | **405** (the last five check that the committed tooling compiles, names its target and carries no secret-looking literal) |
-| `node tools/dashboard_check.mjs` | 78 | **87** on both payloads (the live fixture was re-captured against the deployed API, so it exercises the same checks as the demo one) |
+| `node tools/dashboard_check.mjs` | 78 | **87** on both payloads (the live fixture was re-captured against the deployed API, so it exercises the same checks as the demo one); the live-region rules are negative checks over the real markup |
 | `node tools/dashboard_run.mjs` | 41 live, 39 demo (2 demo checks were mode-blind and failing) | **45** live / **43** demo, 0 failed |
 | `node tools/dashboard_scenarios.mjs` | 35 | **42** |
 | `node tools/story_check.mjs --dir build/story` | 29 | **29** (unchanged: the story arc is untouched) |
@@ -789,7 +790,7 @@ without their secrets.
 | Check | Result |
 | --- | --- |
 | `python tools/verify_deployed_code.py` | deployed Lambda package is **byte-identical** to `src/` (13 files, 0 differing) |
-| `python tools/verify_deployed_page.py` | all deployed page contracts hold (18 checks): the quiet live region, the focusable chart, the incident table roles, and the negative checks — the ticking line is not a live region, the column headers are not hidden, focus outlines are not disabled |
+| `python tools/verify_deployed_page.py` | all deployed page contracts hold (22 checks): the quiet live region, the focusable chart, the incident table roles, and the seven negative checks (the ticking line, four volatile lists, the hidden headers, disabled outlines) — the ticking line is not a live region, the column headers are not hidden, focus outlines are not disabled |
 | `python tools/live_acceptance.py` | **35 checks, 0 failed**; median `/zones` latency **1.07 s** (max 1.12 s over five polls); no city failing its fetch; unknown zone 404; out-of-range `minutes` 400; no ARN in any response |
 | `node tools/dashboard_run.mjs --site <dashboard> --api <api>` | **45 checks, 0 failed** with the *deployed* `lib.js`/`app.js` against the *live* API |
 | `GET /zones` (live) | `stale_zone_ids []`, `stale_after_seconds 1800`, `highest_risk_zone.age_seconds 68`, `stale false`, `weather.last_attempt_ok` true for all five cities |
