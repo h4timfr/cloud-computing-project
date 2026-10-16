@@ -17,6 +17,10 @@
  *   --app / --lib   use other asset files (e.g. an older build) to prove the check bites
  *   --site          load lib.js and app.js over HTTP from the deployed dashboard instead
  *   --api           fetch the payloads from the live API; falls back to the payload files
+ *
+ * With --site and no --api the harness reads the API base the deployed page declares, so
+ * `node tools/dashboard_run.mjs --site <bucket-url>` verifies the real deployed site end to
+ * end on its own. --payload remains the offline fixture path.
  */
 
 import assert from 'node:assert/strict';
@@ -32,10 +36,8 @@ const option = (name) => {
 };
 
 const siteUrl = option('--site');
-const apiBase = option('--api');
-// app.js returns early when no API base is configured, so always give it one; the fetch
-// stub serves the payloads by route, which is what the page actually consumes.
-const apiBaseForRun = apiBase || 'https://floodpulse-api.example.invalid';
+let apiBase = option('--api');
+let apiBaseForRun = apiBase || 'https://floodpulse-api.example.invalid';
 const payloadPath = option('--payload');
 const historyPath = option('--history');
 const incidentsPath = option('--incidents');
@@ -89,8 +91,29 @@ async function readSource(file, label) {
   return text;
 }
 
-function readJson(file) {
+function readJson(file, flag) {
+  if (!file) {
+    throw new Error(`nothing to render for ${flag}: pass "${flag} <file>", or --api <endpoint> / --site <url> `
+      + 'so the harness can fetch the payloads from a live API');
+  }
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+/*
+ * The deployed page declares its own public API base, so a --site run alone can discover it
+ * instead of failing with a confusing type error. No default is invented: if the page does
+ * not name a host, the harness says so.
+ */
+async function discoverApiBaseFromSite() {
+  if (!siteUrl) return null;
+  const url = `${siteUrl.replace(/\/+$/, '')}/index.html`;
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) return null;
+  const html = await response.text();
+  const declared = /FLOODPULSE_API_BASE\s*=\s*['"](https?:\/\/[^'"]+)['"]/.exec(html);
+  if (declared) return declared[1];
+  const host = /https?:\/\/[a-z0-9-]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com/i.exec(html);
+  return host ? host[0] : null;
 }
 
 async function loadPayloads() {
@@ -112,9 +135,9 @@ async function loadPayloads() {
     }
   }
   return {
-    payload: readJson(payloadPath),
-    incidents: incidentsPath ? readJson(incidentsPath) : null,
-    history: historyPath ? readJson(historyPath) : null,
+    payload: readJson(payloadPath, '--payload'),
+    incidents: incidentsPath ? readJson(incidentsPath, '--incidents') : null,
+    history: historyPath ? readJson(historyPath, '--history') : null,
     source: 'payload files'
   };
 }
@@ -184,6 +207,16 @@ const alertRowsIn = (html) => (html.match(/class="alert-row/g) || []).length;
 async function main() {
   libSourceCache.lib = await readSource(libPath, 'lib.js');
   libSourceCache.app = await readSource(appPath, 'app.js');
+  if (!apiBase && siteUrl) {
+    const discovered = await discoverApiBaseFromSite();
+    if (discovered) {
+      apiBase = discovered;
+      console.log(`  discovered the API base from the deployed page: ${discovered}`);
+    } else {
+      console.log('  the deployed page does not declare an API base — falling back to the payload files');
+    }
+  }
+  apiBaseForRun = apiBase || apiBaseForRun;
   const { payload, incidents, history, source } = await loadPayloads();
   console.log(`  payload source: ${source}`);
 
