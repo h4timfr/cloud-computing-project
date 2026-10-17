@@ -32,9 +32,19 @@ aws s3api list-objects-v2 --bucket floodpulse-dashboard-725934295966 --query "Co
 python tools\storm_demo.py --export build\story
 node tools\story_check.mjs --dir build\story
 
-# 4. open the dashboard now, not in front of the audience
+# 4. the deployed page is the hardened page (expect the policy to be served and no inline script;
+#    add ?api=<origin> for a local server only if you also allow that origin in the CSP)
+python -c "import urllib.request; h=urllib.request.urlopen('http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com/index.html').read().decode('utf-8'); print('policy:', 'Content-Security-Policy' in h, '| api base as data attribute:', 'data-api=' in h, '| inline script:', '<script>' in h)"
+
+# 5. open the dashboard now, not in front of the audience
 Start-Process "http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com"
 ```
+
+With the page open, press **F12** once and check the Console tab is empty: the page carries a
+Content-Security-Policy, and a violation would be reported there (it is how a bad `connect-src`
+would show itself). No browser was available when this policy was written, so this is the manual
+check that replaces an automated one. Close the console afterwards — nothing about the demo needs
+it.
 
 On the dashboard, confirm with your own eyes (it opens on **Overview**): the connection badge reads
 **LIVE**, the headline names the fleet (e.g. "2 of 5 cities are at a critical flood risk right now."),
@@ -166,7 +176,10 @@ python tools\live_acceptance.py   # 35 asserts over the live API, read-only
 | Everything is simulated and no city cards appear | the Lambda is still in demo mode: re-run `infra\deploy.ps1` with no flags. |
 | The board is frozen at a value from 10 minutes ago | by design: the feed refreshes at most once per 600 s, and only while the page is polling. Press refresh in the browser. |
 | The page shows nothing at all | you are serving it from the wrong origin: only `http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com` and `http://localhost:8000` are allow-listed for CORS. `127.0.0.1:8000` and any other port are blocked by design — use the S3 website URL, or start the local server with `python -m http.server 8000 --directory web` and open `http://localhost:8000`. |
-| Lambda errors during the demo | `aws logs tail /aws/lambda/floodpulse-api --since 10m --profile cloud-project --region eu-north-1` |
+| Lambda errors during the demo | `aws logs tail /aws/lambda/floodpulse-api --since 10m --profile cloud-project --region eu-north-1`. Since the hardening pass this log also carries one line per incident opened/escalated/closed, so "what did it decide and when" is answerable after the fact. |
+| The Console (F12) shows a message about the *payload could not be fully rendered* | the renderer refused something the API sent and the status line was refreshed instead of the failure being hidden. The board keeps the last good values; note the zone id from the message. |
+| A poll is answered with 429 | the stage throttle (burst 40 / rate 20 per second) engaged — that means something is generating far more request volume than the demo does. It clears within a second; if it persists, check for a looping script. |
+| You need the throttle out of the way entirely | `aws apigatewayv2 update-stage --api-id 2rg2u8quzd --stage-name '$default' --default-route-settings '{\"ThrottlingBurstLimit\":5000,\"ThrottlingRateLimit\":10000}' --profile cloud-project --region eu-north-1` (read it back with `get-stage`) |
 
 ## 3b. Handling the ingestion key safely (only if the key actually needs changing)
 
@@ -189,6 +202,12 @@ python tools\init_ingest_key.py --lambda-env build\env-prod.json --force
 powershell -NoProfile -File infra\deploy.ps1
 python tools\verify_deployed_code.py
 ```
+
+The deploy script refuses to run if the environment file and `.floodpulse-key` disagree about the
+key (it prints both fingerprints and stops), because applying the environment file is what a deploy
+does — a rotation that only touched the key file would be silently undone. If the drift is
+deliberate, the flag is `-AllowKeyDrift`. See the deploy switches in `README.md` (M8) for the other
+deliberate opt-outs and for `-DryRun`, which reads and compares everything and changes nothing.
 
 * Both scripts print a `sha256:` **fingerprint** (12 hex characters), never the key. Compare the
   fingerprint from `.floodpulse-key` with the one in the deploy output: if they differ, stop and

@@ -149,7 +149,8 @@ marks the connection stale/disconnected, and never fabricates a value. History p
 | Local mode | With the in-memory store and no secret, ingestion stays open so the M0/M1 tests and `tools/local_demo.py` keep working |
 | Reads stay public | `GET /zones` and history never require or return the secret (the browser dashboard holds no key) |
 | Secret hygiene | The key lives only in `.floodpulse-key` and `build/env-prod.json` (both gitignored) and is never printed, logged, committed or sent to the browser |
-| Rotation | `python tools/init_ingest_key.py --force --key-file .floodpulse-key --lambda-env build/env-prod.json` mints a new key and prints only a `sha256:` fingerprint; the deploy re-applies the environment. Rotated in M3 (`sha256:6ba7227085ac` → `sha256:b3b91ff07129`) after the previous value appeared in a terminal transcript |
+| Rotation | `python tools/init_ingest_key.py --force --key-file .floodpulse-key --lambda-env build/env-prod.json` mints a new key and prints only a `sha256:` fingerprint; the deploy re-applies the environment. **Rotation history, oldest first:** `sha256:6ba7227085ac` → `sha256:b3b91ff07129` (rotated in M3 after the first value appeared in a terminal transcript) → `sha256:7c130a215cc1` (the value deployed today). Only fingerprints are recorded here: the values themselves exist solely in the two gitignored files |
+| Key drift | The deployed environment is the file the operator owns, so a rotation that updated only `.floodpulse-key` would be silently undone by the next deploy. `infra/deploy.ps1` therefore compares the two and **refuses to run** unless `-AllowKeyDrift` is passed; it reports the two fingerprints, never the values |
 
 ### Verified M2 acceptance run
 
@@ -852,6 +853,206 @@ actually means — a signed delta or a trend window — and prints the sentence 
 | Injection and input handling | Every string that reaches the DOM goes through `escapeHtml`; stored payloads are validated before use and a malformed one degrades to `no_data` rather than throwing; no `eval`, no `innerHTML` with unescaped data |
 | Least privilege | The Lambda role has `dynamodb:GetItem/PutItem` on the one table (no scan, no delete, no GSI) and `sns:Publish` on the one topic ARN; `iam:*` is denied to the deployment profile, so no policy was touched |
 | Known gaps (accepted, documented) | No API throttling; no CloudWatch alarm; no subscriber on the alerts topic; no CSP header (S3 static hosting); no WAF. All four are reported rather than silently accepted, and none is a defect in the code |
+## M8 production hardening (adversarial pass, deployed, verified)
+
+The brief for this pass was not "add features" but "try to break it": treat the M7 system as a
+production candidate and look for the ways it could be misused, corrupted, overloaded, confused or
+accidentally broken, while keeping the live India experience and demo mode exactly as they were.
+The architecture did not change: the same one table, one function, one HTTP API, one bucket, one
+topic, the same IAM role and the same ingestion-key model. **No AWS resource was created, deleted
+or reconfigured** — with one deliberate exception, the stage throttle below, which is a setting on
+the existing API and is reversible in one command.
+
+Each change is one commit with the reasoning in its message; this section is the index to them.
+
+### What was actually broken (found by probing, not by reading)
+
+| Severity | Defect | Fix |
+| --- | --- | --- |
+| **P0** | A payload string was rendered into the hero hint without escaping. The dashboard can be pointed at any API origin with `?api=`, so an API (or a compromised proxy) could execute script **in the dashboard's own origin** and read everything the page can reach | The value is escaped like every other payload string, and an adversarial scenario asserts the escaped text is what reaches the DOM and that no tag is ever created |
+| **P0** | `src/floodpulse/handler.py`: a reading posted by a *client* into the live fleet was served with zone-level **REAL** provenance while its own values were SIMULATED. The board was labelling simulated numbers by the fleet they sat in | Provenance follows the record, not the fleet; a mixed record is labelled `mixed`; the weakest claim present wins |
+| **P1** | A payload containing a non-object in `zones[]` (a `null`, a string) threw inside a renderer. Because that renderer ran first, the board stayed frozen on its loading placeholders *while the API was answering 200* — and the poll's own error path was skipped, so the failure was invisible | Elements that are not objects are dropped where the list enters state, each renderer returns `''` for a non-object zone, and a render failure now logs, refreshes the status line and does not masquerade as a transport error |
+| **P1** | `#/cities/%` threw a `URIError` out of `start()`, so the page never polled at all | The fragment is decoded defensively and an undecodable one is ignored |
+| **P1** | `infra/deploy.ps1` treated *any* non-zero AWS CLI exit as "resource missing" — access denied, an expired token or throttling would send it down the create path | A classifier that separates not-found (`NoSuch*`, `ResourceNotFoundException`, 404) from a real error, which stops the deploy |
+| **P1** | `infra/deploy.ps1` rewrote the whole Lambda environment map, so a variable that existed only in AWS disappeared on the next deploy | Read, merge, compare *names*, and refuse to disagree silently |
+| **P1** | `infra/deploy.ps1` applied a public-read bucket policy (and disabled the public-access block) to a bucket it had **not** created | Public read is applied only to a bucket this run created; an existing bucket is read, judged and reported, never widened |
+| **P2** | `infra/deploy.ps1` took the *first* integration in the listing and retargeted every route at it | Integrations are matched on `IntegrationUri`; an unrecognised state stops the run instead of being overwritten |
+| **P2** | The list helper could hand a single item back as a bare object, whose `.Count` is `$null` — read as "nothing there". The integration check asked exactly that question, so on a one-integration account it would have created a **second** integration | The helper returns the array whole; three sizes are pinned in the offline harness, which also refuses the opposite mistake (`@(command)` would make `.Count` always 1) |
+| **P2** | Provenance prose could print `undefined` and a bare separator; `METRIC_META[metric]` could resolve to an `Object.prototype` member; a provider link was built from an unvalidated payload URL; a negative age was reported as "just now"; the loading pulse never stopped after a failed first poll | Each has a guard and a check in the static harness |
+| **P2** | The incident lifecycle was invisible in the logs: an opened, escalated or closed incident left no trace beyond the SNS publish | One structured line per transition |
+| **P2** | Four different clocks were collapsed into a single "age" on the dashboard | They are now named and shown separately (below) |
+
+### API abuse and cost protection
+
+`$default` on the existing HTTP API now carries **burst 40 / steady rate 20 requests per second**.
+Measured, not guessed: the busiest minute in the six hours before the change saw **36 requests
+(≈0.6/s)**, so the limit leaves roughly 33× headroom over real traffic, and a dashboard page load
+(3 requests: `/zones`, `/incidents`, `/history`) fits inside the burst. A flood of requests is
+throttled at the edge and answered with 429 before it can reach Lambda, DynamoDB or Open-Meteo.
+
+```powershell
+# applied with (existing API only; no new resource)
+aws apigatewayv2 update-stage --api-id 2rg2u8quzd --stage-name '$default' `
+  --default-route-settings '{\"ThrottlingBurstLimit\":40,\"ThrottlingRateLimit\":20}' `
+  --profile cloud-project --region eu-north-1
+
+# reverse it in one command - set values high enough that they never engage
+aws apigatewayv2 update-stage --api-id 2rg2u8quzd --stage-name '$default' `
+  --default-route-settings '{\"ThrottlingBurstLimit\":5000,\"ThrottlingRateLimit\":10000}' `
+  --profile cloud-project --region eu-north-1
+```
+
+Every public input is already bounded in the function itself, which is what matters if the
+throttle is ever raised: the body is capped at 4 KB, query parameters are validated against a
+closed grammar (repeated or boolean-valued parameters are refused rather than guessed), history
+windows are clamped to 1440 minutes and 600 points, incident limits to 200, JSON depth and
+non-JSON content types are refused before parsing, and a reading more than 5 minutes out of skew is
+rejected.
+
+### Correctness under replay and reordering
+
+Already true before this pass and now pinned by adversarial tests: history uniqueness is enforced
+by a conditional write, `LATEST` is only replaceable by a reading with `ts_epoch <= :ts`, an older
+reading is kept as history but never becomes current, a replayed reading is reported as a duplicate
+and is not judged for incidents, and two readings in the same second are both kept. Alert storm
+protection is a conditional claim on one item per zone and severity, so ten concurrent callers
+produce one alert.
+
+### Weather provider failure
+
+Already handled and now explicit: 429/500/404, a network exception, a timeout (default 4 s,
+clamped 1–8), malformed JSON, a missing or absurd value, a missing city and a partial response all
+degrade to the last good values rather than a failed poll — and **they never become a REAL label**.
+The provider is called at most once per refresh window (600 s) across all five cities, and if the
+call fails the previous cache is kept and its age is published as-is.
+
+### Front end: a policy, not just escaping
+
+The page now carries its own `Content-Security-Policy`:
+
+```
+default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+font-src 'self'; connect-src 'self' https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
+https://*.execute-api.eu-north-1.amazonaws.com http://localhost:* http://127.0.0.1:*;
+object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+```
+
+`script-src 'self'` means an injected string cannot execute even if an escaping mistake slips
+through, which is why the page had to lose its inline `<script>`: the API base is now a
+`data-api` attribute on `<html>`, read by `app.js`. `'unsafe-inline'` is granted for **styles
+only** (the renderers set a few style attributes for bar widths); `object-src`, `base-uri` and
+`form-action` are `'none'`. A `referrer` policy is set and external links carry
+`rel="noopener noreferrer"`.
+
+**Operational consequence, worth knowing before demo day:** the policy is what allows the page to
+talk to its API. Pointing `?api=` at a *different* origin — a local server, another deployment —
+requires adding that origin to `connect-src` first; loopback origins are already there so
+`?api=http://localhost:8000` still works. Nothing in the demo depends on this.
+
+Both the served page and the sources are checked for this: `tools/verify_deployed_page.py` asserts
+the policy, the absence of any inline script and the absence of a `javascript:` URL in the
+*deployed* page, and the static harness asserts the same plus that the policy cannot name an
+unrelated origin.
+
+### One freshness contract, with every clock named
+
+The dashboard used to answer "how old is this?" with a single number that could be the reading's
+age, the provider's observation age or the cache age, depending on which panel you asked. Payloads
+now publish each clock separately and the interface names them:
+
+| Published field | Meaning |
+| --- | --- |
+| `latest.age_seconds` | age of the reading the fleet is serving |
+| `latest.provider_observation_age_seconds` | age of the *weather observation* that reading was derived from (`null` for simulated readings) |
+| `zone.weather.cache_age_seconds` | age of the last successful provider fetch for that city |
+| `zone.weather.last_attempt_age_seconds` | age of the last provider attempt, successful or not |
+| `zone.weather.observation_age_seconds` / `observation_interval_seconds` / `observation_is_current` | the provider's own reporting cadence, and whether the observation is on schedule or behind it |
+| `stale_after_seconds` | the threshold at which the interface starts calling a reading stale |
+
+A reading can therefore be fresh while the provider observation behind it is behind schedule, and
+the page says so instead of printing "updated now" over an hour-old observation.
+
+### Observability without new resources
+
+The incident lifecycle is now visible in the existing log group: one line per transition
+(`incident_opened`, `incident_escalated`, `incident_closed` with zone, severity, status, risk class,
+observed-at, reason and whether the alert was published), plus a warning when incident tracking
+fails, a structured line for each weather refresh (refreshed / already fresh / failed, with the
+reason), and the existing ingest-rejection lines. Nothing logs the ingestion key, an authorization
+header or a secret value, and the retry/failure paths that could have echoed an AWS CLI request
+body are redacted before they can reach the console. Log volume is bounded by the same cooldowns
+that bound alerting; the group's stored bytes stayed at ~416 KB with 7-day retention.
+
+### Deployment tooling
+
+`infra/deploy.ps1` is now readable before it is runnable:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -DryRun           # plan only, writes nothing
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1                   # idempotent deploy
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -AllowDirtyTree   # ship uncommitted work
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -AllowKeyDrift    # deploy the env-file key
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -KeepUnknownEnvVars
+```
+
+Every write goes through one guarded helper, so `-DryRun` turns the entire run into a plan — the
+reads and comparisons still happen, and each write is printed instead of performed. The script
+refuses to deploy a missing ingestion key, key drift between `.floodpulse-key` and the environment
+file, a CORS origin the run does not know about, or an uncommitted `src/`+`web/` tree unless the
+matching switch is passed; it only ever *lengthens* log retention (shortening it deletes events
+irreversibly); and it closes with a verification block that re-reads the deployed state and runs
+`tools/verify_deployed_code.py`.
+
+The safety logic is verified offline, in the suite, without credentials:
+`tools/deploy_logic_check.ps1` lifts the helper functions out of the script with the PowerShell
+parser, replaces every AWS entry point with a stub, and asserts the redaction, the not-found
+classifier (including the `NoSuch*` shapes that are *not* errors), the environment-document
+validation, the pagination and the dry-run gate. `tests/test_deploy_script.py` runs it and pins the
+structural properties a later edit could remove.
+
+### What this pass added to the suite
+
+| Suite | Before | After |
+| --- | --- | --- |
+| `python -m unittest discover -s tests -t .` | 405 (as published in M7) | **509** |
+| `node tools/dashboard_check.mjs` (per mode) | 88 | **96** |
+| `node tools/dashboard_scenarios.mjs` | 42 | **44** |
+| `node tools/dashboard_run.mjs` | 46 live / 44 demo | 46 live / 44 demo |
+| `tools/deploy_logic_check.ps1` | — | offline, all assertions pass |
+
+New test files: `tests/test_observability.py` (the freshness clocks and the incident log lines),
+`tests/test_env_hardening.py` (every environment variable driven with an absent, empty,
+unparseable, out-of-range, huge and non-ASCII value, and the distinction between "fall back to the
+default" and "clamp into range"), `tests/test_deploy_script.py` (the deployment contracts).
+
+### Verified after the change (live, 2026-10-17)
+
+| Check | Result |
+| --- | --- |
+| `python tools/verify_deployed_code.py` | `RESULT: deployed Lambda code is byte-identical to the repository's src/` |
+| `python tools/verify_deployed_page.py` | **all deployed page contracts hold** (including the CSP, the data-attribute API base, no inline script, the referrer policy and `noopener`) |
+| `python tools/live_acceptance.py` | **35 checks passed, 0 failed** (max poll latency 1.25 s; no city failing its fetch; no ARN in any payload; throttling observed not to engage) |
+| `node tools/dashboard_run.mjs --site <deployed bucket> --api <deployed api>` | **46 runtime checks passed, 0 failed** against the deployed assets and the live API |
+| Fleet state after the deploy | `live_weather`, 5 cities, weather enabled (`open-meteo`), all five NORMAL, reading age 33 s |
+| Incidents | 4 recorded, **0 open** — no test incident left behind |
+| Demo fleet | left calm (NORMAL, risk 0.22–0.24), so a demo run starts from a clean board |
+| Table | 1,692 items / 1,172,412 bytes, on-demand, TTL on `ttl`; 8 `LATEST` (5 cities + 3 demo), 5 weather caches, 4 alert markers |
+
+### Known residual gaps (deliberate, recorded rather than hidden)
+
+* `POST /readings` remains open in live mode for the five city zones — isolation is delivered by
+  provenance (a client reading can never be served as REAL), not by refusing the write. Closing it
+  completely is a one-line change to the zone allowlist; it is left open because the live simulator
+  and the demo both depend on it.
+* CSP enforcement is the browser's job. The policy is asserted in the served bytes and locally, but
+  no browser was available on this machine, so "no violation in the console" is a manual check
+  (see `DEMO_RUNBOOK.md`).
+* The dashboard polls `/zones` every 5 s per open tab. The throttle bounds the damage, but a room
+  full of tabs is still N× the traffic of one.
+* SNS has **0 confirmed subscriptions and 1 pending** (an address that never clicked the
+  confirmation link). A published alert is therefore delivered to nobody today; the deploy warns
+  about exactly this, and only ever says "publish succeeded".
+
 ## Repository layout
 
 ```
@@ -916,7 +1117,7 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (405 tests, no AWS calls, no network)
+# full test suite (509 tests, no AWS calls, no network)
 python -m unittest discover -s tests -t .
 
 # the demo story, rehearsed end to end: drives the arc, verifies it, exports what the API served
@@ -932,13 +1133,14 @@ node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
 node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
 
-# dashboard scenario harness: 42 failure and edge cases (first-poll failure, 500s, stale feed,
-# hung requests, mode switching, history backoff...) driven through the real poller in a fake DOM
+# dashboard scenario harness: 44 failure and edge cases (first-poll failure, 500s, stale feed,
+# hung requests, mode switching, history backoff, a hostile payload...) through the real poller
 node tools/dashboard_scenarios.mjs
 
 # dashboard runtime check: runs the real lib.js + app.js in a fake browser and uses the page the
 # way a person does — clicking all four sections, opening each city, the alerts split and its empty
-# states, the phone menu, a failed poll, recovery. 45 checks against the live payloads.
+# states, the phone menu, a failed poll, recovery. 46 checks against the live payloads (44 for the
+# demo fleet), 96 static checks per mode from dashboard_check.mjs.
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
