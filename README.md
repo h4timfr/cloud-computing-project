@@ -133,7 +133,7 @@ contributions, the top drivers, the engine's own explanation, reading age and th
 | `web/styles.css` | storm/command-centre theme, glass cards, band colours, responsive breakpoints |
 | `web/lib.js` | pure render/format helpers (`window.FP`) — also loadable in node for checks |
 | `web/app.js` | polling controller, DOM patching, session sparkline, canvas history chart |
-| `web/bg-storm.webp` | locally generated storm backdrop (13.3 KB) |
+| `web/bg-storm.webp` | the storm backdrop: a 930×312 lossy WebP, 58.8 KB, painted by `.bg-layer` at 42% opacity |
 
 Behaviour under failure is deliberate: a failed poll keeps the **last good** payload on screen,
 marks the connection stale/disconnected, and never fabricates a value. History points that are
@@ -1609,6 +1609,101 @@ acceptance run gains a malformed-address probe against the live route.
 * One adversarial test (`ModeIsolationTest`) makes real Open-Meteo calls and can fail for a single
   run when the provider answers `http_503`.
 
+## Image assets: the optimisation pass (2026-10-18)
+
+Nothing about the backend, the API, the risk logic or the routes was touched. This pass covers the
+raster assets in `web/`, produced by `tools/optimize_web_assets.py`, which is deterministic, never
+upscales, never renames, only ever reads or writes the 13 files it lists, and copies each original
+to `build/asset-originals/` (gitignored) before overwriting it.
+
+```
+python tools/optimize_web_assets.py --dry-run   # plan, measure, write nothing
+python tools/optimize_web_assets.py            # back up, rewrite, verify (re-runs skip finished files)
+python tools/optimize_web_assets.py --check    # verify what is on disk against the caps
+python tools/optimize_web_assets.py --only bg-storm.webp --from-originals   # re-derive one file
+                                               # from its kept original, for when a re-encode has
+                                               # already cost a generation
+```
+
+### What was there first
+
+Four things were wrong with the files as delivered, and the pass records them rather than
+inheriting them:
+
+| Finding | Detail |
+| --- | --- |
+| **Extensions did not match payloads** | `bg-storm.webp` was a **PNG** (930×312, 566 KB, lossless) served as `image/webp`; all seven files named `*.svg` are **PNG** payloads (90–112 px) |
+| **A useless alpha channel on every file** | 13 of 13 carried RGBA with the alpha at a constant 255: bytes paid for, nothing shown |
+| **EXIF inside every city card** | embedded camera metadata (including, in principle, location) travelled with the images |
+| **The backdrop was stored losslessly** | 566 KB for a 930×312 image, 16 bits per pixel, used at 42% opacity under a `screen` blend |
+
+### Measured result (before → after, from the files on disk and the kept originals)
+
+| File | Old dims | New dims | Old size | New size | Ratio | Fidelity vs the original |
+| --- | --- | --- | --- | --- | --- | --- |
+| `bg-storm.webp` | 930×312 | 930×312 | 565.9 KB | **58.8 KB** | **9.63×** | 33.2 dB PSNR, dark-region error 2.71/255 |
+| `chennai-nightscape.webp` | 612×403 | 612×344 | 22.1 KB | 20.6 KB | 1.07× | 37.3 dB, 2.17/255 |
+| `mumbai-nightscape.webp` | 860×573 | 800×450 | 37.2 KB | 30.0 KB | 1.24× | 39.6 dB, 1.59/255 |
+| `bengaluru-nightscape.webp` | 612×408 | 612×344 | 31.3 KB | 30.2 KB | 1.04× | 36.7 dB, 0.32/255 |
+| `hyderabad-nightscape.webp` | 860×572 | 800×450 | 72.2 KB | 54.7 KB | 1.32× | 36.2 dB, 1.44/255 |
+| `kochi-nightscape.webp` | 645×360 | 640×360 | 49.7 KB | 47.2 KB | 1.05× | 35.6 dB, 1.15/255 |
+| `weather-rain.svg` (PNG) | 105×85 | 105×85 | 10.8 KB | 8.9 KB | 1.21× | **pixel-identical** |
+| `city-icon.svg` (PNG) | 90×84 | 90×84 | 9.5 KB | 7.2 KB | 1.31× | **pixel-identical** |
+| `alert-icon.svg` (PNG) | 93×90 | 93×90 | 9.4 KB | 7.5 KB | 1.25× | **pixel-identical** |
+| `building-icon.svg` (PNG) | 96×88 | 96×88 | 10.4 KB | 7.9 KB | 1.32× | **pixel-identical** |
+| `clock-icon.svg` (PNG) | 93×85 | 93×85 | 9.7 KB | 8.0 KB | 1.22× | **pixel-identical** |
+| `check-icon.svg` (PNG) | 93×88 | 93×88 | 10.0 KB | 8.2 KB | 1.22× | **pixel-identical** |
+| `chevron-right.svg` (PNG) | 112×91 | 112×91 | 9.4 KB | 7.5 KB | 1.25× | **pixel-identical** |
+| **Total** | | | **847.5 KB** | **296.7 KB** | **2.86×** | 551 KB saved |
+
+Cards are 16:9 at or below 800×450 (a 612 px source is **not** upscaled to 800: the brief forbids
+inventing pixels), cropped around the centre with a bounded detail search, alpha and EXIF dropped,
+WebP q82. Icons are **lossless**: opaque alpha dropped, metadata stripped, and the decoded pixels
+are asserted identical to the original, which is why the icons are the only files where a visual
+comparison is unnecessary. The background keeps its native 930×312: see the gap below.
+
+### The budget rule, and why it moved
+
+The three checks that police size now measure what a visitor actually downloads — the four code
+files plus the one image the stylesheet loads — because `web/` also holds prepared card images and
+icons that no view references yet and that the deploy list does not upload.
+
+| Measure | Value | Ceiling | Notes |
+| --- | --- | --- | --- |
+| Page payload (code + backdrop) | **416.5 KB** | **512 KB** (was 400 KB) | 357.7 KB of it is the four code files; the backdrop adds 58.8 KB. The 400 KB ceiling was set when the backdrop was 13.3 KB, so a real photograph cannot fit under it. Raising it was an explicit owner decision |
+| Backdrop alone | 58.8 KB | 250 KB ideal / 350 KB hard | the brief's numbers |
+| City card | ≤ 54.7 KB | 90 KB ideal / 120 KB hard | the brief's numbers |
+| `web/` directory | 654.3 KB | 1024 KB | a guard for the prepared set, not a download |
+
+### Readiness gaps (recorded, not silently fixed)
+
+1. **The seven files named `*.svg` are PNGs.** They are not SVGs at all, so "minify the SVG icons"
+   has no subject: converting them to vector is not possible, and rasterising is what they already
+   are. They were therefore optimised **losslessly in place** and keep their names, because the
+   rename is a decision for their author: either rename them to `*.png` (nothing references them
+   yet, so it is free) or re-export real SVG from the design source.
+2. **The backdrop cannot reach the brief's 1920×1080 target from what exists.** The file is
+   930×312 (2.98:1); 1920×1080 is 1.78:1 and would need a 2.06× enlargement, which the brief
+   forbids and which would add no detail while quadrupling the bytes. It is therefore kept at its
+   native size, and on a 1920 px display the browser upscales it 2.06× (4.1× at device resolution).
+   Meeting the target needs a larger source; the previously committed backdrop (1760×990) was
+   already near it.
+3. **Nothing here is deployed.** The five-asset upload list in `infra/deploy.ps1` is unchanged, so
+   the live bucket still serves the 579 KB PNG-as-`.webp` and does not carry the twelve prepared
+   assets. Deploying is a separate, explicit step.
+4. **The city cards and icons are not wired into any view.** They are prepared and measured only;
+   no layout, CSS or HTML was changed for them. When they are wired up, `object-fit: cover` makes
+   the mix of 800×450 and 612×344 cards harmless, and the PNG-under-`.svg` names must be settled
+   first.
+5. **No image viewer exists on this machine**, so "no obvious banding" and "the skyline stays
+   recognisable" are argued from measurements — PSNR, error in the darkest decile, and the fraction
+   of distinct dark luminance levels that survive (1.00 everywhere) — and not from looking at the
+   pictures. Subjective judgement of the crops is still owed by a human.
+6. **One file was encoded twice** before the guard existed: the backdrop was re-encoded from my own
+   output, which cost a generation (32.1 dB cumulative instead of 33.2 dB). It was re-derived from
+   the kept original with `--from-originals` and re-verified; the tool now skips any file already
+   inside its targets so a re-run cannot repeat it.
+
 ## Repository layout
 
 ```
@@ -1858,7 +1953,7 @@ Measured at the end of this pass (read-only AWS CLI, eu-north-1):
 | Lambda `floodpulse-api` | **1,841 invocations** and **441.6 s** of total duration over the two days CloudWatch reports, 0 errors, 0 throttles, 256 MB | ≈110 GB-s: inside the 400,000 GB-s monthly free tier, **$0** |
 | API Gateway HTTP API | ~1,841 requests on those two days | $1.00 per million requests: **$0.002** |
 | DynamoDB `floodpulse` | **1,364 items / 947 KB**, on-demand, TTL pruning history at 7 days, no GSI, no scans | 25 GB storage free tier: **$0**; writes are a few thousand a day (on-demand write units cost $1.25/million) |
-| S3 `floodpulse-dashboard-…` | **5 objects / 234 KB** (index, styles, lib, app, backdrop) | a few cents **per year**, no CloudFront |
+| S3 `floodpulse-dashboard-…` | **5 objects / 924 KB** (index, styles, lib, app, backdrop — the backdrop is the 579 KB source image as deployed on 2026-10-17; the optimised 58.8 KB file in `web/` is not uploaded yet) | a few cents **per year**, no CloudFront |
 | CloudWatch Logs | **297 KB stored**, 7-day retention | ingestion ~$0.0002, storage negligible; retention bounds it by design |
 | SNS `floodpulse-alerts` | **0 confirmed subscriptions**, 1 pending | 1 M publishes/month free; nothing is delivered to anyone |
 | External weather API | at most 1 request per 10 minutes (~144/day), free and key-less | **$0** (attribution is the price: CC BY 4.0) |

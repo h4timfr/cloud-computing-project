@@ -1112,7 +1112,10 @@ if ($SkipDashboard) {
     Invoke-AwsWrite s3api put-bucket-website --bucket $DashboardBucket --website-configuration "file://$websitePath" | Out-Null
     Write-OkApplied 'static website hosting enabled (index.html)'
 
-    # uploads are small (~72 KB in total); long-lived caching only for the background image
+    # The list is deliberately fixed: five objects, nothing else in web/ is uploaded. Prepared card
+    # images and icons live there too (see README, "Image assets"), and adding one to this list is
+    # a deliberate act, not a side effect of dropping a file into the directory.
+    # Sizes as of 2026-10-18: code 357.7 KB + backdrop 58.8 KB = 416.5 KB per visit.
     $assets = @(
         @{ File = 'index.html';    Type = 'text/html; charset=utf-8';              Cache = 'no-cache' },
         @{ File = 'styles.css';    Type = 'text/css; charset=utf-8';               Cache = 'no-cache' },
