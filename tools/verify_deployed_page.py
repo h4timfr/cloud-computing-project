@@ -246,11 +246,19 @@ FORBIDDEN_ASSETS = {
 }
 for asset, forbidden in FORBIDDEN_ASSETS.items():
     body = urllib.request.urlopen(f"{SITE}/{asset}", timeout=20).read().decode("utf-8")
-    present = [label for label, needle in forbidden.items() if needle in body]
+    # The stylesheet's comments quote the rules they replaced - "mix-blend-mode: screen", "not
+    # background-attachment: fixed" - on purpose, so the search runs against the declarations only.
+    # A comment is not a rule; a rule is still caught, which is the point of the entry. The static
+    # harness strips comments for the same reason.
+    searched = re.sub(r"/\*[\s\S]*?\*/", " ", body) if asset.endswith(".css") else body
+    present = [label for label, needle in forbidden.items() if needle in searched]
     failed += len(present)
+    quotted = [label for label, needle in forbidden.items()
+               if needle in body and needle not in searched]
     print(
         f"  {'FAIL' if present else 'ok  '} {asset} carries no engineering copy in a public view"
         + (f" — found: {', '.join(present)}" if present else "")
+        + (f" (mentioned only in a comment, not as a rule: {', '.join(quotted)})" if quotted else "")
     )
 
 # ----------------------------------------------------------------------- the images themselves ---
