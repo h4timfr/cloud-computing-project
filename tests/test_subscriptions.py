@@ -243,12 +243,17 @@ class SnsCallShapeTests(unittest.TestCase):
     def test_the_arn_from_sns_is_not_returned_to_the_caller(self) -> None:
         notifier = SnsNotifier(TOPIC_ARN, client=RecordingSnsClient(subscription_arn=TOPIC_ARN + ":abc"))
         outcome = notifier.subscribe_email(VALID)
-        self.assertEqual(outcome, {"requested": True, "state": "confirmed"})
+        # The outcome says what SNS told us and nothing more. "sns_accepted" is not "confirmed":
+        # a brand-new endpoint gets an ARN too when ReturnSubscriptionArn is asked for.
+        self.assertEqual(outcome, {"requested": True, "state": "sns_accepted"})
         self.assertNotIn("arn", json.dumps(outcome))
 
     def test_pending_and_confirmed_are_classified(self) -> None:
         self.assertEqual(subscription_state_for_arn("pending confirmation"), "pending_confirmation")
-        self.assertEqual(subscription_state_for_arn(TOPIC_ARN + ":abc"), "confirmed")
+        # An ARN is not proof of a confirmed endpoint: with ReturnSubscriptionArn=True a new
+        # subscription returns one too, so the state says only what SNS actually told us.
+        self.assertEqual(subscription_state_for_arn(TOPIC_ARN + ":abc"), "sns_accepted")
+        self.assertNotEqual(subscription_state_for_arn(TOPIC_ARN + ":abc"), "confirmed")
         self.assertEqual(subscription_state_for_arn(""), "pending_confirmation")
         self.assertEqual(subscription_state_for_arn(None), "pending_confirmation")
 

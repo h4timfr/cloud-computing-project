@@ -142,31 +142,37 @@ def notifier_for_env(env: Mapping[str, Any]) -> NoopNotifier | SnsNotifier:
 
 
 #: SNS reports a subscription that nobody has confirmed yet as this literal string instead
-#: of an ARN, because a pending subscription has no ARN. It is mapped to a name here so the
-#: rest of the code never compares against a magic string, and so it is never returned to a
-#: client (that would leak whether an address is already pending).
+#: of an ARN when ``ReturnSubscriptionArn`` is not asked for. It is mapped to a name here so
+#: the rest of the code never compares against a magic string, and so it is never returned to
+#: a client (that would leak whether an address is already pending).
 PENDING_CONFIRMATION_MARKER = "pending confirmation"
 
-#: The two states a successful ``Subscribe`` call can leave an endpoint in, from this side:
-#: waiting for the visitor to click the confirmation link, or already confirmed. The route
-#: answers identically for both; the distinction is only ever used in logs and metrics.
+#: What a successful ``Subscribe`` call can tell this side about the endpoint. It cannot
+#: tell "already confirmed" from "just created and still pending": with
+#: ``ReturnSubscriptionArn=True`` SNS returns an ARN in both cases, and the
+#: ``"pending confirmation"`` sentinel only appears when the flag is off. Distinguishing them
+#: would need ``sns:GetSubscriptionAttributes`` - a permission this role does not hold and
+#: must not ask for - so the state is reported as what it is.
+#:
+#: The route answers identically either way, and the visitor is told to look for AWS's
+#: confirmation mail, so nothing user-facing depends on this string.
 SUBSCRIPTION_PENDING = "pending_confirmation"
-SUBSCRIPTION_CONFIRMED = "confirmed"
+SUBSCRIPTION_SNS_ACCEPTED = "sns_accepted"
 
 
 def subscription_state_for_arn(value: Any) -> str:
     """Classify what ``Subscribe`` returned for an email endpoint.
 
-    A real ARN means the endpoint was already confirmed (or was just created and confirmed);
-    SNS's ``"pending confirmation"`` sentinel means AWS has sent the confirmation message
-    and is waiting. Anything else is treated as pending, which is the conservative reading
-    for a system that must never claim delivery it cannot prove.
+    ``"pending_confirmation"`` when SNS answered with its own sentinel, and ``"sns_accepted"``
+    when it answered with an ARN. The ARN is *not* evidence of a confirmed subscription: a
+    brand-new endpoint gets one too (that is what ``ReturnSubscriptionArn=True`` is for), and
+    claiming otherwise in the log would be a claim this system cannot prove.
     """
     text = str(value or "").strip()
     if text.lower() == PENDING_CONFIRMATION_MARKER:
         return SUBSCRIPTION_PENDING
     if text.startswith("arn:"):
-        return SUBSCRIPTION_CONFIRMED
+        return SUBSCRIPTION_SNS_ACCEPTED
     return SUBSCRIPTION_PENDING
 
 
