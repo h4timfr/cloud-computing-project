@@ -23,9 +23,16 @@ from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX, WEATHER_CACHE_SORT_K
 from .storage import (
     HISTORY_PREFIX,
     LATEST_SORT_KEY,
+    READING_DUPLICATE,
+    READING_STALE,
+    READING_STORED,
+    WriteOutcome,
     build_history_item,
     build_latest_item,
     build_zone_pk,
+    classify_reading_write,
+    is_replay_of,
+    history_sort_key_for,
     sort_incident_items,
 )
 
@@ -45,7 +52,7 @@ def iso_utc_from_epoch(epoch: int) -> str:
 
 def history_sk(timestamp: str) -> str:
     """Sort key for a history record (lexicographic order == chronological order)."""
-    return f"{HISTORY_PREFIX}{timestamp}"
+    return history_sort_key_for(timestamp)
 
 
 def latest_key(zone_id: str) -> dict[str, str]:
@@ -232,26 +239,141 @@ class DynamoDbStore:
         risk: Mapping[str, Any],
         hysteresis: Mapping[str, Any],
         smoothed_readings: Mapping[str, float],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Write the zone's LATEST record and append one history record."""
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, WriteOutcome]:
+        """Write the zone's LATEST record and append one history record.
+
+        Two invariants are enforced by DynamoDB itself, not by the caller:
+
+        * ``LATEST`` is only replaced when the incoming reading is not older than the stored
+          one, so a replay, a retry that overtook a newer reading, or a provider hiccup can
+          never roll a zone's current state backwards;
+        * a history record is only written for an observation that is not already stored
+          verbatim, so a client retry cannot inflate history (``H#<ts>`` stays a unique key).
+
+        Returns what actually happened so the API can report it instead of guessing.
+        """
         zone_id = str(reading["zone_id"])
         previous = self.get_latest(zone_id)
-        sequence = int(previous["sequence"]) + 1 if previous else 1
+        outcome_name, reason = classify_reading_write(previous, reading)
+        incoming_ts = int(reading["ts_epoch"])
+        stored_ts = int((previous or {}).get("ts_epoch") or 0) or None
 
+        candidate = build_history_item(reading, risk, hysteresis, smoothed_readings)
+        history_sk, stored = self._put_history_unique(candidate, reading)
+        history = dict(candidate, sk=history_sk)
+
+        if not stored:
+            # This exact observation is already stored: do not append a copy, and do not
+            # touch LATEST (the retry carries no new information).
+            return (
+                dict(previous or {}),
+                None,
+                WriteOutcome(
+                    outcome=READING_DUPLICATE,
+                    latest_updated=False,
+                    history_written=False,
+                    history_sk=history_sk,
+                    reason="this reading is already stored",
+                    stored_ts_epoch=stored_ts or incoming_ts,
+                    incoming_ts_epoch=incoming_ts,
+                ),
+            )
+
+        if outcome_name == READING_STALE:
+            # A stale arrival is still a real observation: it is kept as history but never
+            # becomes current state.
+            return (
+                dict(previous or {}),
+                history,
+                WriteOutcome(
+                    outcome=READING_STALE,
+                    latest_updated=False,
+                    history_written=True,
+                    history_sk=history_sk,
+                    reason=reason,
+                    stored_ts_epoch=stored_ts,
+                    incoming_ts_epoch=incoming_ts,
+                ),
+            )
+
+        sequence = int((previous or {}).get("sequence") or 0) + 1
         latest = build_latest_item(reading, risk, hysteresis, smoothed_readings, sequence)
-        history = build_history_item(reading, risk, hysteresis, smoothed_readings)
-        history["sk"] = self._put_history_unique(history)
-
         # stored copies are Decimal-normalised; the returned dicts keep the plain
         # float values so the API response is identical to the M0 in-memory store.
-        self._table.put_item(Item=to_storable(deepcopy(latest)))
-        return latest, history
+        claimed = self._put_latest_unless_newer(latest, incoming_ts)
+        if not claimed:
+            # Another invocation stored a newer reading between our read and our write. The
+            # history record above stands; current state is the newer reading, and we report
+            # that honestly rather than claiming we moved it.
+            current = self.get_latest(zone_id) or previous or {}
+            return (
+                dict(current),
+                history,
+                WriteOutcome(
+                    outcome=READING_STALE,
+                    latest_updated=False,
+                    history_written=True,
+                    history_sk=history_sk,
+                    reason="a newer reading was stored concurrently; this one kept as history",
+                    stored_ts_epoch=int(current.get("ts_epoch") or 0) or None,
+                    incoming_ts_epoch=incoming_ts,
+                ),
+            )
+        return (
+            latest,
+            history,
+            WriteOutcome(
+                outcome=READING_STORED,
+                latest_updated=True,
+                history_written=True,
+                history_sk=history_sk,
+                reason=reason,
+                stored_ts_epoch=incoming_ts,
+                incoming_ts_epoch=incoming_ts,
+            ),
+        )
 
-    def _put_history_unique(self, history: Mapping[str, Any]) -> str:
+    def _put_latest_unless_newer(self, latest: Mapping[str, Any], incoming_ts: int) -> bool:
+        """Put ``LATEST`` only when it is not older than what is already stored.
+
+        ``attribute_not_exists(sk)`` covers the first reading for a zone; the timestamp
+        comparison covers every later one. Returns ``False`` when DynamoDB refused the write
+        because a newer reading won the race.
+        """
+        try:
+            self._table.put_item(
+                Item=to_storable(deepcopy(dict(latest))),
+                ConditionExpression="attribute_not_exists(sk) OR ts_epoch <= :ts",
+                ExpressionAttributeValues={":ts": int(incoming_ts)},
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return False
+            raise
+
+    def _read_history(self, sk: str, zone_id: str) -> dict[str, Any] | None:
+        """Read one history record by sort key (only used when that key already exists)."""
+        try:
+            response = self._table.get_item(
+                Key={"pk": build_zone_pk(zone_id), "sk": sk}, ConsistentRead=True
+            )
+        except Exception:  # noqa: BLE001 - a failed probe must never fail ingestion
+            return None
+        item = response.get("Item")
+        return plain(item) if item else None
+
+    def _put_history_unique(
+        self, history: Mapping[str, Any], reading: Mapping[str, Any]
+    ) -> tuple[str, bool]:
         """Put the history record, disambiguating a duplicate timestamp.
 
-        Uses a conditional write so two readings in the same second can never
-        overwrite each other (``H#<ts>`` is the natural key).
+        Uses a conditional write so two readings in the same second can never overwrite each
+        other (``H#<ts>`` is the natural key). When the base key is taken, the stored record
+        is read once: if it is the same observation then nothing is written and ``False`` is
+        returned, which is what stops a client retry from inflating history. Any other
+        collision (a genuinely different reading in the same second) keeps the ``#2``, ``#3``
+        suffix behaviour.
         """
         base_sk = str(history["sk"])
         for attempt in range(1, MAX_HISTORY_KEY_ATTEMPTS + 1):
@@ -259,10 +381,14 @@ class DynamoDbStore:
             item["sk"] = base_sk if attempt == 1 else f"{base_sk}#{attempt}"
             try:
                 self._table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
-                return str(item["sk"])
+                return str(item["sk"]), True
             except Exception as exc:  # noqa: BLE001 - narrowed immediately below
                 if not is_conditional_check_failure(exc):
                     raise
+                if attempt == 1 and is_replay_of(
+                    self._read_history(base_sk, str(reading["zone_id"])), reading
+                ):
+                    return base_sk, False
         raise RuntimeError(
             f"could not find a free history sort key for {base_sk} after {MAX_HISTORY_KEY_ATTEMPTS} attempts"
         )
@@ -400,6 +526,44 @@ class DynamoDbStore:
         """Store the zone's alert cooldown marker."""
         self._table.put_item(Item=to_storable(deepcopy(dict(item))))
         return dict(item)
+
+    def claim_alert_slot(
+        self,
+        item: Mapping[str, Any],
+        *,
+        severity: str,
+        now_epoch: float,
+        cooldown_seconds: int,
+    ) -> bool:
+        """Write the alert marker only if this caller is inside its right to alert.
+
+        The cooldown check and the marker write are one conditional DynamoDB write, so two
+        invocations escalating the same zone at the same moment cannot both publish: the
+        loser's condition fails on the winner's marker. A zero cooldown means "alert every
+        time" by configuration, so the write is unconditional.
+        """
+        if cooldown_seconds <= 0:
+            self.put_alert_marker(item)
+            return True
+
+        cutoff = int(now_epoch) - int(cooldown_seconds)
+        condition = (
+            "attribute_not_exists(pk)"
+            " OR attribute_not_exists(last_alert_by_severity.#sev)"
+            " OR last_alert_by_severity.#sev.#ts <= :cutoff"
+        )
+        try:
+            self._table.put_item(
+                Item=to_storable(deepcopy(dict(item))),
+                ConditionExpression=condition,
+                ExpressionAttributeNames={"#sev": str(severity), "#ts": "ts_epoch"},
+                ExpressionAttributeValues={":cutoff": int(cutoff)},
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return False
+            raise
 
     def get_weather_cache(self, zone_id: str) -> dict[str, Any] | None:
         """The zone's cached external-weather snapshot, or ``None`` (M4)."""

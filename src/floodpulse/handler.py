@@ -91,6 +91,7 @@ from .incidents import (
     cooldown_remaining_seconds,
     decide_transition,
     incident_view,
+    marker_rollback,
     record_alert,
 )
 from .notify import (
@@ -103,7 +104,13 @@ from .notify import (
     notifier_for_env,
 )
 from .risk import MODEL_NOTE, apply_hysteresis, rolling_mean_metrics, score_zone
-from .storage import LocalStore
+from .storage import (
+    READING_DUPLICATE,
+    READING_STALE,
+    READING_STORED,
+    LocalStore,
+    WriteOutcome,
+)
 from .validation import ValidationError, validate_body_size, validate_reading
 
 LOGGER = logging.getLogger("floodpulse.handler")
@@ -199,6 +206,43 @@ def _utc_iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# Media types accepted on ``POST /readings``. A *missing* header is accepted on purpose:
+# ``curl``, ``urllib`` and several AWS SDKs send no content type, and rejecting those would
+# break the documented tools. A header that is present and plainly is not JSON (a browser
+# form post, a multipart upload, a text blob) is refused before it reaches the parser.
+JSON_MEDIA_TYPES: tuple[str, ...] = ("application/json", "text/json", "application/x-json")
+
+
+def _brief(value: Any, limit: int = 160) -> str:
+    """A one-line, length-capped form of a value for logging (never a payload dump)."""
+    return " ".join(str(value).split())[:limit]
+
+
+def _header_value(headers: Mapping[str, Any] | None, name: str) -> str | None:
+    """Case-insensitive header lookup; blank values read as absent."""
+    if not headers:
+        return None
+    wanted = name.strip().lower()
+    for header_name, value in headers.items():
+        if str(header_name).strip().lower() == wanted and value is not None:
+            text = str(value).strip()
+            return text or None
+    return None
+
+
+def _reject_content_type(content_type: str | None) -> tuple[int, dict[str, Any]] | None:
+    """Refuse a declared non-JSON body before anything is parsed or scored."""
+    if content_type is None:
+        return None
+    media_type = str(content_type).split(";", 1)[0].strip().lower()
+    if not media_type or media_type in JSON_MEDIA_TYPES or media_type.endswith("+json"):
+        return None
+    return 415, {
+        "error": "unsupported_media_type",
+        "detail": f"send application/json (received {_brief(media_type, 60)!r})",
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Incidence tracking and alerting (M3)
 # --------------------------------------------------------------------------- #
@@ -233,9 +277,11 @@ def _maybe_alert(
 ) -> dict[str, Any]:
     """Publish one alert when the rules allow it.
 
-    Ordering matters: the cooldown marker is only advanced after a *successful* publish,
-    so a transient SNS failure does not silently mute the next attempt. Never returns the
-    topic ARN (a notifier error is redacted before it is reported).
+    The cooldown is *claimed* with an atomic conditional write before the publish, so two
+    invocations escalating the same zone at the same moment cannot both alert — which is
+    what "one storm must not become an alert storm" means once requests overlap. A publish
+    that then fails restores the previous marker, so the claim cannot silently mute the
+    next attempt. Never returns the topic ARN (a notifier error is redacted first).
     """
     if not alert_severity:
         return {"evaluated": False, "published": False, "severity": None, "reason": "no_escalation"}
@@ -257,6 +303,47 @@ def _maybe_alert(
             "reason": "cooldown",
             "cooldown_seconds": int(cooldown_seconds),
             "cooldown_remaining_seconds": remaining,
+        }
+
+    claim = build_alert_marker(
+        zone_id=zone_id,
+        severity=alert_severity,
+        now_epoch=now_epoch,
+        previous=marker,
+        message_id=None,
+        data_classification=data_classification,
+    )
+    try:
+        claimed = bool(
+            store.claim_alert_slot(
+                claim,
+                severity=alert_severity,
+                now_epoch=now_epoch,
+                cooldown_seconds=int(cooldown_seconds),
+            )
+        )
+    except Exception:  # noqa: BLE001 - a store that cannot claim must not block the alert
+        LOGGER.exception("alert slot claim failed for zone %s", zone_id)
+        claimed = True
+    if not claimed:
+        # Another request claimed this zone+severity first: it is publishing, we are not.
+        loser_marker = store.get_alert_marker(zone_id)
+        loser_remaining = cooldown_remaining_seconds(
+            loser_marker, alert_severity, now_epoch, cooldown_seconds
+        )
+        LOGGER.info(
+            "alert suppressed reason=slot_claimed_elsewhere zone_id=%s severity=%s",
+            zone_id,
+            alert_severity,
+        )
+        return {
+            "evaluated": True,
+            "published": False,
+            "severity": alert_severity,
+            "reason": "cooldown",
+            "reason_detail": "another request claimed this alert slot first",
+            "cooldown_seconds": int(cooldown_seconds),
+            "cooldown_remaining_seconds": loser_remaining,
         }
 
     kind = ALERT_KIND_ESCALATED if action == ACTION_ESCALATED else ALERT_KIND_OPENED
@@ -300,6 +387,21 @@ def _maybe_alert(
         outcome["reason"] = str(result.get("reason") or "publish_failed")
         if result.get("detail"):
             outcome["detail"] = str(result["detail"])[:200]
+        # Give the slot back: a failed publish must not consume the cooldown window.
+        try:
+            store.put_alert_marker(marker_rollback(zone_id, marker))
+            outcome["slot_released"] = True
+        except Exception:  # noqa: BLE001 - the failure is already reported; never raise here
+            LOGGER.exception("alert slot rollback failed for zone %s", zone_id)
+            outcome["slot_released"] = False
+    LOGGER.info(
+        "alert_publish zone_id=%s severity=%s kind=%s published=%s reason=%s",
+        zone_id,
+        alert_severity,
+        kind,
+        outcome["published"],
+        outcome.get("reason") or "ok",
+    )
     return outcome
 
 
@@ -418,11 +520,12 @@ class IngestResult:
     """Everything one accepted reading produced (shared by both ingestion paths)."""
 
     latest: dict[str, Any]
-    history: dict[str, Any]
+    history: dict[str, Any] | None
     incident: dict[str, Any]
     alert: dict[str, Any]
     risk: dict[str, Any]
     hysteresis: dict[str, Any]
+    outcome: WriteOutcome
 
 
 def _ingest_record(
@@ -437,6 +540,12 @@ def _ingest_record(
     Shared by ``POST /readings`` (simulated client payloads) and the M4 live-weather
     ingestion, so a real-weather reading travels exactly the same pipeline as a
     simulated one: same scoring, same hysteresis, same incidents, same SNS alerts.
+
+    Incident tracking runs only for a reading that *became* the zone's current state. A
+    replay (the same observation already stored) or a late arrival older than what is
+    already current is still accepted and still kept as history, but it must not re-open a
+    closed incident, re-alert subscribers, or move current state backwards — the reading it
+    duplicates, or the newer one that beat it, has already been judged.
     """
     zone_id = str(reading["zone_id"])
     previous = store.recent_readings(zone_id, SMOOTHING_WINDOW - 1)
@@ -456,7 +565,38 @@ def _ingest_record(
     previous_state = (previous_latest or {}).get("hysteresis")
     hysteresis = apply_hysteresis(risk["risk_class_candidate"], previous_state)
 
-    latest, history = store.put_reading(reading, risk, hysteresis, smoothed)
+    latest, history, outcome = store.put_reading(reading, risk, hysteresis, smoothed)
+
+    if outcome.outcome != READING_STORED:
+        if outcome.outcome == READING_DUPLICATE:
+            reason = "this reading is already stored; current state and incidents unchanged"
+            alert_reason = "duplicate_reading"
+        else:
+            reason = str(outcome.reason or "older than the zone's current reading") + \
+                "; current state and incidents unchanged"
+            alert_reason = "stale_reading"
+        LOGGER.info(
+            "ingest_%s zone_id=%s ts_epoch=%s stored_ts_epoch=%s history_written=%s",
+            outcome.outcome,
+            zone_id,
+            outcome.incoming_ts_epoch,
+            outcome.stored_ts_epoch,
+            outcome.history_written,
+        )
+        return IngestResult(
+            latest=latest,
+            history=history,
+            incident=_no_incident_summary(reason),
+            alert={
+                "evaluated": False,
+                "published": False,
+                "severity": None,
+                "reason": alert_reason,
+            },
+            risk=risk,
+            hysteresis=hysteresis,
+            outcome=outcome,
+        )
 
     # Incident tracking must never cost us an accepted reading: a failure here is
     # reported in the response and in the logs, but the reading stays stored.
@@ -490,6 +630,7 @@ def _ingest_record(
         alert=alert_summary,
         risk=risk,
         hysteresis=hysteresis,
+        outcome=outcome,
     )
 
 
@@ -500,20 +641,30 @@ def _handle_reading(
     notifier: Any = None,
     cooldown_seconds: int = 0,
     zone_ids: Iterable[str] | None = None,
+    content_type: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
+    rejection = _reject_content_type(content_type)
+    if rejection is not None:
+        LOGGER.warning("ingest_rejected reason=content_type content_type=%s", _brief(content_type))
+        return rejection
+
     try:
         validate_body_size(body)
     except ValidationError as exc:
+        LOGGER.warning("ingest_rejected reason=body_size field=%s detail=%s", exc.field, exc.reason)
         return 400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason}
 
     try:
         payload = json.loads(body)  # type: ignore[arg-type]
     except (json.JSONDecodeError, ValueError) as exc:
+        LOGGER.warning("ingest_rejected reason=malformed_json detail=%s", _brief(str(exc)))
         return 400, {"error": "malformed_json", "field": "body", "detail": str(exc)}
 
     try:
         reading = validate_reading(payload, now_epoch, zone_ids if zone_ids is not None else ZONE_IDS)
     except ValidationError as exc:
+        # The reason names a field and a rule, never any part of the submitted payload.
+        LOGGER.warning("ingest_rejected reason=invalid_payload field=%s detail=%s", exc.field, exc.reason)
         return 400, {"error": "invalid_payload", "field": exc.field, "detail": exc.reason}
 
     zone_id = str(reading["zone_id"])
@@ -523,6 +674,7 @@ def _handle_reading(
     alert_summary = result.alert
     risk = result.risk
     hysteresis = result.hysteresis
+    outcome = result.outcome
 
     return 202, {
         "status": "accepted",
@@ -533,7 +685,7 @@ def _handle_reading(
         "timestamp": reading["timestamp"],
         "ts_epoch": reading["ts_epoch"],
         "ttl": reading["ttl"],
-        "sequence": latest["sequence"],
+        "sequence": latest.get("sequence"),
         "risk": {
             "model": risk["model"],
             "risk_score": risk["risk_score"],
@@ -547,9 +699,12 @@ def _handle_reading(
         "hysteresis": hysteresis,
         "incident": incident_summary,
         "alert": alert_summary,
+        # Exactly what this request did to stored state: a client can tell "stored" from
+        # "already stored" from "older than current" without guessing.
+        "dedupe": outcome.as_view(),
         "stored": {
-            "latest_sk": latest["sk"],
-            "history_sk": result.history["sk"],
+            "latest_sk": latest.get("sk") if outcome.latest_updated else None,
+            "history_sk": outcome.history_sk,
             "history_records": store.history_count(zone_id),
         },
         "model_note": MODEL_NOTE,
@@ -1122,6 +1277,11 @@ def dispatch(
             return 405, {"error": "method_not_allowed", "allowed": ["POST"], "path": route}
         denial = check_ingest(headers)
         if denial is not None:
+            # One line per rejected attempt: this is the only trace of a brute-force or
+            # misconfigured client, and it never contains the header value itself.
+            LOGGER.warning(
+                "ingest_rejected reason=%s status=%s", denial[1].get("error"), denial[0]
+            )
             return denial
         return _handle_reading(
             body,
@@ -1130,6 +1290,7 @@ def dispatch(
             notifier if notifier is not None else get_notifier(),
             alert_cooldown_seconds() if cooldown_seconds is None else int(cooldown_seconds),
             zone_ids=active_zone_ids,
+            content_type=_header_value(headers, "content-type"),
         )
 
     if route == "/zones":

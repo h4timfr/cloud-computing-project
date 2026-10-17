@@ -102,9 +102,12 @@ class LocalStoreTests(unittest.TestCase):
         self.assertEqual(self.store.item_count(), 0)
 
     def test_put_writes_latest_and_history(self) -> None:
-        latest, history = self.store.put_reading(self.reading, RISK, HYSTERESIS, SMOOTHED)
+        latest, history, outcome = self.store.put_reading(self.reading, RISK, HYSTERESIS, SMOOTHED)
         self.assertEqual(latest["sequence"], 1)
         self.assertEqual(history["sk"], "H#2026-02-14T10:15:30Z")
+        self.assertEqual(outcome.outcome, "stored")
+        self.assertTrue(outcome.latest_updated)
+        self.assertTrue(outcome.history_written)
         self.assertEqual(self.store.item_count(), 2)
         self.assertEqual(self.store.history_count("zone-riverside-north"), 1)
         self.assertEqual(self.store.get_latest("zone-riverside-north")["sequence"], 1)

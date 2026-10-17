@@ -39,7 +39,7 @@ from .config import (
     RISK_ORDER,
     zone_definition,
 )
-from .storage import build_zone_pk, sort_incident_items
+from .storage import alert_cooldown_remaining, build_zone_pk, sort_incident_items
 
 ACTION_OPENED = "opened"
 ACTION_ESCALATED = "escalated"
@@ -225,19 +225,34 @@ def cooldown_remaining_seconds(
     now_epoch: float,
     cooldown_seconds: int,
 ) -> int:
-    """Seconds still to wait before ``severity`` may alert again for this zone."""
-    if not marker or cooldown_seconds <= 0:
-        return 0
-    per_severity = marker.get("last_alert_by_severity") or {}
-    entry = per_severity.get(severity) if isinstance(per_severity, Mapping) else None
-    if not entry:
-        return 0
-    try:
-        last = int(entry.get("ts_epoch"))
-    except (TypeError, ValueError):
-        return 0
-    remaining = int(cooldown_seconds) - (int(now_epoch) - last)
-    return max(0, remaining)
+    """Seconds still to wait before ``severity`` may alert again for this zone.
+
+    Delegates to the single predicate in :mod:`floodpulse.storage` that the stores use to
+    claim an alert slot, so the number reported to a client and the number the conditional
+    write enforces can never disagree.
+    """
+    return alert_cooldown_remaining(marker, severity, now_epoch, cooldown_seconds)
+
+
+def marker_rollback(zone_id: str, previous: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The cooldown marker to restore when a claimed alert could not be published.
+
+    A claim is written *before* the publish so that concurrent escalations cannot both
+    alert. If the publish then fails, restoring the previous marker is what stops the
+    claim from muting the next attempt for a whole cooldown window. The item is written
+    rather than deleted because the deployed role deliberately has no DynamoDB delete
+    permission, and "no entry for this severity" is exactly what a rollback to a missing
+    marker means to :func:`cooldown_remaining_seconds`.
+    """
+    if previous:
+        return dict(previous)
+    return {
+        "pk": build_zone_pk(zone_id),
+        "sk": ALERT_MARKER_SORT_KEY,
+        "record_type": "ALERT_MARKER",
+        "zone_id": zone_id,
+        "last_alert_by_severity": {},
+    }
 
 
 def build_alert_marker(

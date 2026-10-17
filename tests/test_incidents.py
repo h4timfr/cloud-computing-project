@@ -421,8 +421,16 @@ class AlertingTest(unittest.TestCase):
         self.assertFalse(incident["alerts"][0]["published"])
         self.assertEqual(incident["alerts"][0]["reason"], "publish_failed")
         self.assertFalse(produced[-1]["alert"]["published"])
-        # a failed publish must not advance the cooldown marker
-        self.assertIsNone(self.store.get_alert_marker(ZONE))
+        # A failed publish must not consume the cooldown slot. The alert slot is *claimed*
+        # before the publish (that is what stops two concurrent escalations both alerting),
+        # so the marker may exist — but it must record no alert for this severity, which is
+        # what lets the next attempt through immediately. DynamoDB has no delete permission
+        # here, so "no alert recorded" is expressed as an empty per-severity map.
+        marker = self.store.get_alert_marker(ZONE)
+        recorded = (marker or {}).get("last_alert_by_severity") or {}
+        self.assertNotIn("WARNING", recorded)
+        self.assertEqual(cooldown_remaining_seconds(marker, "WARNING", produced[-1]["ts_epoch"], 600), 0)
+        self.assertTrue(produced[-1]["alert"]["slot_released"])
 
     def test_exploding_notifier_does_not_break_ingestion(self) -> None:
         set_notifier(ExplodingNotifier())

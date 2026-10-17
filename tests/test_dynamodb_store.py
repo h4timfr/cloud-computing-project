@@ -2,7 +2,7 @@
 
 No AWS calls and no boto3: ``FakeTable`` mimics the three boto3 ``Table`` methods the
 store uses (``put_item``/``get_item``/``query``) and, importantly, round-trips every
-number through ``Decimal`` exactly as DynamoDB does — that is what makes the
+number through ``Decimal`` exactly as DynamoDB does â€” that is what makes the
 ``plain()`` normalisation (and therefore JSON serialisation) a real test.
 """
 
@@ -85,18 +85,72 @@ def assert_no_floats(case: unittest.TestCase, value, path="item"):
 
 
 class FakeTable:
-    """Minimal stand-in for ``boto3.resource("dynamodb").Table(name)``."""
+    """Minimal stand-in for ``boto3.resource("dynamodb").Table(name)``.
+
+    ``ConditionExpression`` is evaluated for the exact shapes the store uses, and anything
+    else raises: a fake that silently ignores an unknown condition would let a broken
+    guard pass its own test.
+    """
+
+    #: Conditions this fake can evaluate. Keeping it an explicit list (rather than a real
+    #: expression parser) is what keeps the fake honest: an unrecognised condition fails.
+    KNOWN_CONDITIONS = (
+        "attribute_not_exists(pk)",
+        "attribute_not_exists(sk) OR ts_epoch <= :ts",
+        "attribute_not_exists(pk) OR attribute_not_exists(last_alert_by_severity.#sev)"
+        " OR last_alert_by_severity.#sev.#ts <= :cutoff",
+    )
 
     def __init__(self) -> None:
         self.items: dict[tuple[str, str], dict] = {}
         self.calls: list[str] = []
 
-    def put_item(self, Item, ConditionExpression=None):
+    def _condition_holds(
+        self,
+        key: tuple[str, str],
+        condition: str,
+        Item: dict,
+        values: dict | None,
+        names: dict | None,
+    ) -> bool:
+        existing = self.items.get(key)
+        values = values or {}
+        names = names or {}
+        if condition == "attribute_not_exists(pk)":
+            return existing is None
+        if condition == "attribute_not_exists(sk) OR ts_epoch <= :ts":
+            if existing is None:
+                return True
+            stored = existing.get("ts_epoch")
+            return stored is not None and Decimal(str(stored)) <= Decimal(str(values[":ts"]))
+        if condition.startswith("attribute_not_exists(pk) OR attribute_not_exists(last_alert_by_severity."):
+            if existing is None:
+                return True
+            severity = names["#sev"]
+            per_severity = existing.get("last_alert_by_severity") or {}
+            entry = per_severity.get(severity) if isinstance(per_severity, dict) else None
+            if not isinstance(entry, dict) or entry.get("ts_epoch") is None:
+                return True
+            return Decimal(str(entry["ts_epoch"])) <= Decimal(str(values[":cutoff"]))
+        raise AssertionError(f"FakeTable cannot evaluate condition: {condition!r}")
+
+    def put_item(
+        self,
+        Item,
+        ConditionExpression=None,
+        ExpressionAttributeValues=None,
+        ExpressionAttributeNames=None,
+    ):
         self.calls.append("put_item")
         reject_floats(Item)  # same restriction as boto3's serializer
         key = (Item["pk"], Item["sk"])
-        if ConditionExpression == "attribute_not_exists(pk)" and key in self.items:
-            raise ConditionalCheckFailedException("The conditional request failed")
+        if ConditionExpression is not None:
+            if ConditionExpression not in self.KNOWN_CONDITIONS:
+                raise AssertionError(f"FakeTable cannot evaluate condition: {ConditionExpression!r}")
+            if not self._condition_holds(
+                key, ConditionExpression, Item, ExpressionAttributeValues, ExpressionAttributeNames
+            ):
+                raise ConditionalCheckFailedException("The conditional request failed")
         self.items[key] = to_dynamo(deepcopy(Item))
         return {}
 
@@ -166,6 +220,12 @@ def scored(reading: dict, previous: dict | None = None) -> tuple[dict, dict, dic
 def put(store, reading: dict, previous: dict | None = None):
     risk, hysteresis, smoothed = scored(reading, previous)
     return store.put_reading(reading, risk, hysteresis, smoothed)
+
+
+def stored(store, reading: dict, previous: dict | None = None):
+    """``put`` for tests that only care what was stored, not how it was reported."""
+    latest, history, _outcome = put(store, reading, previous)
+    return latest, history
 
 
 class PureHelperTests(unittest.TestCase):
@@ -272,7 +332,7 @@ class DynamoDbStoreTests(unittest.TestCase):
         self.store = DynamoDbStore("floodpulse", table=self.table)
 
     def test_put_reading_writes_latest_and_history(self) -> None:
-        latest, history = put(self.store, make_reading())
+        latest, history = stored(self.store, make_reading())
         self.assertEqual(latest["sk"], LATEST_SORT_KEY)
         self.assertEqual(latest["sequence"], 1)
         self.assertEqual(history["sk"], "H#2026-02-14T10:15:00Z")
@@ -281,13 +341,13 @@ class DynamoDbStoreTests(unittest.TestCase):
 
     def test_sequence_increments_from_the_stored_latest(self) -> None:
         put(self.store, make_reading(ts_epoch=BASE_EPOCH))
-        _latest, _history = put(self.store, make_reading(ts_epoch=BASE_EPOCH + 5))
-        latest, _history = put(self.store, make_reading(ts_epoch=BASE_EPOCH + 10))
+        stored(self.store, make_reading(ts_epoch=BASE_EPOCH + 5))
+        latest, _history = stored(self.store, make_reading(ts_epoch=BASE_EPOCH + 10))
         self.assertEqual(latest["sequence"], 3)
 
     def test_duplicate_timestamp_gets_a_suffixed_sort_key(self) -> None:
-        _latest, first = put(self.store, make_reading(ts_epoch=BASE_EPOCH))
-        _latest, second = put(self.store, make_reading(ts_epoch=BASE_EPOCH, rain=9.0))
+        _latest, first = stored(self.store, make_reading(ts_epoch=BASE_EPOCH))
+        _latest, second = stored(self.store, make_reading(ts_epoch=BASE_EPOCH, rain=9.0))
         self.assertEqual(first["sk"], "H#2026-02-14T10:15:00Z")
         self.assertEqual(second["sk"], "H#2026-02-14T10:15:00Z#2")
         self.assertEqual(self.store.history_count(ZONE), 2)
@@ -519,8 +579,8 @@ class LocalVsDynamoEquivalenceTests(unittest.TestCase):
         local_state = None
         remote_state = None
         for reading in readings:
-            local_latest, local_history = put(self.local, reading, local_state)
-            remote_latest, remote_history = put(self.remote, reading, remote_state)
+            local_latest, local_history = stored(self.local, reading, local_state)
+            remote_latest, remote_history = stored(self.remote, reading, remote_state)
             local_state = local_latest["hysteresis"]
             remote_state = remote_latest["hysteresis"]
             with self.subTest(ts=reading["ts_epoch"]):
