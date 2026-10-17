@@ -203,7 +203,7 @@ function Write-JsonFile {
     #>
     param([string]$Path, [string]$Content)
     if ($DryRun) {
-        Write-DryRun "would write $Path (JSON content not displayed: the environment document can hold the ingestion secret)"
+        Write-DryRun "would write $Path (content not displayed: one of these files is the environment document, which carries the ingestion secret)"
         return
     }
     [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
