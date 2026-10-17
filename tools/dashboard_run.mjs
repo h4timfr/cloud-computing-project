@@ -1160,6 +1160,24 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       `the About fleet sentence reads "${bare.dom.html('about-cities')}"`);
   });
 
+  check('no view prints a raw value from a complete payload', () => {
+    // The M9 renderers interpolate a lot of API fields into sentences. This walks every section
+    // with the real payload and fails on the words that mean a field was read and missed.
+    const surfaces = ['ov-headline', 'ov-intro', 'ov-subline', 'ov-stats', 'hero', 'band-strip',
+      'city-cards', 'recent-activity', 'alerts-active', 'alerts-closed', 'alerts-summary',
+      'alerts-status', 'alerts-delivery', 'health-list', 'health-detail', 'about-cities',
+      'about-limitations', 'provenance-legend', 'ranking'];
+    let inspected = 0;
+    surfaces.forEach((id) => {
+      const html = dom.html(id);
+      if (!html) return;  // a section that this fleet does not fill is covered by its own check
+      inspected += 1;
+      assert.ok(!/\bundefined\b|\bNaN\b|\[object |null(null)?%/.test(html),
+        `${id} printed a raw value: ${html.slice(0, 200)}`);
+    });
+    assert.ok(inspected >= 10, `only ${inspected} surfaces had anything in them`);
+  });
+
   console.log(`\n${passed} runtime checks passed, ${failures.length} failed`);
   if (failures.length) {
     for (const failure of failures) console.log(`  - ${failure.name}: ${failure.message}`);

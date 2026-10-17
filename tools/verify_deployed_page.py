@@ -30,6 +30,14 @@ EXPECTED = {
     "referrer policy": '<meta name="referrer" content="strict-origin-when-cross-origin">',
     "the API base is page data, not a script": 'data-api="https://',
     "external links cannot reach back through window.opener": 'rel="noopener noreferrer"',
+    # M9: the fifth section, the status surface and the guidance the About page carries
+    "the About section is deployed": 'id="view-about"',
+    "the status surface is a disclosure": 'class="health-summary"',
+    "the status is announced as a state, not a number": 'id="health-word"',
+    "the flood safety guidance is deployed": "Flood safety guidance",
+    "the guidance defers to the authorities": "does <b>not</b> issue official warnings",
+    "the meteorological department is linked": "mausam.imd.gov.in",
+    "the disaster management authority is linked": "ndma.gov.in",
 }
 
 FORBIDDEN = {
@@ -46,6 +54,10 @@ FORBIDDEN = {
     # script executed from the markup would defeat the policy above
     "an inline script": "<script>",
     "a javascript: URL": "javascript:",
+    # M9: the page never claims a delivery it cannot know about, and never loads an icon from a CDN
+    "a claim that an email was sent": "email sent",
+    "an icon loaded from a CDN": "cdn.",
+    "an icon font": "material-icons",
 }
 
 html = urllib.request.urlopen(SITE + "/index.html", timeout=20).read().decode("utf-8")
@@ -66,16 +78,37 @@ NEEDLES = {
         "a silent zone is identified": "staleZoneIds",
         "a silent zone is marked on an incident": "zone not reporting",
         "the incident rows carry table roles": 'role="row"',
+        # M9: the parts a reader meets on every page
+        "the icon set is deployed": "ICON_PATHS",
+        "an icon is inline SVG hidden from assistive tech": 'aria-hidden="true" focusable="false"',
+        "a placeholder is built, not written by hand": "function cityCardsSkeleton",
+        "a placeholder does not pretend to be a card": "skel-card",
+        "every empty state comes from one builder": "function emptyState",
+        "the delivery panel states what the API does not expose": "Not reported to this page",
+        "the publishing wording is the honest one": "published to the notification topic",
+        "the status counts reporting cities in words": "reporting'",
     },
     "app.js": {
         "the chart answers the arrow keys": "handleHistoryKey",
         "the chart's label names the point": "historyAriaLabel",
         "a missing API base is reported": "no API base configured",
         "incidents know which zones are silent": "staleZoneIds",
+        # M9: the router knows five sections, the retry is a retry, the chart has text
+        "the router knows the About section": "renderAbout",
+        "the system status is rendered from the payload": "renderSystemHealth",
+        "the retry re-requests instead of reloading": 'data-action="retry"',
+        "the empty fleet is a named state": "key: 'no-cities'",
+        "the chart has a text equivalent on the page": "history-summary",
     },
     "styles.css": {
         "change note": "change-note",
         "the scrollable table has a focus ring": ".table-scroll:focus-visible",
+        # M9: the layout rules that keep a phone from scrolling sideways
+        "the phone breakpoint is deployed": "@media (max-width: 400px)",
+        "payload text is told how to wrap": "overflow-wrap: anywhere",
+        "the skeleton is styled": "skel-sweep",
+        "a placeholder has its own shape": ".skel-card",
+        "the touch target rule is deployed": "min-height: 44px",
     },
 }
 for asset, wanted in NEEDLES.items():
