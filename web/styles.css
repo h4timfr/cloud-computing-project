@@ -882,9 +882,11 @@ main {
 /* ------------------------------------------------------------ stale states --- */
 
 /* Body-level connection states. The shell itself reports the data age, so a viewer who
-   scrolls past the badge still sees that something is wrong (or that nothing is wrong). */
-body.is-connecting .band-strip,
-body.is-connecting .ranking { animation: loading-pulse 1.8s ease-in-out infinite; }
+   scrolls past the badge still sees that something is wrong (or that nothing is wrong).
+   The pulse means "still loading", so it stops as soon as a poll has failed: a page waiting
+   on an API that answered with an error must not look like it is still fetching. */
+body.is-connecting:not(.is-waiting-failed) .band-strip,
+body.is-connecting:not(.is-waiting-failed) .ranking { animation: loading-pulse 1.8s ease-in-out infinite; }
 body.is-connecting .band-tile .band-count { color: var(--slate-400); }
 body.is-connecting .hero, body.is-connecting .side-panel, body.is-connecting .zone-card { border-color: var(--stroke); }
 

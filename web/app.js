@@ -12,6 +12,17 @@
   var params = new URLSearchParams(window.location.search);
   var API_BASE = (params.get('api') || window.FLOODPULSE_API_BASE || '').replace(/\/+$/, '');
 
+  /* An API base may be overridden with ?api=<origin> for testing, which means it can also be
+   * arbitrary text from a link. It is only ever used as a fetch origin and as a display link,
+   * so anything that is not plainly an http(s) origin is ignored rather than followed: a
+   * javascript:/data: value would otherwise end up in an href, and a relative value would
+   * silently fetch from the dashboard host. */
+  function isHttpOrigin(value) {
+    return typeof value === 'string' && /^https?:\/\/[^\s"'<>]+$/i.test(value);
+  }
+
+  API_BASE = isHttpOrigin(API_BASE) ? API_BASE : '';
+
   var POLL_MS = 5000;
   var HISTORY_REFRESH_MS = 30000;
   var HISTORY_RETRY_MS = 45000;
@@ -71,7 +82,14 @@
     // when the current payload arrived, and how much local time has passed since: the feed
     // ages reported by the API are interpolated forward so the freshness line keeps moving
     payloadReceivedMs: null,
-    lastErrorMessage: null,
+    // Monotonic request stamps: a response that is no longer the newest one for its route is
+    // dropped instead of being written over newer state (a slow reply must not win a race
+    // against the poll it belongs to).
+    zonesSeq: 0,
+    zonesAppliedSeq: 0,
+    incidentsSeq: 0,
+    incidentsAppliedSeq: 0,
+    historySeq: 0,
     // which view the URL asks for, and what each view currently shows (so a poll that
     // changed nothing does not rewrite the DOM). The route starts empty so the first
     // applyRoute() always installs the view the URL asked for.
@@ -102,7 +120,7 @@
   }
 
   function cacheDom() {
-    [
+    var ids = [
       'conn-badge', 'conn-detail', 'conn-announce', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
       'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
       'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
@@ -118,16 +136,38 @@
       'nav-toggle', 'nav-list', 'nav-overview', 'nav-cities', 'nav-alerts', 'nav-data',
       'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data',
       'ov-headline', 'ov-subline', 'ov-intro', 'ov-stats', 'band-strip-title',
-    'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
+      'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
       'alerts-lede', 'alerts-summary', 'alerts-active', 'alerts-closed',
       'provenance-legend', 'attribution-block', 'attribution-detail', 'summary-weather-provider',
       'method-block', 'why-simulated', 'limitations', 'summary-model-data'
-    ].forEach(function (id) { el[id] = $(id); });
+    ];
+    ids.forEach(function (id) { el[id] = $(id); });
+    // A page and a controller from different revisions (a half-finished deploy, a hand-edited
+    // index.html) must not fail as a TypeError in the middle of start(): the missing ids are
+    // reported once, together, and the parts that can still work keep working.
+    var missing = ids.filter(function (id) { return !el[id]; });
+    if (missing.length) {
+      state.domMismatch = missing;
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('FloodPulse: ' + missing.length + ' element(s) referenced by app.js are not in this page: ' + missing.join(', '));
+      }
+    }
+  }
+
+  /* Wire an event only when its element exists; a missing node is a page/controller
+   * revision mismatch, not a reason to abort every other listener. */
+  function bindTo(id, event, handler, options) {
+    var node = el[id];
+    if (!node || typeof node.addEventListener !== 'function') return;
+    node.addEventListener(event, handler, options);
   }
 
   /* ------------------------------------------------------------------ fetch --- */
 
   function getJson(path) {
+    // AbortController is only used to *cancel* a request that the caller has already given up
+    // on; it is not what makes the dashboard recover. Every caller runs its own watchdog and
+    // a request-sequence guard, so recovery works in a browser without AbortController too.
     var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var timer = controller ? setTimeout(function () { controller.abort(); }, FETCH_TIMEOUT_MS) : null;
     var url = API_BASE + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'cachebust=' + Date.now();
@@ -150,22 +190,53 @@
     });
   }
 
+  /* A request the page has stopped waiting for. Returns the sequence number of the request
+   * now considered current, so a late answer can be recognised and dropped. */
+  function markedStale(seq, appliedSeq) {
+    return seq !== null && appliedSeq >= seq;
+  }
+
   /* ------------------------------------------------------------------- poll --- */
 
   function poll() {
     if (state.inFlight) return;
     state.inFlight = true;
+    var seq = ++state.zonesSeq;
+    // Watchdog: if this request never answers, stop counting it as in flight so the next poll
+    // can run. The answer, if it ever arrives, is discarded by the sequence checks below.
+    var giveUp = setTimeout(function () {
+      if (state.zonesAppliedSeq >= seq) return;
+      state.inFlight = false;
+      state.lastError = true;
+      state.lastErrorMessage = 'no answer within ' + Math.round(FETCH_TIMEOUT_MS / 1000) + ' s';
+      refreshConnection();
+    }, FETCH_TIMEOUT_MS);
     getJson('/zones').then(function (payload) {
+      clearTimeout(giveUp);
+      if (markedStale(seq, state.zonesAppliedSeq)) return; // an older reply: drop it
+      state.zonesAppliedSeq = seq;
       state.inFlight = false;
       state.lastError = false;
       state.lastErrorMessage = null;
       state.lastSuccessMs = Date.now();
       state.payloadReceivedMs = Date.now();
       state.payload = payload;
-      applyPayload(payload);
+      // The request succeeded, so the status line must say so whatever the payload contains.
+      // A malformed entry that defeats one renderer is logged and the rest of the board keeps
+      // its values: a payload must not be able to freeze the page on "CONNECTING" forever.
+      try {
+        applyPayload(payload);
+      } catch (error) {
+        if (typeof console !== 'undefined' && console.error) {
+          console.error('FloodPulse: the payload could not be fully rendered: ' + (error && error.message));
+        }
+        refreshConnection();
+      }
       // Incidents have their own 10 s interval. Polling them from here as well meant two
       // /incidents requests fired together every time the 5 s poll crossed a 10 s boundary.
     }).catch(function (error) {
+      clearTimeout(giveUp);
+      if (state.zonesAppliedSeq >= seq) return;
       state.inFlight = false;
       state.lastError = true;
       state.lastErrorMessage = error.message;
@@ -192,8 +263,19 @@
     // information architecture and stay fixed; only sentences about the data follow the data
   }
 
+  /* A payload element that is not an object (null, a string, a number) is not a zone and not an
+   * incident. It is dropped where the list enters state, so every consumer below - the card
+   * grid, the ranking, the change note, the session series, the alert view - can rely on
+   * objects and one malformed element cannot stop the board updating. The API's own counts are
+   * left untouched: they say what the fleet holds, not what this page could render. */
+  function usableEntries(list) {
+    return (Array.isArray(list) ? list : []).filter(function (entry) {
+      return entry && typeof entry === 'object';
+    });
+  }
+
   function applyPayload(payload) {
-    state.zones = payload.zones || [];
+    state.zones = usableEntries(payload.zones);
 
     if (!state.userSelected || !findZone(state.selectedZone)) {
       state.selectedZone = payload.highest_risk_zone ? payload.highest_risk_zone.zone_id
@@ -305,8 +387,13 @@
     renderFreshness(payload);
     renderDataNotice(payload);
     if (el['api-base']) {
-      setText('api-base', API_BASE);
-      el['api-base'].setAttribute('href', API_BASE + '/zones');
+      setText('api-base', API_BASE || 'not configured');
+      if (API_BASE) {
+        el['api-base'].setAttribute('href', API_BASE + '/zones');
+      } else {
+        el['api-base'].removeAttribute('href');
+        el['api-base'].title = 'the dashboard has no valid API origin to point at';
+      }
     }
   }
 
@@ -352,7 +439,10 @@
   }
 
   function fleetSubtitle(payload, feed) {
-    var zones = (payload && payload.zones) || [];
+    // An element that is not an object is not a zone, so it has no name to list. The subtitle
+    // used to throw here on a malformed payload, which - because this runs before the rest of
+    // the render - left the whole board frozen on its loading placeholders.
+    var zones = usableEntries(payload && payload.zones);
     var names = zones.slice(0, 5).map(function (zone) { return zone.name; });
     var suffix = zones.length > names.length ? ' +' + (zones.length - names.length) : '';
     if (feed.live) {
@@ -372,10 +462,13 @@
     // transition; the one-second ticker otherwise rewrote the same classes forever.
     if (state.connectionKey !== info.state) {
       state.connectionKey = info.state;
-      el['conn-badge'].className = 'conn-badge conn-' + info.state;
+      if (el['conn-badge']) el['conn-badge'].className = 'conn-badge conn-' + info.state;
       document.body.classList.remove('is-live', 'is-stale', 'is-disconnected', 'is-connecting');
       document.body.classList.add('is-' + info.state);
     }
+    // A first poll that already failed is still CONNECTING, but it must not pulse as if it
+    // were loading: the CSS pulse is scoped to is-connecting without is-waiting-failed.
+    document.body.classList.toggle('is-waiting-failed', info.state === 'connecting' && !!state.lastError);
     setText('conn-badge', info.label);
     setText('conn-detail', info.detail);
     // The visible status line ticks with the clock, so it is not a live region. The off-screen
@@ -405,7 +498,8 @@
       // live mode nothing is started by hand, the fleet waits for the provider.
       var hint = feed.live
         ? 'No city reading has been computed yet. The live fleet fetches rainfall and soil ' +
-          'moisture from ' + (feed.provider || 'the weather provider') + (feed.refreshMinutes ? ' every ' + feed.refreshMinutes + ' minutes' : '') +
+          'moisture from ' + FP.escapeHtml(feed.provider || 'the weather provider') +
+          (feed.refreshMinutes ? ' every ' + FP.escapeHtml(feed.refreshMinutes) + ' minutes' : '') +
           ' and this panel fills in as soon as the first refresh is ingested.'
         : 'No simulated reading has been ingested yet. Start the simulator ' +
           '(<code>python tools\\live_simulator.py</code>) and this panel populates automatically.';
@@ -451,14 +545,27 @@
     return zones.map(function (zone) { return zone.zone_id; }).join('|');
   }
 
+  /* Zone ids go into an attribute selector, so they are escaped as CSS: a quote or a bracket
+   * in one (a malformed payload, a hand-edited fixture) would otherwise throw a SyntaxError
+   * inside the render pass and stop the board updating. */
+  function zoneSelector(zoneId) {
+    var value = String(zoneId === null || zoneId === undefined ? '' : zoneId);
+    var escaped = (typeof window !== 'undefined' && window.CSS && window.CSS.escape)
+      ? window.CSS.escape(value)
+      : value.replace(/["\\]/g, '\\$&');
+    return '[data-zone="' + escaped + '"]';
+  }
+
   function renderCards(zones) {
     var grid = el.zones;
+    if (!grid) return;
     if (grid.getAttribute('data-signature') !== zoneSignature(zones)) {
       grid.innerHTML = zones.map(FP.renderZoneCard).join('');
       grid.setAttribute('data-signature', zoneSignature(zones));
     }
     zones.forEach(function (zone) {
-      var card = grid.querySelector('[data-zone="' + zone.zone_id + '"]');
+      if (!zone || typeof zone !== 'object') return;
+      var card = grid.querySelector(zoneSelector(zone.zone_id));
       if (card) patchCard(card, zone);
     });
   }
@@ -533,13 +640,16 @@
       setBandClass(ring, band);
     }
 
+    // A stored reading without a readings map is already reported as "no data" by the API,
+    // but a malformed payload must not throw here: the card is patched with dashes instead.
+    var readings = (latest && latest.readings) || {};
     FP.METRIC_ORDER.forEach(function (metric) {
       var row = card.querySelector('[data-metric="' + metric + '"]');
       if (!row) return;
       var valueNode = row.querySelector('[data-f="metric-value"]');
       var fillNode = row.querySelector('[data-f="metric-fill"]');
-      var scale = FP.metricScale(metric, latest.readings[metric], zone.thresholds || {});
-      if (valueNode) valueNode.textContent = FP.formatValueWithUnit(metric, latest.readings[metric]);
+      var scale = FP.metricScale(metric, readings[metric], zone.thresholds || {});
+      if (valueNode) valueNode.textContent = FP.formatValueWithUnit(metric, readings[metric]);
       if (fillNode) {
         fillNode.style.setProperty('--pct', (scale.valuePct === null ? 0 : scale.valuePct).toFixed(1));
         fillNode.setAttribute('data-state', scale.state);
@@ -637,16 +747,33 @@
     if (state.historyFailedMs !== null && Date.now() - state.historyFailedMs < HISTORY_RETRY_MS) return;
     var zone = state.selectedZone;
     var minutes = state.historyMinutes;
+    var seq = ++state.historySeq;
     state.historyInFlight = true;
     // Say we are fetching before the request goes out: the panel used to keep the previous
     // window's line ("18 points · 1440 min") while showing a chart of a different range.
     state.history = null;
     state.historyError = null;
     state.hoverIndex = null;
-    el['history-meta'].textContent = 'loading the last ' + minutes + ' min…';
+    if (el['history-meta']) el['history-meta'].textContent = 'loading the last ' + minutes + ' min…';
     drawHistory();
+    var giveUp = setTimeout(function () {
+      if (seq !== state.historySeq) return;
+      // The request never answered: release the single-flight flag so the backoff can retry,
+      // instead of leaving the panel loading forever.
+      state.historyInFlight = false;
+      state.historyFailedMs = Date.now();
+      state.historyError = 'no answer';
+      state.history = null;
+      drawHistory();
+      if (el['history-meta']) {
+        el['history-meta'].textContent = 'history timed out — retrying in ' +
+          Math.round(HISTORY_RETRY_MS / 1000) + ' s';
+      }
+    }, FETCH_TIMEOUT_MS);
     getJson('/zones/' + encodeURIComponent(zone) + '/history?minutes=' + minutes)
       .then(function (data) {
+        clearTimeout(giveUp);
+        if (seq !== state.historySeq) return; // a newer request owns the panel now
         state.historyInFlight = false;
         state.historyFailedMs = null;
         state.historyError = null;
@@ -661,6 +788,8 @@
           ' · model ' + data.model;
       })
       .catch(function (error) {
+        clearTimeout(giveUp);
+        if (seq !== state.historySeq) return;
         state.historyInFlight = false;
         state.historyFailedMs = Date.now();
         state.historyError = error.message;
@@ -912,8 +1041,6 @@
     showPoint(index);
   }
 
-    var data = state.history;
-
   /* ===================================================== views and navigation === */
 
   /* The site is one document with five views. The URL hash is the only source of
@@ -987,11 +1114,15 @@
 
   /* ------------------------------------------------------------------ overview --- */
 
-  function statCard(label, value, meta, tone) {
+  /* ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an inline
+   * <code>). Every caller must therefore pass markup it built itself or escaped - never a
+   * payload string. Anything from the API goes through ``label`` or ``value``, which are
+   * escaped here. */
+  function statCard(label, value, metaHtml, tone) {
     return '<article class="stat' + (tone ? ' band-' + tone : '') + '">' +
       '<p class="stat-label">' + FP.escapeHtml(label) + '</p>' +
       '<p class="stat-value">' + FP.escapeHtml(value) + '</p>' +
-      '<p class="stat-meta">' + meta + '</p>' +
+      '<p class="stat-meta">' + metaHtml + '</p>' +
       '</article>';
   }
 
@@ -1274,14 +1405,31 @@
    * never invents or edits an incident, and the SNS topic is never exposed to it. */
   function loadIncidents() {
     if (state.incidentsInFlight) return; // one request at a time, whoever asked for it
+    var seq = ++state.incidentsSeq;
     state.incidentsInFlight = true;
     state.incidentsMs = Date.now();
-    getJson('/incidents?limit=' + INCIDENTS_LIMIT).then(function (payload) {
+    var giveUp = setTimeout(function () {
+      if (state.incidentsAppliedSeq >= seq) return;
+      // Release the single-flight flag so the 10 s ticker can try again, and say why the
+      // panel is not updating rather than leaving it silently frozen.
       state.incidentsInFlight = false;
-      state.incidents = payload;
+      state.incidentsError = 'no answer within ' + Math.round(FETCH_TIMEOUT_MS / 1000) + ' s';
+      renderIncidentsPanel();
+    }, FETCH_TIMEOUT_MS);
+    getJson('/incidents?limit=' + INCIDENTS_LIMIT).then(function (payload) {
+      clearTimeout(giveUp);
+      if (markedStale(seq, state.incidentsAppliedSeq)) return; // an older reply: drop it
+      state.incidentsAppliedSeq = seq;
+      state.incidentsInFlight = false;
+      // Same rule as the zone list: an element that is not an object is not an incident.
+      state.incidents = payload
+        ? Object.assign({}, payload, { incidents: usableEntries(payload.incidents) })
+        : payload;
       state.incidentsError = null;
       renderIncidentsPanel();
     }).catch(function (error) {
+      clearTimeout(giveUp);
+      if (state.incidentsAppliedSeq >= seq) return;
       state.incidentsInFlight = false;
       state.incidentsError = error.message;
       // keep the last good list rather than blanking the panel or inventing history
@@ -1360,18 +1508,18 @@
     }
 
     if (el['nav-list']) {
-      el['nav-list'].addEventListener('click', function (event) {
+      bindTo('nav-list', 'click', function (event) {
         followNav(event);
       });
     }
     if (el['nav-toggle']) {
-      el['nav-toggle'].addEventListener('click', function (event) {
+      bindTo('nav-toggle', 'click', function (event) {
         event.preventDefault();
         setMenu(!state.menuOpen);
       });
     }
     if (el['city-cards']) {
-      el['city-cards'].addEventListener('click', function (event) {
+      bindTo('city-cards', 'click', function (event) {
         followCity(event);
       });
     }
@@ -1382,7 +1530,7 @@
       applyRoute({ focus: true });
     });
 
-    el['history-zone'].addEventListener('click', function (event) {
+    bindTo('history-zone', 'click', function (event) {
       var button = event.target.closest('[data-zone-pick]');
       if (!button) return;
       var picked = button.getAttribute('data-zone-pick');
@@ -1399,7 +1547,7 @@
       loadHistory();
     });
 
-    el['history-range'].addEventListener('click', function (event) {
+    bindTo('history-range', 'click', function (event) {
       var button = event.target.closest('[data-range]');
       if (!button) return;
       state.historyMinutes = Number(button.getAttribute('data-range'));
@@ -1412,25 +1560,27 @@
     // The chart answers a mouse, a keyboard and a fingertip: the per-point values exist
     // nowhere else on the page, so a pointer-only tooltip hides data from a whole class of
     // people (a phone user, someone who cannot use a mouse).
-    el['history-canvas'].addEventListener('mousemove', handleHistoryHover);
-    el['history-canvas'].addEventListener('keydown', handleHistoryKey);
-    el['history-canvas'].addEventListener('touchstart', handleHistoryHover, { passive: true });
-    el['history-canvas'].addEventListener('touchmove', handleHistoryHover, { passive: true });
+    bindTo('history-canvas', 'mousemove', handleHistoryHover);
+    bindTo('history-canvas', 'keydown', handleHistoryKey);
+    bindTo('history-canvas', 'touchstart', handleHistoryHover, { passive: true });
+    bindTo('history-canvas', 'touchmove', handleHistoryHover, { passive: true });
     function clearHistoryHover() {
       state.hoverIndex = null;
-      el['history-tooltip'].hidden = true;
+      if (el['history-tooltip']) el['history-tooltip'].hidden = true;
       drawHistory();
     }
-    el['history-canvas'].addEventListener('mouseleave', clearHistoryHover);
-    el['history-canvas'].addEventListener('touchend', clearHistoryHover);
-    el['history-canvas'].addEventListener('blur', function () {
-      if (!el['history-tooltip'].hidden) clearHistoryHover();
+    bindTo('history-canvas', 'mouseleave', clearHistoryHover);
+    bindTo('history-canvas', 'touchend', clearHistoryHover);
+    bindTo('history-canvas', 'blur', function () {
+      if (el['history-tooltip'] && !el['history-tooltip'].hidden) clearHistoryHover();
     });
 
     function redrawCharts() {
       drawHistory();
+      if (!el.zones) return;
       state.zones.forEach(function (zone) {
-        var card = el.zones.querySelector('[data-zone="' + zone.zone_id + '"]');
+        if (!zone || typeof zone !== 'object') return;
+        var card = el.zones.querySelector(zoneSelector(zone.zone_id));
         if (card) drawSpark(card, zone);
       });
     }
@@ -1472,7 +1622,7 @@
       // Say why the page will never fill in, in the same status line a failing poll uses:
       // this used to leave the badge on CONNECTING and five panels on "waiting for data…"
       // forever, because start() returned before anything could update them.
-      el['conn-badge'].className = 'conn-badge conn-disconnected';
+      if (el['conn-badge']) el['conn-badge'].className = 'conn-badge conn-disconnected';
       setText('conn-badge', 'DISCONNECTED');
       setText('conn-detail', 'no API base configured — add ?api=https://… to the address');
       setText('conn-announce',

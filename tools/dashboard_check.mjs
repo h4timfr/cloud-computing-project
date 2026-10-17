@@ -1453,6 +1453,116 @@ check('the router answers any URL, including nonsense, without throwing', () => 
     'a city page should keep the Cities section marked as current');
 });
 
+/* ---- hardening pass: invariants a hostile or malformed payload must not break ---- */
+
+check('a fragment that is not valid percent-encoding does not abort the page', () => {
+  // regression: routeFromHash called decodeURIComponent unguarded, so '#/cities/%' threw a
+  // URIError out of start() - no polling, no intervals, placeholders forever.
+  const hostile = ['#/cities/%', '#/cities/%E0%A4%A', '#/cities/%zz', '#/cities/100%', '#/cities/%2F'];
+  hostile.forEach((hash) => {
+    let route = null;
+    assert.doesNotThrow(() => { route = FP.routeFromHash(hash); }, `${hash} threw in the router`);
+    assert.equal(route.view, 'city', `${hash} did not route to the city view`);
+    assert.equal(typeof route.zoneId, 'string', `${hash} produced a non-string zone id`);
+  });
+  assert.equal(FP.safeDecode('%E0%A4%A'), '%E0%A4%A', 'a malformed escape must be kept as text');
+  assert.equal(FP.safeDecode('city%2Dchennai'), 'city-chennai', 'a valid escape must still decode');
+});
+
+check('provenance prose never renders undefined', () => {
+  // regression: city detail read .label/.count off zoneSources(), which returns tag strings,
+  // so the live path printed "Each measurement carries its own provenance: , ." and
+  // "Provenance per metric: undefined = undefined".
+  const zone = {
+    zone_id: 'city-chennai', name: 'Chennai', zone_mode: 'live_weather',
+    thresholds: {},
+    metric_sources: {
+      rainfall_mm_per_hr: 'REAL', drain_level_m: 'SIMULATED', soil_saturation_pct: 'MODEL_DERIVED',
+      water_level_m: 'SIMULATED', flow_rate_m3_s: 'SIMULATED'
+    },
+    latest: {
+      risk_score: 0.4, risk_class: 'WATCH', risk_class_candidate: 'WATCH', sequence: 12,
+      timestamp: '2026-10-17T02:00:00Z', age_seconds: 120, sensor_node_id: 'open-meteo-chennai',
+      readings: {
+        rainfall_mm_per_hr: 1.2, drain_level_m: 0.7, soil_saturation_pct: 41,
+        water_level_m: 1.1, flow_rate_m3_s: 2.2
+      },
+      smoothed_readings: {
+        rainfall_mm_per_hr: 1.2, drain_level_m: 0.7, soil_saturation_pct: 41,
+        water_level_m: 1.1, flow_rate_m3_s: 2.2
+      },
+      contributions: [], top_drivers: ['rainfall_mm_per_hr'], trend: {}, explanation: 'because'
+    }
+  };
+  const html = FP.cityDetail(zone, { noun: 'city' });
+  assert.equal(typeof html, 'string');
+  assert.ok(!/undefined/.test(html), `the city detail rendered "undefined": ${/Provenance per metric[^<]*/.exec(html) || ''}`);
+  assert.ok(!/carries its own provenance:\s*,/.test(html), 'the provenance sentence has no labels');
+  assert.match(html, /carries its own provenance: REAL, MODEL, SIM\./,
+    'the provenance sentence does not name every tag in the payload');
+  assert.match(html, /Provenance per metric: REAL = 1 · MODEL = 1 · SIM = 3/,
+    'the per-metric provenance counts do not add up to the payload');
+  const counts = FP.sourceCounts(zone);
+  const total = counts.reduce((sum, entry) => sum + entry.count, 0);
+  assert.equal(total, 5, `${total} of 5 metrics were counted`);
+  counts.forEach((entry) => {
+    assert.ok(entry.label && entry.label !== 'undefined', `a provenance entry has no label: ${JSON.stringify(entry)}`);
+    assert.ok(entry.count > 0, `a provenance entry claims ${entry.count} metrics`);
+  });
+});
+
+check('a payload value can never become a link to another origin', () => {
+  const fallback = 'https://open-meteo.com/';
+  const kept = ['https://open-meteo.com/en/docs', 'https://open-meteo.com/', 'https://www.open-meteo.com/en/docs'];
+  kept.forEach((value) => assert.equal(FP.safeExternalUrl(value, fallback), value, `${value} was rejected`));
+  const rejected = ['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'http://open-meteo.com/',
+    'https://evil.example/', 'https://open-meteo.com.evil.example/', '//evil.example/', '/zones', '', null, 42,
+    'https://open-meteo.com@evil.example/'];
+  rejected.forEach((value) => {
+    assert.equal(FP.safeExternalUrl(value, fallback), fallback, `${JSON.stringify(value)} was used as a link`);
+  });
+});
+
+check('a prototype member is never used as a label', () => {
+  ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'].forEach((name) => {
+    assert.equal(FP.modeMeta(name).label, 'MODE UNKNOWN', `${name} was rendered as a mode label`);
+    assert.equal(FP.providerLabel(name), name, `${name} was mapped to a prototype member`);
+    // '?' is SOURCE_META.UNKNOWN's label: the point is that it did not resolve to an
+    // Object.prototype member, so the page cannot print a function as a provenance tag.
+    assert.equal(FP.sourceMeta(name).label, '?', `${name} was rendered as a provenance label`);
+  });
+  assert.equal(FP.modeMeta('live_weather').label, 'LIVE WEATHER', 'the real modes must still resolve');
+  assert.equal(FP.providerLabel('open-meteo'), 'Open-Meteo', 'the real provider must still resolve');
+  assert.equal(FP.sourceMeta('REAL').label, 'REAL', 'the real tags must still resolve');
+});
+
+check('an age that is not a positive number is not reported as "just now"', () => {
+  // regression: any negative age fell through to "just now" (backend clamps ages to >= 0, but a
+  // payload is not trusted to have done so).
+  [-1, -5, -86400].forEach((value) => {
+    assert.notEqual(FP.ageLabel(value), 'just now', `${value} was reported as "just now"`);
+  });
+  assert.equal(FP.ageLabel(2), 'just now', 'a genuinely fresh reading must still say "just now"');
+  assert.equal(FP.ageLabel(null), 'no data', 'a missing age must say so');
+});
+
+check('malformed list entries are ignored, not thrown on', () => {
+  // regression: a null element in zones[]/incidents[] threw inside the poll callback, which
+  // stopped the whole board updating.
+  const zone = { zone_id: 'zone-riverside-north', name: 'Riverside North', zone_mode: 'simulated', latest: null };
+  assert.doesNotThrow(() => FP.renderZoneCard(null), 'a null zone card threw');
+  assert.equal(FP.renderZoneCard(null), '', 'a null zone card rendered something');
+  assert.doesNotThrow(() => FP.ranking([null, zone]), 'ranking threw on a null element');
+  assert.equal(FP.ranking([null, zone]).length, 1, 'a null element survived ranking');
+  assert.doesNotThrow(() => FP.staleZoneIds({ zones: [null, zone], stale_after_seconds: 1800 }),
+    'staleZoneIds threw on a null element');
+  assert.doesNotThrow(() => FP.renderIncidents({ incidents: [null] }), 'a null incident threw');
+  assert.equal(FP.renderIncidents({ incidents: [null] }), '', 'a null incident rendered a row');
+  assert.doesNotThrow(() => FP.incidentsSignature({ incidents: [null] }), 'the incident signature threw');
+  assert.doesNotThrow(() => FP.sourceCounts(null), 'sourceCounts threw on a null zone');
+  assert.doesNotThrow(() => FP.cityDetail(null, { noun: 'city' }), 'cityDetail threw on a null zone');
+});
+
 check('the phone layout replaces the links with a menu that is styled for it', () => {
   assert.match(cssSource, /\.sr-only\s*\{/, 'there is no screen-reader-only class for the menu button label');
   assert.match(htmlSource, /<span class="sr-only">/, 'the menu button has no readable label');
@@ -1705,9 +1815,11 @@ check('the chart can be read without a mouse', () => {
   const canvas = /<canvas id="history-canvas"[^>]*>/.exec(htmlSource);
   assert.ok(canvas, 'the history canvas was not found');
   assert.match(canvas[0], /tabindex="0"/, 'the chart cannot be focused with a keyboard');
-  assert.match(appSource, /addEventListener\('keydown', handleHistoryKey\)/,
+  // The listener is registered through bindTo(), which skips a missing element instead of
+  // aborting start(): what matters is that the canvas gets a keydown handler either way.
+  assert.match(appSource, /(bindTo\('history-canvas', 'keydown', handleHistoryKey\)|addEventListener\('keydown', handleHistoryKey\))/,
     'the chart does not answer the arrow keys');
-  assert.match(appSource, /addEventListener\('touchstart', handleHistoryHover/,
+  assert.match(appSource, /(bindTo\('history-canvas', 'touchstart', handleHistoryHover|addEventListener\('touchstart', handleHistoryHover)/,
     'the chart does not answer a fingertip');
   assert.match(appSource, /function handleHistoryKey/, 'there is no keyboard handler for the chart');
   const keys = /function handleHistoryKey\(event\)\s*\{([\s\S]{0,900})/.exec(appSource);
@@ -1728,7 +1840,10 @@ check('a payload naming an unexpected metric does not blank the page', () => {
       `${name} still dereferences an unknown metric name directly`);
     assert.match(body[1], /metricMeta\(metric\)/, `${name} does not look the metric up defensively`);
   }
-  assert.match(libSource, /function metricMeta\(metric\)\s*\{[\s\S]{0,200}METRIC_META\[metric\] \|\|/,
+  // It must return a usable default for an unknown name, whether that default is written as
+  // "|| default" or as an own-property test - the own-property form also stops a metric named
+  // "constructor" from resolving to an Object.prototype member.
+  assert.match(libSource, /function metricMeta\(metric\)\s*\{[\s\S]{0,260}(METRIC_META\[metric\] \|\||hasOwn\(METRIC_META, metric\)[\s\S]{0,120}\{ label:)/,
     'metricMeta has no fallback for an unknown metric');
 });
 
@@ -1772,7 +1887,10 @@ check('a burst of resizes costs one redraw, not one per event', () => {
 
 check('controls are real controls and decoration is hidden from assistive tech', () => {
   assert.match(appSource + libSource, /<button/, 'the history controls are not real buttons');
-  assert.match(appSource, /addEventListener\('click'/, 'nothing handles clicks explicitly');
+  // Clicks are wired in JavaScript - now through bindTo(), which skips an element that is
+  // missing instead of throwing - and never as an inline handler in markup.
+  assert.match(appSource, /(addEventListener\(event, handler, options\)|addEventListener\('click')/,
+    'nothing handles clicks explicitly');
   assert.ok(!/onclick\s*=/i.test(htmlSource + appSource + libSource), 'a click handler is inlined in markup');
   assert.match(htmlSource, /class="bg-layer" aria-hidden="true"/, 'the backdrop is not hidden from assistive tech');
   assert.match(htmlSource, /class="incident-head" role="rowgroup"/, 'the incident table header lost its roles');

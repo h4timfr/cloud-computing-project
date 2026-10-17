@@ -441,6 +441,73 @@ async function main() {
     });
   })();
 
+  /* ---------------------------------------------------- hostile payloads --- */
+
+  group('Hostile and malformed payload content cannot break or inject into the board');
+
+  await (async () => {
+    // The provider name is a payload string that lands in the hero's empty-fleet hint. It used
+    // to be interpolated into innerHTML unescaped, so a provider of "<img src=x onerror=…>"
+    // executed in the dashboard's origin. The route is reachable through the documented
+    // ?api= override, which points the page at any JSON the viewer names.
+    const hostile = createRuntime();
+    hostile.on(zonesRoute, () => ({
+      body: {
+        zone_mode: 'live_weather',
+        zone_count: 0,
+        zones: [],
+        highest_risk_zone: null,
+        weather: {
+          enabled: true,
+          provider: '<img src=x onerror="window.__xss = true">',
+          refresh_seconds: 600,
+          live_zones: []
+        }
+      }
+    }));
+    hostile.on(incidentsRoute, () => ({ body: live.incidents }));
+    hostile.on(historyRoute, () => ({ body: live.history }));
+
+    const dom = boot(hostile);
+    await hostile.settle();
+
+    await check('an injection attempt in a payload string is escaped, not executed', () => {
+      const hero = dom.html('hero');
+      assert.ok(hero.length > 0, 'the hero rendered nothing');
+      // The payload text must be present as *text*: an escaped '<img' is the fix, a live
+      // '<img src=x' would be markup the browser is free to run.
+      assert.match(hero, /&lt;img src=x onerror=/, 'the provider name was not escaped');
+      assert.ok(!/<img\b/i.test(hero), `the hero rendered a live tag: ${hero.slice(0, 200)}`);
+      assert.ok(!/<[a-z]+[^>]*\son[a-z]+=/i.test(hero), 'an event handler attribute survived into the DOM');
+      assert.equal(dom.window.__xss, undefined, 'the injected handler ran');
+    });
+
+    // A null in a list is the same class of problem without the injection: it must be skipped,
+    // not thrown on, and the rest of the fleet has to keep rendering.
+    const nulls = createRuntime();
+    nulls.on(zonesRoute, () => ({
+      body: {
+        ...live.payload,
+        zones: [null, ...(live.payload.zones || [])],
+        zone_ranking: [null, ...(live.payload.zone_ranking || [])]
+      }
+    }));
+    nulls.on(incidentsRoute, () => ({ body: { ...live.incidents, incidents: [null, ...(live.incidents.incidents || [])] } }));
+    nulls.on(historyRoute, () => ({ body: live.history }));
+
+    const nullDom = boot(nulls);
+    await nulls.settle();
+
+    await check('a null entry in a list is skipped and the rest of the board still renders', () => {
+      assert.equal(nullDom.text('conn-badge'), 'LIVE',
+        `a null entry stopped the board updating (badge "${nullDom.text('conn-badge')}", detail "${nullDom.text('conn-detail')}")`);
+      assert.ok(nullDom.html('zones').length > 0, 'the zone grid went blank');
+      assert.ok(nullDom.html('incidents').length > 0, 'the incident panel went blank');
+      assert.ok(!/undefined/.test(nullDom.html('zones')), 'the zone grid printed "undefined"');
+      assert.ok(!/undefined/.test(nullDom.html('incidents')), 'the incident panel printed "undefined"');
+    });
+  })();
+
   /* -------------------------------------------------------------- incidents --- */
 
   group('The incident panel degrades honestly');

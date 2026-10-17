@@ -230,7 +230,7 @@
   /* An unknown metric name must not throw inside a view renderer: the payload belongs to the
    * API, and one extra driver name would otherwise blank the whole city page. */
   function metricMeta(metric) {
-    return METRIC_META[metric] || { label: String(metric), unit: '', decimals: 2 };
+    return hasOwn(METRIC_META, metric) ? METRIC_META[metric] : { label: String(metric), unit: '', decimals: 2 };
   }
 
   function formatMetric(metric, value) {
@@ -251,6 +251,9 @@
   function ageLabel(seconds) {
     var num = toNumber(seconds);
     if (num === null) return 'no data';
+    // A negative age means the timestamp is ahead of this browser's clock (clock skew, or a
+    // reading from the future). It is not "just now": say what is actually known.
+    if (num < 0) return 'timestamp ahead of this browser';
     if (num < 5) return 'just now';
     if (num < 90) return Math.round(num) + ' s ago';
     if (num < 5400) return Math.round(num / 60) + ' min ago';
@@ -337,6 +340,10 @@
     var opts = options || {};
     var feed = payload ? feedStatus(payload, nowMs, opts.ageOffsetSeconds) : null;
     if (lastSuccessMs === null || lastSuccessMs === undefined) {
+      // A page that has never reached the API is CONNECTING, and says why it is still waiting.
+      // The badge keeps that name on purpose (the detail carries the failure); what must not
+      // happen is the loading *pulse* running forever, which is handled by the DOM class the
+      // controller adds next to is-connecting.
       return {
         state: 'connecting',
         label: 'CONNECTING',
@@ -426,7 +433,9 @@
   /* -------------------------------------------------------------- ranking --- */
 
   function ranking(zones) {
-    var list = (zones || []).slice();
+    // Non-objects are dropped rather than sorted: every branch below reads zone_id, and a
+    // null element would throw inside the poll callback instead of just being ignored.
+    var list = (zones || []).filter(function (zone) { return zone && typeof zone === 'object'; });
     list.sort(function (a, b) {
       var aScore = a && a.latest ? toNumber(a.latest.risk_score) : null;
       var bScore = b && b.latest ? toNumber(b.latest.risk_score) : null;
@@ -449,7 +458,7 @@
 
   function sourceMeta(tag) {
     var key = String(tag || '').toUpperCase();
-    return SOURCE_META[key] || SOURCE_META.UNKNOWN;
+    return hasOwn(SOURCE_META, key) ? SOURCE_META[key] : SOURCE_META.UNKNOWN;
   }
 
   function metricSource(zone, metric) {
@@ -485,8 +494,24 @@
     return zoneSources(zone).map(sourceChip).join('');
   }
 
+  /* How many metrics carry each provenance tag, in the same order as zoneSources, for the
+   * technical footnote. zoneSources itself returns tag keys, not objects: reading .label off
+   * one of those produced "Provenance per metric: undefined = undefined". */
+  function sourceCounts(zone) {
+    var counts = {};
+    METRIC_ORDER.forEach(function (metric) {
+      var key = metricSource(zone, metric) || 'UNKNOWN';
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return zoneSources(zone).map(function (key) {
+      return { key: key, label: sourceMeta(key).label, count: counts[key] || 0 };
+    });
+  }
+
   function modeMeta(mode) {
-    return MODE_META[mode] || MODE_META.UNKNOWN;
+    // Own properties only: a payload value of "constructor" or "toString" must not resolve to
+    // an Object.prototype member and end up rendered as a label.
+    return (typeof mode === 'string' && hasOwn(MODE_META, mode)) ? MODE_META[mode] : MODE_META.UNKNOWN;
   }
 
   // The provider id as it arrives in the payload versus the name a reader recognises.
@@ -495,7 +520,25 @@
   function providerLabel(provider) {
     if (!provider) return null;
     var key = String(provider).toLowerCase();
-    return PROVIDER_LABELS[key] || String(provider);
+    return hasOwn(PROVIDER_LABELS, key) ? PROVIDER_LABELS[key] : String(provider);
+  }
+
+  /* Prototype-safe map lookup. Payload strings are attacker-adjacent data: "constructor"
+   * would otherwise return a function instead of falling through to the default. */
+  function hasOwn(map, key) {
+    return Object.prototype.hasOwnProperty.call(map, key);
+  }
+
+  /* A URL that came from a payload may only be used as a link when it is https and on a host
+   * this project deals with. Anything else (javascript:, data:, another origin) falls back to
+   * the known-good address rather than being followed. */
+  var ALLOWED_LINK_HOSTS = ['open-meteo.com', 'www.open-meteo.com'];
+
+  function safeExternalUrl(value, fallback) {
+    if (typeof value !== 'string' || !/^https:\/\/[^\s"'<>]+$/i.test(value)) return fallback;
+    var match = /^https:\/\/([^\/?#]+)/i.exec(value);
+    var host = match ? match[1].toLowerCase().split(':')[0].replace(/\.$/, '') : '';
+    return ALLOWED_LINK_HOSTS.indexOf(host) >= 0 ? value : fallback;
   }
 
   // "city" in the live India fleet, "zone" in the simulated fleet: the same board has to
@@ -773,6 +816,9 @@
   }
 
   function renderZoneCard(zone) {
+    // A null element in the array (a malformed payload, or a hand-edited fixture) must not
+    // throw inside the poll's .then, which would stop the dashboard updating entirely.
+    if (!zone || typeof zone !== 'object') return '';
     var latest = zone.latest;
     var band = bandKey(latest ? latest.risk_class : null);
     var rows = METRIC_ORDER.map(function (metric) {
@@ -964,12 +1010,14 @@
     var declared = toNumber(payload.stale_after_seconds);
     var threshold = declared === null ? 1800 : declared;
     return ((payload.zones) || []).filter(function (zone) {
-      var age = zone.latest ? toNumber(zone.latest.age_seconds) : null;
+      var age = zone && zone.latest ? toNumber(zone.latest.age_seconds) : null;
       return age !== null && age > threshold;
     }).map(function (zone) { return zone.zone_id; });
   }
 
   function renderIncidentRow(incident, nowMs, options) {
+    // Same reason as the zone cards: a null element must not throw inside the poll callback.
+    if (!incident || typeof incident !== 'object') return '';
     var silent = options && options.silentZoneIds ? options.silentZoneIds : [];
     var severity = String(incident.severity || '').toUpperCase();
     var band = severityBand(severity);
@@ -979,8 +1027,8 @@
     var alertCount = toNumber(incident.alert_count);
     var escalations = toNumber(incident.escalation_count);
     return (
-      '<li class="incident-row band-' + band + (open ? ' is-open' : ' is-closed') + ' role="row"' +
-        '" data-incident="' + escapeHtml(incident.incident_id) +
+      '<li class="incident-row band-' + band + (open ? ' is-open' : ' is-closed') + '" role="row"' +
+        ' data-incident="' + escapeHtml(incident.incident_id) +
         '" data-status="' + (open ? 'OPEN' : 'CLOSED') + '">' +
         '<span class="incident-severity band-' + band + '" role="cell" data-f="severity">' + escapeHtml(classLabel(severity)) + '</span>' +
         '<span class="incident-zone" role="cell" data-f="zone_name">' + escapeHtml(incident.zone_name || incident.zone_id || 'unknown zone') + '</span>' +
@@ -1023,7 +1071,9 @@
      while still ticking the open durations every second. */
   function incidentsSignature(payload) {
     if (!payload) return '';
-    return (payload.incidents || []).map(function (incident) {
+    return (payload.incidents || []).filter(function (incident) {
+      return incident && typeof incident === 'object';
+    }).map(function (incident) {
       return [
         incident.incident_id,
         incident.current_status,
@@ -1068,7 +1118,9 @@
   };
 
   function metricPlain(metric) {
-    return METRIC_PLAIN[metric] || { noun: String(metric || 'reading').replace(/_/g, ' '), phrase: 'this measurement' };
+    return hasOwn(METRIC_PLAIN, metric)
+      ? METRIC_PLAIN[metric]
+      : { noun: String(metric || 'reading').replace(/_/g, ' '), phrase: 'this measurement' };
   }
 
   /* Inline SVG per channel: one small path set, stroked in currentColor so it inherits
@@ -1145,7 +1197,7 @@
     var driver = drivers.length ? drivers[0] : null;
     summary.driver = driver;
     if (driver) {
-      summary.driverLabel = (METRIC_META[driver] || { label: String(driver) }).label;
+      summary.driverLabel = metricMeta(driver).label;
       var plain = metricPlain(driver);
       var state = metricState(zone, driver);
       var valueText = formatValueWithUnit(driver, state.value);
@@ -1188,19 +1240,31 @@
   /* ---------------------------------------------------------- routing --- */
 
   /* '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknown ->
-   * the default view. Kept tiny and total: the router can never throw on a bad URL. */
+   * the default view. Kept tiny and total: the router can never throw on a bad URL, including
+   * a fragment that is not valid percent-encoding ('#/cities/%'), where decodeURIComponent
+   * throws a URIError that would otherwise abort start() and leave the page never polling. */
   function routeFromHash(hash) {
     var raw = String(hash === null || hash === undefined ? '' : hash).replace(/^#\/?/, '');
     var parts = raw.split('/').filter(function (part) { return part.length > 0; });
     var view = parts.length ? parts[0].toLowerCase() : DEFAULT_VIEW;
     // a city lives inside the cities section: #/cities/<zone_id>
     if ((view === 'city' || view === 'cities') && parts[1]) {
-      return { view: 'city', zoneId: decodeURIComponent(parts[1]) };
+      return { view: 'city', zoneId: safeDecode(parts[1]) };
     }
     if (view === 'city') return { view: 'cities', zoneId: null };
     var known = NAV_ITEMS.map(function (item) { return item.view; });
     if (known.indexOf(view) < 0) return { view: DEFAULT_VIEW, zoneId: null };
     return { view: view, zoneId: null };
+  }
+
+  /* Percent-decode a URL fragment, tolerating a malformed one: the raw text is a better
+   * answer than an exception, and the zone id is only ever used as an opaque key. */
+  function safeDecode(value) {
+    try {
+      return decodeURIComponent(value);
+    } catch (error) {
+      return String(value);
+    }
   }
 
   function hashFor(view, zoneId) {
@@ -1228,7 +1292,7 @@
     if (route.view === 'city') {
       var zone = null;
       ((payload && payload.zones) || []).forEach(function (entry) {
-        if (entry.zone_id === route.zoneId) zone = entry;
+        if (entry && typeof entry === 'object' && entry.zone_id === route.zoneId) zone = entry;
       });
       return (zone ? zone.name : 'City') + ' — ' + base;
     }
@@ -1294,8 +1358,10 @@
     if (declared !== null) return Math.max(0, Math.round(declared));
     var zones = (payload && payload.zones) || [];
     for (var index = 0; index < zones.length; index += 1) {
-      if (zones[index].zone_id !== leader.zone_id) continue;
-      var age = zones[index].latest ? toNumber(zones[index].latest.age_seconds) : null;
+      var entry = zones[index];
+      if (!entry || typeof entry !== 'object') continue;
+      if (entry.zone_id !== leader.zone_id) continue;
+      var age = entry.latest ? toNumber(entry.latest.age_seconds) : null;
       return age === null ? null : Math.max(0, Math.round(age));
     }
     return null;
@@ -1343,6 +1409,9 @@
 
   /* Overview card: enough to answer "is this city okay?" and nothing more. */
   function cityStatusCard(zone, options) {
+    // Same rule as cityDetail: a missing or malformed entry renders nothing instead of
+    // throwing, so one bad element cannot stop the fleet grid from being drawn.
+    if (!zone || typeof zone !== 'object') return '';
     var latest = zone && zone.latest;
     var band = bandKey(latest ? latest.risk_class : null);
     var summary = plainRiskSummary(zone);
@@ -1415,6 +1484,9 @@
 
   /* The city page: the answer first, then the measurements, then (collapsed) the raw model. */
   function cityDetail(zone, options) {
+    // A missing or malformed zone entry renders nothing rather than throwing: this is called
+    // from a view render, and one bad element must not blank the whole page.
+    if (!zone || typeof zone !== 'object') return '';
     var opts = options || {};
     var latest = zone && zone.latest;
     var band = bandKey(latest ? latest.risk_class : null);
@@ -1453,7 +1525,7 @@
       '<h3 class="block-title">Measurements</h3>' +
       '<div class="tile-grid" data-f="tiles">' + metricTiles(zone) + '</div>' +
       '<p class="muted small">Each measurement carries its own provenance: ' +
-      escapeHtml(sources.map(function (entry) { return entry.label; }).join(', ') || 'unknown') +
+      escapeHtml(sources.map(function (tag) { return sourceMeta(tag).label; }).join(', ') || 'unknown') +
       '. REAL values come from the weather provider, MODEL values are derived from them, SIM values are generated by FloodPulse.</p>' +
       '<h3 class="block-title">Trend and history</h3>' +
       '<p class="muted small">The chart below is this ' + escapeHtml((options && options.noun) || 'site') +
@@ -1467,7 +1539,7 @@
   /* The raw model, folded away by default. Native <details>: keyboard accessible, no JS. */
   function technicalDetails(zone) {
     var latest = (zone && zone.latest) || null;
-    var sources = zoneSources(zone);
+    var grouped = sourceCounts(zone);
     var limits = (zone && zone.thresholds) || {};
     var rows = METRIC_ORDER.map(function (metric) {
       var limitsForMetric = limits[metric] || {};
@@ -1502,7 +1574,7 @@
       '</div>' +
       '<p class="muted small" data-f="explanation">' + escapeHtml(latest ? latest.explanation : 'no reading yet') + '</p>' +
       '<p class="muted small">Provenance per metric: ' +
-      escapeHtml(sources.map(function (entry) { return entry.label + ' = ' + entry.count; }).join(' · ') || 'unknown') + '</p>' +
+      escapeHtml(grouped.map(function (entry) { return entry.label + ' = ' + entry.count; }).join(' · ') || 'unknown') + '</p>' +
       '</details>'
     );
   }
@@ -1645,7 +1717,10 @@
   function attributionLine(payload) {
     var evidence = (payload && payload.weather) || {};
     var provider = evidence.provider || 'open-meteo';
-    var docs = evidence.docs || 'https://open-meteo.com/';
+    // The attribution link is built from the payload, so it is origin-checked before it ever
+    // becomes an href: the provider's documentation is the only external destination this
+    // dashboard has any reason to point at.
+    var docs = safeExternalUrl(evidence.docs, 'https://open-meteo.com/');
     // CC BY requires attribution *while provider data is displayed*: a simulated board shows
     // no provider data, so it must not credit a provider it never used.
     var feed = feedStatus(payload || {}, null);
@@ -1700,6 +1775,9 @@
     sourceChip: sourceChip,
     metricSource: metricSource,
     zoneSources: zoneSources,
+    sourceCounts: sourceCounts,
+    safeExternalUrl: safeExternalUrl,
+    safeDecode: safeDecode,
     sourceSummary: sourceSummary,
     modeMeta: modeMeta,
     modeBadge: modeBadge,
