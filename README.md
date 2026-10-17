@@ -1746,18 +1746,23 @@ is never assembled from API text; a wrong or hostile `zone_id` cannot choose wha
   track is `minmax(0, …)`, so a long city name wraps instead of pushing the page sideways.
 * **Surfaces**: the panel gradient dropped from ~72–78% to ~60–66% opacity with a 7 px scrim, the
   borders are a cool blue, and the hero is lighter still, so the photograph reads through the large
-  panels instead of sitting behind an opaque navy wall. Text stays opaque.
+  panels instead of sitting behind an opaque navy wall. Text stays opaque. *(Superseded by M10.2:
+  the surfaces were re-tuned to 0.74–0.86 once the backdrop was actually visible — at 60% over an
+  invisible photograph the panels were translucent against nothing.)*
 * **Header**: same three groups in the same order (brand + subtitle, the five views, fleet health /
   Live badge / last update), tightened padding so the bar is mostly navigation. `heuristic-v1` is
   still out of the header and still in the Data & Methodology fold.
 * **Backdrop**: `background-size: cover` over the full-bleed layer, anchored `center top` so the
-  skyline sits where a reader looks, under the navy ramp and the inset vignette.
+  skyline sits where a reader looks, under the navy ramp and the inset vignette. *(Superseded by
+  M10.2: the ramp and the vignette were stacked so heavily — and behind a `screen` blend mode — that
+  the photograph came out at roughly 5% of its own brightness. The numbers are in the next
+  section.)*
 
 ### The two payload numbers, kept apart on purpose
 
 | Measure | Value | Ceiling | Notes |
 | --- | --- | --- | --- |
-| Primary page payload (code + backdrop) | **429.6 KB** | **512 KB** | 32.6 + 104.0 + 135.8 + 98.5 KB of code, plus the 58.8 KB backdrop |
+| Primary page payload (code + backdrop) | **429.6 KB** *(M10.1; 438.6 KB after M10.2)* | **512 KB** | 32.6 + 104.0 + 135.8 + 98.5 KB of code, plus the 58.8 KB backdrop |
 | Card imagery | **182.7 KB** for five files | 90 KB ideal / 120 KB hard each | the images only: four load as the first row enters the view, the fifth is `loading="lazy"` |
 | Worst case, one desktop visit | 600.8 KB | — | page payload plus all five images: a wide desktop shows five cards at once, so "below the fold" is a phone-shaped statement, not a desktop one |
 | `web/` directory | 667.5 KB, 17 files | 1024 KB | a guard on the prepared set, not a download |
@@ -1814,6 +1819,113 @@ name.
 4. **Column counts are derived, not observed.** 5/3/2/1 comes from the grid maths over the measured
    page padding and card gap, and the check prints that derivation — but no browser was available
    here, so the actual rendering at each width has not been looked at.
+
+## M10.2 making the night city visible (frontend + S3 objects only, 2026-10-18)
+
+The city cards were working and the storm backdrop was not. The review said the page "looks like a
+mostly flat navy background" while the target shows the rainy-city environment around the header,
+the hero, the cards and the gaps between panels. The image was deployed, was the right file, and was
+loading: `bg-storm.webp`, 60,192 B, `image/webp`, byte-identical to `web/`, and `.bg-layer` still had
+`background-image: url("bg-storm.webp")` with `background-size: cover` and nothing later touching
+either. Nothing opaque covered the page either — `main`, `.view`, `.view-head` and the section
+wrappers declare no background at all, and the only full-viewport box in the stylesheet is
+`.bg-layer` itself.
+
+### Why it was invisible
+
+Four darkenings, three of them inside the layer, all multiplying the same photograph:
+
+| # | Rule | What it did |
+| --- | --- | --- |
+| 1 | `mix-blend-mode: screen` on `.bg-layer` | keeps only the lightest values, so the photograph's darks and midtones — skyline, road, reflections — landed within a couple of levels of the page colour. It also *lightens*, which is why the result read as navy with a haze rather than as a picture |
+| 2 | `opacity: 0.55` on the same box | multiplied the already-masked group a second time |
+| 3 | `.bg-layer::after`, a navy radial at 0.54 in the middle and 0.90 at the edges | painted *inside* the layer, directly on top of the image, under both multiplications |
+| 4 | `box-shadow: inset 0 0 180px 60px rgba(2, 6, 23, 0.78)` | a hard 0.78 vignette on the same box, for the same reason |
+
+At the middle of the viewport those four leave `(1 − 0.585) × 0.55 = 0.23` of the photograph, then
+screen-blended, so its darks sat about five 8-bit levels from the flat body gradient underneath:
+a 0–5% signal. The page also carried a second, competing atmosphere — a four-stop `168deg` body
+gradient with `background-attachment: fixed`, which repainted the whole page on every scroll on
+mobile Safari and served no purpose the photograph does not serve better.
+
+### What changed
+
+The overlay stopped being a mask over the photograph and became a ramp in front of it, with each
+multiplier kept separate and small. Layer order, top to bottom: the `::after` vignette, then a soft
+radial, then one navy wash, then the photograph, then the flat `--navy-900` body that is only a
+fallback for the moment before the image decodes. `opacity: 1`, no blend mode, no second darkening
+box. The base `.bg-layer` rule's own `opacity: 0.42` and `mix-blend-mode: screen` were **deleted
+rather than shadowed** by the new layer: a dead declaration that hides the photograph is exactly how
+this comes back, and the live contract below searches the served stylesheet for those two strings.
+The full arithmetic — every alpha stop and the reason each one is the number it is — is in the
+M10.2 comment in `web/styles.css`, and the transmission it produces is printed by the static
+harness on every run:
+
+| Probe (1440×900) | Photograph surviving | |
+| --- | --- | --- |
+| middle of the screen | **38%** | the band the brief asks for is 30–45% |
+| behind the header | 35% | the header surface is 0.72–0.84 over it, so the city is perceptible around the navigation, not behind the labels |
+| left edge, mid-height | 33% | |
+| bottom-left corner | 11% | before the inset vignette, which takes it under 6% |
+| a 760 px phone | 34% | stronger vignette, same wash |
+| a 430 px phone | 30% | darker again, never removed |
+
+### Surfaces, and why they are not all the same opacity
+
+The token values were re-tuned once there was something behind them to see. A large panel holding a
+paragraph needs more body than a tile holding a number, so the four surfaces form a hierarchy
+instead of one value: hero and subscription 0.74–0.78, large containing panels 0.78–0.80, ordinary
+cards and rows 0.85–0.86, insets inside a panel 0.78, header 0.72–0.84, footer 0.80. The header's
+blur halved from 12 px to 6 px, and the panels keep their 7 px scrim — which now has a real job,
+because it softens the skyline behind a paragraph. No CSS filter is applied to the photograph
+itself, and no blur touches text.
+
+### Readability, measured against the real pixels
+
+`web/bg-storm.webp` is decoded with Pillow, scaled to `cover` at 1440×900, and the overlay stack is
+composited over it stop by stop; text then sits on a panel over that composite. Worst case anywhere
+on the screen, including the brightest probe:
+
+| Text | On a panel | On a card tile | On the hero | Straight over the backdrop |
+| --- | --- | --- | --- | --- |
+| body `--slate-200` | 11.9:1 | 14.1:1 | 13.5:1 | 13.7:1 |
+| secondary `--slate-300` | 9.9:1 | 11.7:1 | 11.2:1 | 11.4:1 |
+| muted `--slate-400` | 5.7:1 | 6.8:1 | 6.5:1 | 6.6:1 |
+
+AA needs 4.5:1 and AAA 7:1, so every combination clears AA and the muted colour clears AA
+comfortably. The rendered backdrop has a mean sRGB luma of 14.8 with p95 at 26.4 and a maximum of
+59.6: the brightest reflections are twice the median, which is what makes the scene readable as a
+scene rather than as noise, and the city lights out-shine the panels at their brightest points —
+the "bright wet-city reflections around panel edges" of the target.
+
+### What is checked, and what is not
+
+Two new checks in `tools/dashboard_check.mjs` (127 checks now) assert the property the review found
+missing rather than the numbers that happen to satisfy it: that at least 30% of the photograph
+reaches the middle of a desktop screen (and not more than 62%, so the overlay cannot quietly stop
+doing its job), that the top edge keeps at least 25%, that the corners are darker than the middle by
+at least half, that a phone keeps at least 20% and a small phone at least 15%, that no
+`screen`-family blend mode is back on the layer, that the effective layer opacity is 1, that `main`,
+`.view`, `.view-head` and `.page-shell` still declare no background at all, that the four surfaces
+keep their hierarchy and no card is opaque above 0.90. `tools/verify_deployed_page.py` gained the
+live needles for the new wash and tokens and two forbidden strings — `mix-blend-mode: screen` and
+`background-attachment: fixed` must not reappear in the served stylesheet; run against the previous
+deployment those two entries fail, which is how they were confirmed to bite.
+
+### Limitations
+
+1. **The backdrop is dark, and that is arithmetic, not taste.** The photograph's own mean sRGB luma
+   is 40; a night city at 38% transmission lands near 15. If the intent is a brighter scene, the
+   knob is the alpha stops in the one `.bg-layer` rule — raising the wash from 0.42–0.62 toward the
+   brief's 0.50–0.72 is the single line to change, and the harness prints the resulting transmission.
+2. **Still no image viewer on this machine, and still no browser.** Every figure above is computed
+   from the stylesheet and from the pixels of the file; whether it *looks* right, whether the crop
+   keeps each skyline recognisable, and whether the vignette is too heavy at 1920 px are human
+   calls, and the pixel inspection is owed by the reviewer.
+3. **The mobile figures are the same arithmetic** with the media queries applied in cascade order —
+   no device was held, and no browser repaint behaviour was observed.
+4. **The backdrop is still a 930×312 source** upscaled 2.06× at 1920 px, so it is soft before any of
+   this is considered. That is unchanged from M10.1 and still not fixed by inventing pixels.
 
 ## Repository layout
 

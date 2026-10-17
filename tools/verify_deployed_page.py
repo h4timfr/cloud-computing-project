@@ -189,6 +189,12 @@ NEEDLES = {
         "the wide desktop gets one row of five": "repeat(5, minmax(0, 1fr))",
         "the phone gets one column": "grid-template-columns: minmax(0, 1fr)",
         "the band gradient is deployed": ".city-thumb::after",
+        # M10.2: the backdrop is a ramp in front of the photograph, not a mask over it
+        "the new backdrop wash is deployed": "radial-gradient(128% 96% at 50% 2%",
+        "the edge vignette is deployed": ".bg-layer::after",
+        "the ordinary card surface is deployed": "--surface-card",
+        "the header surface is deployed": "--topbar-surface",
+        "the hero keeps its cool edge": "--hero-edge",
     },
 }
 for asset, wanted in NEEDLES.items():
@@ -230,6 +236,12 @@ FORBIDDEN_ASSETS = {
         "an icon is loaded from one of the PNG files named *.svg": "-icon.svg",
         "the chevron is loaded from a file": "chevron-right.svg",
         "a card image comes from outside the same directory": 'src="http',
+    },
+    "styles.css": {
+        # M10.2: the two rules that made the photograph invisible must not come back to the
+        # deployed stylesheet, whatever the local file happens to say
+        "the backdrop is blended in a mode that discards its darks": "mix-blend-mode: screen",
+        "the body repaints itself on every scroll": "background-attachment: fixed",
     },
 }
 for asset, forbidden in FORBIDDEN_ASSETS.items():

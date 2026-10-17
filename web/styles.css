@@ -92,25 +92,33 @@ html, body {
 body {
   font-family: var(--sans);
   color: var(--slate-200);
-  background: linear-gradient(168deg, var(--navy-900) 0%, var(--navy-800) 38%, var(--navy-700) 72%, #061024 100%);
-  background-attachment: fixed;
+  /* The photograph is the atmosphere and it paints on `.bg-layer`, one step above this. What is
+   * left here is the base the picture sits on: a flat, opaque navy, so the canvas is never white
+   * while the 60 KB image is decoding or if it never arrives at all. It used to be a four-stop
+   * 168deg gradient with `background-attachment: fixed` - a second, competing "atmosphere" under
+   * the real one, which repainted the whole page on every scroll on mobile Safari and served no
+   * purpose the photograph does not serve better. */
+  background: var(--navy-900);
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* Decorative backdrop: local WebP, loaded non-blocking, decorative only. */
+/* Decorative backdrop: local WebP, loaded non-blocking, decorative only. This rule fixes the size,
+ * the anchor and the layering; how the photograph is washed and vignetted is decided by the M10.2
+ * layer at the end of this file, which is also where the two declarations that used to sit here
+ * went: an `opacity` of 0.42 and a `screen` blend mode. Both are deleted rather than overridden -
+ * they were the reason the picture read as a haze, and a dead declaration that hides the backdrop
+ * is exactly how it comes back. */
 .bg-layer {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.42;
   background-image: url("bg-storm.webp");
   background-size: cover;
   background-position: center top;
   background-repeat: no-repeat;
-  mix-blend-mode: screen;
 }
 
 .bg-layer::after {
@@ -3113,4 +3121,198 @@ main, .topbar, .footer { max-width: 100%; }
   .city-card:focus-visible { transform: none; }
   .city-card:hover .city-photo,
   .city-card:focus-visible .city-photo { transform: none; }
+}
+
+/* ================================================================= M10.2 ===
+ *
+ * WHY THE RAIN WAS INVISIBLE. The photograph was on the page the whole time, was the right
+ * file, and was never overridden: `.bg-layer` still had `background-image: url("bg-storm.webp")`
+ * and `background-size: cover` with nothing later touching either. It was invisible because four
+ * darkenings stacked on top of each other, three of them inside the layer itself:
+ *
+ *   1. `mix-blend-mode: screen` on the layer. Screen keeps the *lightest* values: over a dark
+ *      navy backdrop the photograph's darks and midtones - the skyline, the road, the wet
+ *      reflections - came out within a couple of levels of the page colour, so no scene survived.
+ *      Worse, it lightens: the result read as navy with a haze, never as a photograph.
+ *   2. `opacity: 0.55` on the layer, multiplying the already-masked group a second time.
+ *   3. `.bg-layer::after`, a navy radial at 0.54 in the middle and 0.90 at the edges, painted
+ *      *inside* the layer, i.e. directly on top of the image and under both multiplications.
+ *   4. `box-shadow: inset 0 0 180px 60px rgba(2, 6, 23, 0.78)`, a hard 0.78 vignette on the same
+ *      box, for the same reason.
+ *
+ * The arithmetic those four produce at the middle of the viewport is (1 - 0.585) x 0.55 = 0.23 of
+ * the photograph, then screen-blended, so its darks landed about five 8-bit levels away from the
+ * flat body gradient underneath: a 0-5% signal. That is the "flat navy" the review saw. Nothing
+ * opaque covered the page: `main`, `.view`, `.view-head` and the section wrappers carry no
+ * background at all, and the only full-viewport box in the file is `.bg-layer` itself.
+ *
+ * WHAT CHANGED. The overlay is no longer a mask over the image but a *ramp in front of it*, with
+ * each multiplier kept separate and small:
+ *
+ *   photograph -> one navy wash (linear) -> a soft radial -> the ::after vignette at the edges
+ *   -> the panels. `opacity: 1`, no blend mode, no second darkening layer.
+ *
+ * Transmission of the photograph, computed from these declarations at three points of a 1440x900
+ * viewport (this is arithmetic over the alpha stops, not a rendering):
+ *
+ *   middle of the screen   0.38   the band the review asked for (30-45%)
+ *   top edge (behind nav)  0.35
+ *   bottom-left corner     0.10   before the inset vignette, which takes it under 0.06
+ *
+ * So the city is visible around the header, in the page gaps and at the edges of every panel, and
+ * the panels stay dark enough to carry text: the surfaces below are 0.74-0.86 - a hierarchy, not
+ * one opacity for everything, because a large panel showing 22% of a photograph behind a
+ * paragraph needs more body than a stat tile showing a number.
+ *
+ * Not touched: the image itself (no re-encode, no replacement, still `bg-storm.webp`), the city
+ * nightscape mapping, the CSP (`img-src 'self' data:` - the file is same-origin), and every text
+ * colour.
+ */
+
+/* ------------------------------------------------------------------ backdrop --- */
+
+.bg-layer {
+  /* Still fixed and still at z-index 0: above the body's own paint, below every panel. Both of
+   * the multiplications that killed the picture are gone - what is left is one wash and the
+   * vignette, at alphas low enough to be seen through. */
+  opacity: 1;
+  mix-blend-mode: normal;
+  background-image:
+    linear-gradient(180deg,
+      rgba(3, 13, 34, 0.60) 0%,
+      rgba(3, 13, 34, 0.42) 26%,
+      rgba(2, 10, 26, 0.46) 62%,
+      rgba(1, 7, 20, 0.62) 100%),
+    radial-gradient(128% 96% at 50% 2%,
+      rgba(3, 13, 34, 0.06) 0%,
+      rgba(2, 10, 26, 0.24) 58%,
+      rgba(1, 7, 20, 0.50) 100%),
+    url("bg-storm.webp");
+  background-size: cover, cover, cover;
+  background-position: center top, center top, center top;
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  /* The edge vignette, softened: it darkens the frame of the picture, not the picture. */
+  box-shadow: inset 0 0 190px 30px rgba(1, 6, 20, 0.55);
+}
+
+/* The vignette, and only the vignette: transparent in the middle of the viewport, dark in the
+ * corners, with the faintest lift at the top edge where the city lights are. It sits above the
+ * wash, so the two multiply into something filmic rather than flat. */
+.bg-layer::after {
+  background:
+    radial-gradient(132% 104% at 50% 44%,
+      rgba(1, 6, 18, 0) 0%,
+      rgba(1, 6, 18, 0.12) 46%,
+      rgba(1, 6, 18, 0.44) 80%,
+      rgba(1, 6, 18, 0.68) 100%),
+    linear-gradient(180deg,
+      rgba(2, 9, 24, 0.04) 0%,
+      rgba(2, 9, 24, 0.12) 58%,
+      rgba(1, 6, 18, 0.30) 100%);
+}
+
+/* ------------------------------------------------------------------ surfaces ---
+ *
+ * Four surfaces, four jobs. The photograph is visible between them; through them it is a
+ * suggestion. Numbers are percentages of opacity, so a reader can compare them to the brief:
+ * hero 0.74-0.78, large panel 0.78-0.80, ordinary card 0.85-0.86, inset row 0.78. */
+
+:root {
+  /* Hero and the subscription panel: the most transparent, because they are the largest surfaces
+   * and the ones the review wants the city showing through. */
+  --panel: linear-gradient(158deg, rgba(9, 29, 60, 0.78) 0%, rgba(5, 13, 32, 0.74) 100%);
+  /* Large containing panels: the alert preview, the history panel, the methodology blocks. */
+  --surface: linear-gradient(168deg, rgba(15, 33, 64, 0.80) 0%, rgba(7, 18, 40, 0.78) 100%);
+  /* Ordinary cards and rows inside them: darker, because they hold numbers and sentences. */
+  --surface-card: linear-gradient(168deg, rgba(11, 25, 52, 0.86) 0%, rgba(6, 15, 34, 0.85) 100%);
+  /* Insets inside a panel - a skeleton line, a driver sentence, a help bubble. */
+  --surface-flat: rgba(6, 15, 34, 0.78);
+  --glass: rgba(9, 21, 45, 0.80);
+  /* The header reads while scrolling, over whatever part of the city is behind it. */
+  --topbar-surface: linear-gradient(180deg, rgba(3, 14, 35, 0.84) 0%, rgba(3, 14, 35, 0.72) 100%);
+  /* A cool edge on the hero, as in the target: thin, bright enough to read as a pane of glass. */
+  --hero-edge: rgba(90, 190, 230, 0.30);
+}
+
+.card {
+  background: var(--surface);
+  border-color: rgba(125, 170, 220, 0.22);
+  /* Kept, and kept at 7px: it softens whatever is behind a paragraph, which is a readability
+   * tool now that there is something behind it to soften. Never a heavy blur over the picture. */
+  backdrop-filter: blur(7px) saturate(1.04);
+}
+
+/* The cards that hold a number or a name sit a little darker than the panels that hold them. */
+.stat,
+.works-step,
+.alert-row,
+.city-card,
+.zone-card {
+  background: var(--surface-card);
+}
+
+/* ------------------------------------------------------------------ header --- */
+
+.topbar {
+  background: var(--topbar-surface);
+  /* Halved from 12px. Still behind the text, no longer a frosted wall: the city is perceptible
+   * around the navigation, and the labels stay crisp. */
+  backdrop-filter: blur(6px);
+}
+
+/* -------------------------------------------------------------------- hero --- */
+
+.hero,
+.hero.hero-live {
+  background: var(--panel);
+  border-color: var(--hero-edge);
+}
+
+/* The fleet strip and the footer keep the panel treatment; the footer is the last thing above the
+ * most vignetted part of the picture, so it gets a touch more body than a panel. */
+.footer {
+  background: rgba(3, 11, 26, 0.80);
+}
+
+/* ------------------------------------------------------------------- phones ---
+ *
+ * The photograph stays on the page at every width - it is darker, never gone. A phone is read at
+ * arm's length in daylight, so the vignette gets stronger and the picture keeps its job as
+ * atmosphere rather than as a picture. Only the vignette and the edge shadow change; the wash
+ * above the image is one declaration in this file, shared by every width. */
+
+@media (max-width: 760px) {
+  .bg-layer {
+    box-shadow: inset 0 0 150px 24px rgba(1, 6, 20, 0.62);
+  }
+
+  .bg-layer::after {
+    background:
+      radial-gradient(130% 100% at 50% 44%,
+        rgba(1, 6, 18, 0.04) 0%,
+        rgba(1, 6, 18, 0.22) 46%,
+        rgba(1, 6, 18, 0.54) 80%,
+        rgba(1, 6, 18, 0.74) 100%),
+      linear-gradient(180deg,
+        rgba(2, 9, 24, 0.08) 0%,
+        rgba(2, 9, 24, 0.18) 58%,
+        rgba(1, 6, 18, 0.36) 100%);
+  }
+}
+
+/* A very small screen puts text and photograph into the same few hundred pixels, so the
+ * background gives up a little more - and still does not give up. */
+@media (max-width: 430px) {
+  .bg-layer::after {
+    background:
+      radial-gradient(130% 100% at 50% 44%,
+        rgba(1, 6, 18, 0.08) 0%,
+        rgba(1, 6, 18, 0.30) 46%,
+        rgba(1, 6, 18, 0.60) 80%,
+        rgba(1, 6, 18, 0.78) 100%),
+      linear-gradient(180deg,
+        rgba(2, 9, 24, 0.12) 0%,
+        rgba(2, 9, 24, 0.24) 58%,
+        rgba(1, 6, 18, 0.42) 100%);
+  }
 }

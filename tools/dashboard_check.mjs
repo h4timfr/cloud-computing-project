@@ -2971,6 +2971,213 @@ check('M10.1: the imagery does not widen the policy or leave the origin', () => 
   });
 });
 
+/* ------------------------------------------------- M10.2: is it actually visible? ---
+ *
+ * The review that prompted this pass said the page "looks like a mostly flat navy background"
+ * while the photograph was deployed, referenced and loading. It was invisible for four arithmetic
+ * reasons, not for a missing asset (see the M10.2 comment in styles.css): a `screen` blend mode
+ * that keeps only the lightest values, an `opacity` on the layer, and two navy gradients inside
+ * it - one a near-opaque `::after`, one an inset box-shadow - each multiplying the picture down.
+ *
+ * A static check can still answer "is it visible?" because the answer is arithmetic: every
+ * overlay in this file is a gradient with alpha stops, and the transmission of a stack of them at
+ * a point is the product of (1 - alpha). Rules are resolved the way a browser resolves them for
+ * one viewport - the media queries that apply, file order, last declaration wins - and probed at
+ * the middle of the screen and in the corners. Only the gradients are modelled: the inset
+ * box-shadow adds edge darkening on top, so every corner figure here is an upper bound.
+ */
+
+const cssRules = (source) => {
+  const rules = [];
+  const stack = [];
+  const media = [];
+  let pending = '';
+  let body = '';
+  for (const char of source) {
+    if (char === '{') {
+      const prelude = pending.trim().replace(/\s+/g, ' ');
+      pending = '';
+      if (prelude.startsWith('@')) {
+        media.push(prelude);
+        stack.push({ at: prelude });
+      } else {
+        stack.push({ selector: prelude });
+        body = '';
+      }
+      continue;
+    }
+    if (char === '}') {
+      const open = stack.pop();
+      if (open && open.selector) {
+        rules.push([open.selector, body, media.length > 0 ? media[media.length - 1] : 'desktop']);
+      } else {
+        media.pop();
+      }
+      pending = '';
+      body = '';
+      continue;
+    }
+    if (stack.length > 0 && stack[stack.length - 1].selector) body += char;
+    else pending += char;
+  }
+  return rules;
+};
+
+const gradientLayers = (value) => {
+  const layers = [];
+  const pattern = /(linear|radial)-gradient\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
+  let match;
+  while ((match = pattern.exec(value)) !== null) {
+    const head = match[2].split(',')[0];
+    const stops = [];
+    const stopPattern = /rgba\(([^)]*)\)\s*([\d.]+)%/g;
+    let stop;
+    while ((stop = stopPattern.exec(match[2])) !== null) {
+      const parts = stop[1].split(',').map((part) => part.trim());
+      stops.push([Number(stop[2]) / 100, parts.length > 3 ? Number(parts[3]) : 1]);
+    }
+    if (stops.length > 0) {
+      layers.push({
+        kind: match[1],
+        stops,
+        angle: /(-?[\d.]+)deg/.exec(head),
+        at: /at\s+([\d.]+)%\s+([\d.]+)%/.exec(head),
+        size: /^\s*([\d.]+)%\s+([\d.]+)%/.exec(head)
+      });
+    }
+  }
+  return layers;
+};
+
+const alphaAt = (layer, x, y) => {
+  let t;
+  if (layer.kind === 'linear') {
+    // only a vertical axis is used in this file; anything else is read as vertical
+    const angle = layer.angle ? Math.abs(Number(layer.angle[1])) : 180;
+    t = angle < 1 ? 1 - y : y;
+  } else {
+    if (!layer.size || !layer.at) return 0;
+    const rx = Number(layer.size[1]) / 100;
+    const ry = Number(layer.size[2]) / 100;
+    const cx = Number(layer.at[1]) / 100;
+    const cy = Number(layer.at[2]) / 100;
+    t = Math.hypot((x - cx) / rx, (y - cy) / ry);
+  }
+  const stops = layer.stops;
+  if (t <= stops[0][0]) return stops[0][1];
+  if (t >= stops[stops.length - 1][0]) return stops[stops.length - 1][1];
+  for (let index = 1; index < stops.length; index += 1) {
+    const [p0, a0] = stops[index - 1];
+    const [p1, a1] = stops[index];
+    if (t >= p0 && t <= p1) return p1 === p0 ? a0 : a0 + ((a1 - a0) * (t - p0)) / (p1 - p0);
+  }
+  return stops[stops.length - 1][1];
+};
+
+const cssDeclarations = (body) => {
+  const out = {};
+  body.split(';').forEach((piece) => {
+    const at = piece.indexOf(':');
+    if (at > 0) out[piece.slice(0, at).trim()] = piece.slice(at + 1).trim().replace(/\s+/g, ' ');
+  });
+  return out;
+};
+
+const backdropState = (contexts) => {
+  const state = { opacity: 1, layers: [], vignette: [], layerRules: [] };
+  cssRules(cssSource.replace(/\/\*[\s\S]*?\*\//g, ' ')).forEach(([selector, body, context]) => {
+    if (!contexts.includes(context)) return;
+    const decls = cssDeclarations(body);
+    if (selector === '.bg-layer') {
+      if (decls.opacity) state.opacity = Number(decls.opacity);
+      if (decls['background-image']) state.layers = gradientLayers(decls['background-image']);
+      if (decls.background) state.layers = gradientLayers(decls.background);
+      if (decls['box-shadow']) state.shadow = decls['box-shadow'];
+      state.layerRules.push(decls);
+    }
+    if (selector === '.bg-layer::after' && decls.background) {
+      state.vignette = gradientLayers(decls.background);
+    }
+  });
+  return state;
+};
+
+const transmissionAt = (contexts, x, y) => {
+  const state = backdropState(contexts);
+  return state.layers.concat(state.vignette)
+    .reduce((value, layer) => value * (1 - alphaAt(layer, x, y)), state.opacity);
+};
+
+const percent = (value) => `${(value * 100).toFixed(0)}%`;
+
+check('M10.2: the photograph reaches the screen, not just the corners', () => {
+  const mid = transmissionAt(['desktop'], 0.5, 0.5);
+  const top = transmissionAt(['desktop'], 0.5, 0.06);
+  const corner = transmissionAt(['desktop'], 0.04, 0.96);
+  const phone = transmissionAt(['desktop', '@media (max-width: 760px)'], 0.5, 0.5);
+  const small = transmissionAt(['desktop', '@media (max-width: 760px)', '@media (max-width: 430px)'],
+    0.5, 0.5);
+  console.log(`         photograph surviving the overlay: middle ${percent(mid)} · behind the header `
+    + `${percent(top)} · corner ${percent(corner)} · phone ${percent(phone)} · small phone ${percent(small)}`);
+  assert.ok(mid >= 0.30,
+    `the overlay is hiding the backdrop again: only ${percent(mid)} of the photograph reaches the middle of a desktop screen`);
+  assert.ok(mid <= 0.62,
+    `the overlay stopped doing its job: ${percent(mid)} survives, so text sits on a raw photograph`);
+  assert.ok(top >= 0.25, `nothing of the city shows behind the navigation: ${percent(top)} survives there`);
+  assert.ok(corner < mid * 0.5,
+    `the vignette is gone: the corner keeps ${percent(corner)} of the photograph against ${percent(mid)} in the middle`);
+  assert.ok(phone >= 0.20, `the phone overlay removes the backdrop: ${percent(phone)} survives`);
+  assert.ok(small >= 0.15 && small <= phone + 1e-9,
+    `the small-phone overlay is out of range: ${percent(small)} against ${percent(phone)} on a phone`);
+});
+
+check('M10.2: nothing multiplies the backdrop twice, and no shell paints over it', () => {
+  // the rule that wins for `.bg-layer` on a desktop viewport: the last one outside a media query
+  const layerRules = cssRules(cssSource.replace(/\/\*[\s\S]*?\*\//g, ' '))
+    .filter(([selector, , context]) => selector === '.bg-layer' && context === 'desktop')
+    .map(([, body]) => body);
+  assert.ok(layerRules.length > 0, 'the backdrop layer is gone');
+  const effective = layerRules[layerRules.length - 1];
+  assert.ok(!/mix-blend-mode:\s*(screen|lighten|plus-lighter|color-dodge)/.test(effective),
+    'the backdrop is blended in a mode that keeps only its lightest values, which is what made it a haze');
+  assert.match(effective, /opacity:\s*1\b/,
+    'the layer carries an opacity, so the overlay is a second mask rather than a ramp');
+  assert.equal(backdropState(['desktop']).opacity, 1, 'the effective layer opacity is not 1');
+  // the shells the content sits on must not paint, or the backdrop can never show in the gaps
+  ['main', '.view', '.view-head', '.page-shell'].forEach((shell) => {
+    cssRules(cssSource.replace(/\/\*[\s\S]*?\*\//g, ' ')).forEach(([selector, body]) => {
+      if (selector !== shell) return;
+      assert.ok(!/(^|[\s;])background(-image|-color)?\s*:/.test(body),
+        `${shell} paints a background, so the city cannot show between the panels`);
+    });
+  });
+  // surfaces: a hierarchy, and none of them a wall
+  const tokenAlpha = (name) => {
+    const found = [...cssSource.matchAll(new RegExp(`--${name}:\\s*([^;]+);`, 'g'))];
+    assert.ok(found.length > 0, `the surface token --${name} is gone`);
+    const alphas = [...found[found.length - 1][1].matchAll(/rgba\([^)]*?,\s*([\d.]+)\)/g)]
+      .map((match) => Number(match[1]));
+    assert.ok(alphas.length > 0, `--${name} has no alpha to read`);
+    return alphas.reduce((sum, value) => sum + value, 0) / alphas.length;
+  };
+  const hero = tokenAlpha('panel');
+  const panel = tokenAlpha('surface');
+  const card = tokenAlpha('surface-card');
+  const header = tokenAlpha('topbar-surface');
+  console.log(`         surface opacity: hero ${hero.toFixed(2)} · large panel ${panel.toFixed(2)} · `
+    + `card ${card.toFixed(2)} · header ${header.toFixed(2)}`);
+  assert.ok(hero < panel && panel < card,
+    'the surfaces lost their hierarchy: a large panel and a stat tile are equally opaque');
+  assert.ok(card <= 0.90, `an ordinary card is a wall again, at ${card.toFixed(2)} opaque`);
+  assert.ok(hero >= 0.60, `the hero is too transparent to hold text, at ${hero.toFixed(2)}`);
+  assert.ok(header >= 0.65 && header <= 0.88,
+    `the header is outside the range that keeps both the labels and the city visible: ${header.toFixed(2)}`);
+  assert.match(cssSource, /\.stat,[\s\S]{0,240}?background:\s*var\(--surface-card\)/,
+    'the ordinary cards no longer use the darker surface');
+  assert.match(cssSource, /\.hero,\s*\.hero\.hero-live\s*\{[^}]*background:\s*var\(--panel\)/,
+    'the hero no longer uses the most transparent surface');
+});
+
 /* ------------------------------------------------------------------ report --- */
 
 console.log(`\n${passed} checks passed, ${failures.length} failed`);
