@@ -1279,7 +1279,7 @@ one click away:
   and the bands, and states what the score is not — that page is where a reader goes *asking* for
   the model, so it stays visible there.
 
-### Two real bugs this uncovered (found by tracing the leak to its source)
+### Four real bugs this uncovered (found by tracing the leak to its source)
 
 * `contributionMap()` keyed the API's contribution entries on `metric`. The API sends `variable`.
   The map was therefore empty on **every real payload**, which silently emptied the driver shares,
@@ -1325,6 +1325,23 @@ the same needles plus a forbidden list for the copy that leaked.
 | `app.js` | 91.9 KB |
 | `bg-storm.webp` | 13.7 KB |
 | **Total front end** | **~339 KB of source, five files, zero dependencies** |
+
+### Verified after the change (live, 2026-10-17)
+
+| Check | Result |
+| --- | --- |
+| `python build/deployed_asset_diff.py` (reads each object back from S3 and compares MD5) | **0 differences** for all five assets: `index.html` 26,891 B `90049377aa0e3326479a50eb72f816e2`, `styles.css` 81,144 B `e456068734e74e3cbc7842d8b13a9ef7`, `lib.js` 125,409 B `06e7c0cc029427dc7454fe5c0610840d`, `app.js` 91,911 B `186fd2e9578f80efa054d589fa2e3693`, `bg-storm.webp` 13,652 B `2fab1efe47404581b86ab917956f625e` (unchanged, not re-uploaded) |
+| `node tools/dashboard_check.mjs --payload build/zones-live-weather.json …` | **108 checks passed, 0 failed** (same against the demo fixtures) |
+| `node tools/dashboard_run.mjs --payload build/zones-live-weather.json …` | **58 runtime checks passed, 0 failed** (56 for the demo fleet) |
+| `node tools/dashboard_run.mjs --site <bucket> --api <api>` | **58 runtime checks passed, 0 failed** against the deployed assets and the live API — and the reading it rendered was a live WATCH: "Risk is currently WATCH. Soil saturation is the main contributor, while rainfall, drain level, water level and flow rate remain below their watch levels." |
+| `node tools/dashboard_scenarios.mjs` | **49 scenario checks passed, 0 failed** |
+| `node tools/story_check.mjs --dir build/story` | **29 story checks passed, 0 failed** |
+| `python -m unittest discover -s tests -t .` | **509 tests, OK** |
+| `python tools/verify_deployed_page.py` | **all deployed page contracts hold** — including the new needles (the humanised driver label, the plain reason sentence, the fold's `weighted base` and `Raw model output`) and the new forbidden list (`hero-explain`, `hero-drivers`, `heuristic-v1 score`, `metric-weight`) |
+| `python tools/verify_deployed_code.py` | `RESULT: deployed Lambda code is byte-identical to the repository's src/` (no backend change was made) |
+| `python tools/live_acceptance.py` | **35 checks passed, 0 failed**. The first run measured 34/35: its first poll hit a cold start at 4.07 s, and with the function warm the five polls measured 942 ms / 977 ms / 1606 ms. The check is the same one as before this pass; nothing in it was relaxed |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File tools\deploy_logic_check.ps1` | **all assertions passed** (no AWS write path changed) |
+| Fleet state after the deploy | `zone_mode: live_weather`, `data_classification: mixed`, 5 cities — **Chennai WATCH 0.3534**, the other four NORMAL — 4 incidents recorded / **0 open**, alerting `{enabled: true, severities: [WARNING, CRITICAL], cooldown_seconds: 600}` |
 
 ### Known residual gaps from this pass (recorded rather than hidden)
 

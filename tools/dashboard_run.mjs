@@ -1262,8 +1262,9 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
         `the spotlight does not say what is driving the score: ${words}`);
       assert.ok(!words.includes(driver), `the spotlight prints the raw driver "${driver}"`);
     }
-    // 4: how fresh
-    assert.match(words, /Updated \d/, `the spotlight does not say how old the reading is: ${words}`);
+    // 4: how fresh ("Updated just now" for a reading seconds old, "Updated 4 min ago" otherwise)
+    assert.match(words, /Updated (just now|\d)/,
+      `the spotlight does not say how old the reading is: ${words}`);
     // 5: no internal identifier, no raw clock, no model name in the one line under the name
     assert.ok(!words.includes(leader.zone_id), 'the spotlight prints the internal zone id');
     assert.ok(!/\d{2}:\d{2}:\d{2}Z/.test(words), 'the spotlight prints a raw timestamp');
