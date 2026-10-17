@@ -18,6 +18,7 @@ from floodpulse import handler as handler_module
 from floodpulse.config import (
     ALERT_COOLDOWN_ENV,
     ALERT_COOLDOWN_SECONDS,
+    LIVE_ZONE_DEFINITIONS,
     WEATHER_MODE_ENV,
     WEATHER_MODE_OFF,
     WEATHER_REFRESH_ENV,
@@ -123,7 +124,7 @@ class FleetModeEnvTest(unittest.TestCase):
         demo = ("demo", "simulated", "SIMULATED", "", "  ", "anything-else", "0", "null")
         for raw in live:
             with self.subTest(mode=raw):
-                self.assertEqual(self.zones({ZONE_MODE_ENV: raw}), 5)
+                self.assertEqual(self.zones({ZONE_MODE_ENV: raw}), len(LIVE_ZONE_DEFINITIONS))
         for raw in demo:
             with self.subTest(mode=raw):
                 self.assertEqual(self.zones({ZONE_MODE_ENV: raw}), 3)
@@ -135,7 +136,7 @@ class FleetModeEnvTest(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         self.assertFalse(body["weather"]["enabled"])
-        self.assertEqual(len(body["zones"]), 5)
+        self.assertEqual(len(body["zones"]), len(LIVE_ZONE_DEFINITIONS))
 
     def test_a_typo_in_the_weather_switch_does_not_disable_the_provider_silently(self) -> None:
         # an unrecognised weather mode must resolve to a documented value, and the response says

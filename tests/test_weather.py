@@ -47,8 +47,14 @@ class BuildUrlTest(unittest.TestCase):
         url = weather.build_url(LIVE_ZONE_DEFINITIONS)
         self.assertTrue(url.startswith(weather.WEATHER_API_URL if hasattr(weather, "WEATHER_API_URL")
                                        else "https://api.open-meteo.com/v1/forecast"))
-        self.assertIn("latitude=13.0827%2C19.0760%2C12.9716%2C17.3850%2C9.9312", url)
-        self.assertIn("longitude=80.2707%2C72.8777%2C77.5946%2C78.4867%2C76.2673", url)
+        # every configured coordinate, in the configured order, in this one URL: the
+        # fleet travels in a single request however many cities it holds (M11: 15)
+        expected_latitudes = ",".join(f"{float(zone['latitude']):.4f}" for zone in LIVE_ZONE_DEFINITIONS)
+        expected_longitudes = ",".join(f"{float(zone['longitude']):.4f}" for zone in LIVE_ZONE_DEFINITIONS)
+        self.assertIn("latitude=" + expected_latitudes.replace(",", "%2C"), url)
+        self.assertIn("longitude=" + expected_longitudes.replace(",", "%2C"), url)
+        self.assertEqual(url.count("latitude="), 1, "the fleet must travel in one request")
+        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), 15)
 
     def test_requests_the_fields_we_actually_use(self):
         url = weather.build_url(LIVE_ZONE_DEFINITIONS)
@@ -128,7 +134,7 @@ class ParseResponseTest(unittest.TestCase):
 
     def test_multi_location_response_is_matched_positionally(self):
         observations = weather.parse_response(response_for(LIVE_ZONE_DEFINITIONS), LIVE_ZONE_DEFINITIONS)
-        self.assertEqual(len(observations), 5)
+        self.assertEqual(len(observations), len(LIVE_ZONE_DEFINITIONS))
         self.assertTrue(all(item.ok for item in observations.values()))
 
     def test_coordinate_mismatch_is_rejected_not_mislabeled(self):
@@ -197,7 +203,7 @@ class ClientTest(unittest.TestCase):
         result = self.client.fetch(LIVE_ZONE_DEFINITIONS)
         self.assertTrue(result.ok)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(result.requested, 5)
+        self.assertEqual(result.requested, len(LIVE_ZONE_DEFINITIONS))
         self.assertEqual(result.fetched_at_epoch, Responses.current_epoch)
         self.assertEqual(sorted(result.observations), sorted(str(z["zone_id"]) for z in LIVE_ZONE_DEFINITIONS))
 

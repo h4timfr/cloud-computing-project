@@ -28,6 +28,7 @@ from typing import Any, Mapping
 from .config import (
     ALERT_MARKER_SORT_KEY,
     ALERT_SEVERITIES,
+    city_scope_for,
     DATA_CLASSIFICATION_SIMULATED,
     INCIDENT_CLOSING_CLASS,
     INCIDENT_OPEN_SEVERITIES,
@@ -99,6 +100,7 @@ def build_incident_item(
     fully simulated.
     """
     zone = zone_definition(zone_id)
+    scope = city_scope_for(zone_id)
     return {
         "pk": build_zone_pk(zone_id),
         "sk": incident_sort_key(opened_ts_epoch),
@@ -106,6 +108,12 @@ def build_incident_item(
         "incident_id": incident_id_for(zone_id, opened_ts_epoch),
         "zone_id": zone_id,
         "zone_name": zone["name"],
+        # The incident is stamped with the city's state and region as the city table knew
+        # them when it opened, so an alert can name "Patna, Bihar" without a second lookup
+        # and a later edit to the table cannot silently rewrite the historical record.
+        "zone_state": scope["state"],
+        "zone_region": scope["region"],
+        "zone_display_name": scope["display_name"],
         "severity": severity,
         "severity_at_open": severity,
         "current_status": INCIDENT_STATUS_OPEN,
@@ -327,6 +335,7 @@ def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
     opened = int(item["opened_ts_epoch"])
     is_open = item.get("current_status") == INCIDENT_STATUS_OPEN
     classification = str(item.get("data_classification") or DATA_CLASSIFICATION_SIMULATED)
+    scope = city_scope_for(str(item.get("zone_id") or ""))
     closed_epoch = item.get("closed_ts_epoch")
     if is_open:
         duration = max(0, int(now_epoch) - opened)
@@ -338,6 +347,13 @@ def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
         "incident_id": item.get("incident_id"),
         "zone_id": item.get("zone_id"),
         "zone_name": item.get("zone_name"),
+        # Geography is looked up when the stored record does not carry it (incidents opened
+        # before M11, or by a deployment that predates the state column): the zone id is in
+        # the same city table, so the label is derived rather than missing. An id with no
+        # definition at all comes back with ``None`` - never with a guessed state.
+        "zone_state": item.get("zone_state", scope["state"]),
+        "zone_region": item.get("zone_region", scope["region"]),
+        "zone_display_name": item.get("zone_display_name") or scope["display_name"],
         "severity": item.get("severity"),
         "severity_at_open": item.get("severity_at_open"),
         "current_status": item.get("current_status"),

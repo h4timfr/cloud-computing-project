@@ -30,6 +30,7 @@ from floodpulse.config import (
     WEATHER_TIMEOUT_ENV,
     WEATHER_TIMEOUT_MAX_SECONDS,
     WEATHER_TIMEOUT_MIN_SECONDS,
+    REGIONS,
     WEATHER_TIMEOUT_SECONDS,
     ZONE_MODE_LIVE,
     ZONE_MODE_ENV,
@@ -41,6 +42,10 @@ from floodpulse.storage import LocalStore
 from floodpulse.weather import Observation, WeatherClient
 
 CITY = "city-chennai"
+# The configured live fleet, whatever its size: the assertions below say "every city the
+# configuration defines" rather than pinning a number that silently stops describing the
+# fleet the day a city is added (M11 grew it from 5 to 15).
+LIVE_FLEET = len(LIVE_ZONE_DEFINITIONS)
 PROVIDER_TIME = "2026-10-15T18:15"
 SAMPLE_TIME = "2026-10-15T18:00"
 CURRENT_EPOCH = 1_792_088_100.0
@@ -104,24 +109,38 @@ class ZoneModeTest(unittest.TestCase):
         self.assertEqual(zone_mode_for_env({ZONE_MODE_ENV: ""}), "simulated")
         self.assertEqual(zone_mode_for_env({ZONE_MODE_ENV: "liveweather"}), "simulated")
 
-    def test_live_mode_selects_five_city_zones_and_demo_selects_three(self):
+    def test_live_mode_selects_every_configured_city_and_demo_selects_three(self):
         from floodpulse.config import zone_ids_for_mode
 
-        self.assertEqual(len(zone_ids_for_mode("live")), 5)
-        self.assertEqual(len(zone_ids_for_mode("live_weather")), 5)
+        self.assertEqual(len(zone_ids_for_mode("live")), len(LIVE_ZONE_DEFINITIONS))
+        self.assertEqual(len(zone_ids_for_mode("live_weather")), len(LIVE_ZONE_DEFINITIONS))
         self.assertEqual(len(zone_ids_for_mode("demo")), 3)
         self.assertEqual(len(zone_ids_for_mode("simulated")), 3)
 
     def test_live_city_coordinates_match_the_documented_cities(self):
+        # The first five are the original fleet and keep their published coordinates; the
+        # rest are the M11 expansion. Every one is checked, so a typo in a coordinate, a
+        # copy-paste that repeats a city and a city that loses its position all fail here.
         expected = {
             "city-chennai": (13.0827, 80.2707),
             "city-mumbai": (19.0760, 72.8777),
             "city-bengaluru": (12.9716, 77.5946),
             "city-hyderabad": (17.3850, 78.4867),
             "city-kochi": (9.9312, 76.2673),
+            "city-delhi": (28.6139, 77.2090),
+            "city-kolkata": (22.5726, 88.3639),
+            "city-guwahati": (26.1445, 91.7362),
+            "city-patna": (25.5941, 85.1376),
+            "city-bhubaneswar": (20.2961, 85.8245),
+            "city-visakhapatnam": (17.6868, 83.2185),
+            "city-pune": (18.5204, 73.8567),
+            "city-ahmedabad": (23.0225, 72.5714),
+            "city-jaipur": (26.9124, 75.7873),
+            "city-lucknow": (26.8467, 80.9462),
         }
         actual = {zone["zone_id"]: (zone["latitude"], zone["longitude"]) for zone in LIVE_ZONE_DEFINITIONS}
         self.assertEqual(actual, expected)
+        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), 15)
 
     def test_threshold_overrides_are_valid_for_the_live_cities(self):
         from floodpulse.config import thresholds_for
@@ -309,8 +328,8 @@ class RefreshTest(unittest.TestCase):
         )
         self.assertTrue(outcome.enabled)
         self.assertTrue(outcome.attempted)
-        self.assertEqual(len(outcome.refreshed), 5)
-        self.assertEqual(len(self.ingested), 5)
+        self.assertEqual(len(outcome.refreshed), LIVE_FLEET)
+        self.assertEqual(len(self.ingested), LIVE_FLEET)
         self.assertIsNone(outcome.error)
 
     def test_cache_item_is_written_for_every_refreshed_zone(self):
@@ -342,8 +361,8 @@ class RefreshTest(unittest.TestCase):
         self.assertFalse(outcome.attempted)
         self.assertEqual(outcome.reason, "cache_fresh")
         self.assertEqual(client.calls, 0)
-        self.assertEqual(len(outcome.skipped_fresh), 5)
-        self.assertEqual(len(self.ingested), 5)
+        self.assertEqual(len(outcome.skipped_fresh), LIVE_FLEET)
+        self.assertEqual(len(self.ingested), LIVE_FLEET)
 
     def test_provider_failure_is_reported_and_no_value_is_stored(self):
         outcome = live_weather.refresh_live_weather(
@@ -422,7 +441,7 @@ class RefreshTest(unittest.TestCase):
             self.store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
             ingest=self.ingest, client=FakeClient(observations),
         )
-        self.assertEqual(len(outcome.refreshed), 4)
+        self.assertEqual(len(outcome.refreshed), LIVE_FLEET - 1)
         self.assertEqual(outcome.failed, (CITY,))
         self.assertIsNotNone(outcome.error)
 
@@ -489,7 +508,8 @@ class RefreshTest(unittest.TestCase):
             ingest=self.ingest, client=client,
         )
         self.assertEqual(outcome.failed, (CITY,))
-        self.assertEqual(len(outcome.refreshed), 4, "the readable zones must still refresh")
+        self.assertEqual(len(outcome.refreshed), LIVE_FLEET - 1,
+                         "the readable zones must still refresh")
         self.assertIn("prepare_failed", outcome.error)
         self.assertFalse(outcome.error.startswith("no_zone_refreshed"))
         cache = store.get_weather_cache(CITY)
@@ -518,7 +538,7 @@ class RefreshTest(unittest.TestCase):
         )
         self.assertTrue(outcome.attempted)
         self.assertEqual(outcome.failed, ())
-        self.assertEqual(len(outcome.refreshed), 5)
+        self.assertEqual(len(outcome.refreshed), LIVE_FLEET)
         self.assertEqual(client.calls, 1)
 
     def test_an_ingest_error_is_contained(self):
@@ -530,7 +550,7 @@ class RefreshTest(unittest.TestCase):
             ingest=exploding_ingest, client=FakeClient(),
         )
         self.assertEqual(outcome.refreshed, ())
-        self.assertEqual(len(outcome.failed), 5)
+        self.assertEqual(len(outcome.failed), LIVE_FLEET)
         self.assertIn("no_zone_refreshed", str(outcome.error))
         self.assertIn("store is unavailable", str(outcome.error))
 
@@ -548,17 +568,25 @@ class LiveZonesEndpointTest(unittest.TestCase):
         self.assertEqual(status, 200)
         return payload
 
-    def test_live_mode_serves_the_five_indian_cities(self):
+    def test_live_mode_serves_every_configured_indian_city(self):
         payload = self.zones()
-        self.assertEqual(payload["zone_count"], 5)
+        self.assertEqual(payload["zone_count"], len(LIVE_ZONE_DEFINITIONS))
+        self.assertEqual(payload["zone_count"], 15)
         self.assertEqual(payload["zone_mode"], "live_weather")
         self.assertEqual(payload["data_classification"], DATA_CLASSIFICATION_MIXED)
         self.assertFalse(payload["simulated"])
         names = {zone["zone_id"]: zone["name"] for zone in payload["zones"]}
-        self.assertEqual(
-            sorted(names),
-            ["city-bengaluru", "city-chennai", "city-hyderabad", "city-kochi", "city-mumbai"],
-        )
+        self.assertEqual(sorted(names), sorted(zone["zone_id"] for zone in LIVE_ZONE_DEFINITIONS))
+        # Every city carries the metadata the dashboard navigates and filters by, and the
+        # name in the payload is the name in the one city table.
+        for zone in payload["zones"]:
+            definition = next(z for z in LIVE_ZONE_DEFINITIONS if z["zone_id"] == zone["zone_id"])
+            self.assertEqual(zone["name"], definition["name"])
+            self.assertEqual(zone["city"], definition["name"])
+            self.assertEqual(zone["state"], definition["state"])
+            self.assertEqual(zone["region"], definition["region"])
+            self.assertEqual(zone["display_name"], f"{definition['name']}, {definition['state']}")
+            self.assertIn(zone["region"], REGIONS)
         self.assertEqual(names[CITY], "Chennai")
 
     def test_every_zone_reports_its_mode_and_metric_sources(self):
@@ -587,10 +615,10 @@ class LiveZonesEndpointTest(unittest.TestCase):
         self.assertTrue(block["enabled"])
         self.assertEqual(block["provider"], "open-meteo")
         self.assertEqual(block["refresh_seconds"], WEATHER_REFRESH_SECONDS)
-        self.assertEqual(len(block["live_zones"]), 5)
+        self.assertEqual(len(block["live_zones"]), LIVE_FLEET)
         self.assertIn("Open-Meteo", block["attribution"])
         self.assertIsNotNone(block["last_refresh"])
-        self.assertEqual(len(block["last_refresh"]["refreshed"]), 5)
+        self.assertEqual(len(block["last_refresh"]["refreshed"]), LIVE_FLEET)
 
     def test_zone_carries_the_cached_provider_observation(self):
         payload = self.zones()
@@ -602,7 +630,7 @@ class LiveZonesEndpointTest(unittest.TestCase):
         self.assertEqual(cached["cache_age_seconds"], 0)
         self.assertEqual(cached["metric_sources"]["rainfall_mm_per_hr"], "REAL")
 
-    def test_ranking_contains_all_five_live_zones_in_descending_risk(self):
+    def test_ranking_contains_every_live_zone_in_descending_risk(self):
         payload = self.zones()
         scores = {zone["zone_id"]: zone["latest"]["risk_score"] for zone in payload["zones"]}
         ranked = [scores[zone_id] for zone_id in payload["zone_ranking"]]
@@ -612,8 +640,8 @@ class LiveZonesEndpointTest(unittest.TestCase):
 
     def test_a_provider_outage_degrades_instead_of_breaking_the_endpoint(self):
         payload = self.zones(client=FakeClient(ok=False, error="network_error: no route"))
-        self.assertEqual(payload["zone_count"], 5)
-        self.assertEqual(len(payload["zones"]), 5)
+        self.assertEqual(payload["zone_count"], LIVE_FLEET)
+        self.assertEqual(len(payload["zones"]), LIVE_FLEET)
         self.assertTrue(payload["weather"]["last_refresh"]["attempted"])
         self.assertIn("network_error", payload["weather"]["last_refresh"]["error"])
         for zone in payload["zones"]:
@@ -756,7 +784,7 @@ class LiveZonesEndpointTest(unittest.TestCase):
         logged = json.loads(lines[0].split("weather refresh outcome: ", 1)[1])
         self.assertEqual(logged["event"], "weather_refresh")
         self.assertTrue(logged["attempted"])
-        self.assertEqual(len(logged["refreshed"]), 5)
+        self.assertEqual(len(logged["refreshed"]), LIVE_FLEET)
         self.assertEqual(logged["failed"], [])
         self.assertIsNone(logged["error"])
 
@@ -819,7 +847,7 @@ class LiveZonesEndpointTest(unittest.TestCase):
         logged = json.loads(lines[0].split("weather refresh outcome: ", 1)[1])
         self.assertTrue(logged["attempted"])
         self.assertEqual(logged["refreshed"], [])
-        self.assertEqual(len(logged["failed"]), 5)
+        self.assertEqual(len(logged["failed"]), LIVE_FLEET)
         self.assertIn("http_503", logged["error"])
         # the log line is a summary only: no secret, no ingestion key, no user data
         self.assertNotIn("FLOODPULSE", captured.output[0])

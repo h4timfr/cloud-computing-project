@@ -103,7 +103,8 @@ DEMO_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
 )
 
 # --------------------------------------------------------------------------- #
-# Live-weather zones (M4): five Indian cities fed by a real external provider
+# Live-weather zones (M4; expanded to fifteen cities in M11): the authoritative
+# city table for the whole project
 # --------------------------------------------------------------------------- #
 # Rainfall intensity and soil saturation for these zones come from Open-Meteo (see
 # ``weather.py``). Drain level, water level and flow rate are **simulated** by a
@@ -113,11 +114,26 @@ DEMO_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
 # The breakpoints are the same hand-set heuristic defaults as the demo zones: they
 # are NOT calibrated for these cities, they are not official warning thresholds, and
 # nothing here should be read as an authoritative flood warning for them.
+#
+# This tuple is the one place a monitored city is defined. ``name`` is the city,
+# ``state`` is the state or union territory it belongs to, ``region`` is a display and
+# navigation grouping only, and ``latitude``/``longitude`` are the city-centre
+# coordinates every layer uses - the weather request (``weather.py`` ``build_url``),
+# the provider cross-check (``WEATHER_LOCATION_TOLERANCE_DEGREES``) and the API. The
+# frontend holds no coordinates of its own.
+#
+# What the fleet does and does not claim (M11): FloodPulse monitors *these cities*.
+# It does not monitor a state, a region or the country, it produces no regional risk
+# score, and a city being NORMAL says nothing about the rest of its state. The
+# ``region`` field exists so a visitor can find a city on a page; it is not a unit of
+# measurement anywhere in the pipeline.
 
 LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "zone_id": "city-chennai",
         "name": "Chennai",
+        "state": "Tamil Nadu",
+        "region": "South",
         "country": "IN",
         "latitude": 13.0827,
         "longitude": 80.2707,
@@ -127,6 +143,8 @@ LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "zone_id": "city-mumbai",
         "name": "Mumbai",
+        "state": "Maharashtra",
+        "region": "West",
         "country": "IN",
         "latitude": 19.0760,
         "longitude": 72.8777,
@@ -136,6 +154,8 @@ LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "zone_id": "city-bengaluru",
         "name": "Bengaluru",
+        "state": "Karnataka",
+        "region": "South",
         "country": "IN",
         "latitude": 12.9716,
         "longitude": 77.5946,
@@ -145,6 +165,8 @@ LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "zone_id": "city-hyderabad",
         "name": "Hyderabad",
+        "state": "Telangana",
+        "region": "South",
         "country": "IN",
         "latitude": 17.3850,
         "longitude": 78.4867,
@@ -154,12 +176,136 @@ LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "zone_id": "city-kochi",
         "name": "Kochi",
+        "state": "Kerala",
+        "region": "South",
         "country": "IN",
         "latitude": 9.9312,
         "longitude": 76.2673,
         "description": "Backwater coastal city; very heavy south-west monsoon rainfall.",
         "thresholds": {},
     },
+    {
+        "zone_id": "city-delhi",
+        "name": "Delhi",
+        "state": "Delhi",
+        "region": "North",
+        "country": "IN",
+        "latitude": 28.6139,
+        "longitude": 77.2090,
+        "description": "Yamuna floodplain metropolis; drainage congestion after cloudbursts.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-kolkata",
+        "name": "Kolkata",
+        "state": "West Bengal",
+        "region": "East",
+        "country": "IN",
+        "latitude": 22.5726,
+        "longitude": 88.3639,
+        "description": "Deltaic Hooghly port city; tidal and monsoon rainfall flooding.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-guwahati",
+        "name": "Guwahati",
+        "state": "Assam",
+        "region": "Northeast",
+        "country": "IN",
+        "latitude": 26.1445,
+        "longitude": 91.7362,
+        "description": "Brahmaputra valley city; very heavy monsoon rainfall on steep terrain.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-patna",
+        "name": "Patna",
+        "state": "Bihar",
+        "region": "East",
+        "country": "IN",
+        "latitude": 25.5941,
+        "longitude": 85.1376,
+        "description": "Ganges riverside city; river backflow and urban drainage flooding.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-bhubaneswar",
+        "name": "Bhubaneswar",
+        "state": "Odisha",
+        "region": "East",
+        "country": "IN",
+        "latitude": 20.2961,
+        "longitude": 85.8245,
+        "description": "Coastal Odisha capital; cyclone-season rainfall and drainage overload.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-visakhapatnam",
+        "name": "Visakhapatnam",
+        "state": "Andhra Pradesh",
+        "region": "South",
+        "country": "IN",
+        "latitude": 17.6868,
+        "longitude": 83.2185,
+        "description": "Coastal Andhra port city between hills and the Bay of Bengal.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-pune",
+        "name": "Pune",
+        "state": "Maharashtra",
+        "region": "West",
+        "country": "IN",
+        "latitude": 18.5204,
+        "longitude": 73.8567,
+        "description": "Deccan plateau city at the confluence of two rivers; flash flooding.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-ahmedabad",
+        "name": "Ahmedabad",
+        "state": "Gujarat",
+        "region": "West",
+        "country": "IN",
+        "latitude": 23.0225,
+        "longitude": 72.5714,
+        "description": "Sabarmati riverside city; monsoon and upstream release flooding.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-jaipur",
+        "name": "Jaipur",
+        "state": "Rajasthan",
+        "region": "North",
+        "country": "IN",
+        "latitude": 26.9124,
+        "longitude": 75.7873,
+        "description": "Semi-arid city where short intense storms cause flash flooding.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-lucknow",
+        "name": "Lucknow",
+        "state": "Uttar Pradesh",
+        "region": "North",
+        "country": "IN",
+        "latitude": 26.8467,
+        "longitude": 80.9462,
+        "description": "Gomti riverside city; monsoon rainfall and drainage congestion.",
+        "thresholds": {},
+    },
+)
+
+#: Display order of the region grouping. Navigation only: no region has a risk score.
+REGIONS: tuple[str, ...] = ("North", "South", "East", "West", "Northeast")
+
+#: What the coverage numbers mean, published with them so a reader cannot mistake a
+#: city fleet for national coverage.
+COVERAGE_SCOPE_NOTE = (
+    "FloodPulse monitors individual cities, not states, regions or the country. A city in "
+    "this list says nothing about the rest of its state or region; no regional or national "
+    "risk score is produced. Delhi is a union territory rather than a state, so 'state' "
+    "below means the state or union territory a monitored city belongs to."
 )
 
 #: Kept as the library default so every pre-M4 caller keeps working unchanged.
@@ -521,3 +667,70 @@ def thresholds_for(zone_id: str) -> dict[str, dict[str, float]]:
             raise KeyError(f"override for unknown metric {metric!r} in zone {zone_id!r}")
         merged[metric].update(override)
     return merged
+
+
+# --------------------------------------------------------------------------- #
+# City labels and coverage (M11): derived, never stored twice
+# --------------------------------------------------------------------------- #
+# The definitions above are the only place a city name, state, region or coordinate is
+# written. Everything else - the API, the alert subject line, the incident record's
+# labels, the dashboard - derives from them through these helpers, so there is exactly
+# one value to correct if a city moves state or a coordinate is wrong.
+
+
+def city_label(zone: Mapping[str, Any]) -> str:
+    """``"City, State"`` when the state is known, otherwise just the city name."""
+    name = str(zone.get("name") or zone.get("zone_id") or "")
+    state = zone.get("state")
+    return f"{name}, {state}" if state else name
+
+
+def city_scope_for(zone_id: str) -> dict[str, Any]:
+    """Labels for a zone id: city, state, region and the display name.
+
+    Never raises. An incident or an alert can outlive a definition (a zone dropped from a
+    later deployment), and an unknown id must not turn a read into a 500: it comes back
+    with no state or region and its own id as the display name, which is the truth -
+    FloodPulse has no metadata for it.
+    """
+    for zone in DEMO_ZONE_DEFINITIONS + LIVE_ZONE_DEFINITIONS:
+        if zone["zone_id"] == zone_id:
+            return {
+                "city": str(zone["name"]),
+                "state": zone.get("state"),
+                "region": zone.get("region"),
+                "display_name": city_label(zone),
+            }
+    return {"city": None, "state": None, "region": None, "display_name": str(zone_id)}
+
+
+def coverage_summary(mode: str) -> dict[str, Any]:
+    """What the active fleet covers, derived from its definitions (no hardcoded totals).
+
+    Aggregates only: the per-city detail is in the ``zones`` array of the same response.
+    ``fleet_kind`` is ``cities`` for the live fleet and ``zones`` for the simulator, so
+    the copy built on top of this cannot call three invented districts a city network.
+    """
+    definitions = zone_definitions_for_mode(mode)
+    live = zone_mode_input(mode) == ZONE_MODE_INPUT_LIVE
+    states = sorted({str(zone["state"]) for zone in definitions if zone.get("state")})
+    regions = [
+        region for region in REGIONS
+        if any(zone.get("region") == region for zone in definitions)
+    ]
+    return {
+        "fleet_kind": "cities" if live else "zones",
+        "city_count": len(definitions),
+        "state_count": len(states),
+        "region_count": len(regions),
+        "states": states,
+        "regions": [
+            {
+                "region": region,
+                "city_count": sum(1 for zone in definitions if zone.get("region") == region),
+                "cities": [str(zone["name"]) for zone in definitions if zone.get("region") == region],
+            }
+            for region in regions
+        ],
+        "scope_note": COVERAGE_SCOPE_NOTE,
+    }

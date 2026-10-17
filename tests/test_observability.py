@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timezone
 
 from floodpulse import handler as handler_module
-from floodpulse.config import zone_definitions_for_mode
+from floodpulse.config import LIVE_ZONE_DEFINITIONS, zone_definitions_for_mode
 from floodpulse.handler import _provider_observation_age_seconds, _zone_view, dispatch
 from floodpulse.live_weather import (
     WEATHER_OBSERVATION_INTERVAL_SECONDS,
@@ -193,7 +193,7 @@ class ReadingFreshnessFieldsTest(unittest.TestCase):
         self.assertIn("observation_age_seconds", body["weather"])
         self.assertIn("observation_is_current", body["weather"])
         self.assertEqual(body["weather"]["observation_interval_seconds"], 3600)
-        self.assertEqual(len(body["zones"]), 5)
+        self.assertEqual(len(body["zones"]), len(LIVE_ZONE_DEFINITIONS))
         for zone in body["zones"]:
             # With the provider switched off there is no per-zone cache to describe, so the
             # zone carries no weather block at all - an absent block, never an invented one.

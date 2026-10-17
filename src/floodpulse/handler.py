@@ -83,6 +83,8 @@ from .config import (
     ZONE_MODE_LIVE,
     data_classification_for_mode,
     thresholds_for,
+    city_scope_for,
+    coverage_summary,
     zone_definition,
     zone_definitions_for_mode,
     zone_mode_for_env,
@@ -120,6 +122,7 @@ from .notify import (
     build_alert_message,
     is_simulated_only,
     notifier_for_env,
+    zone_geography,
 )
 from .risk import MODEL_NOTE, apply_hysteresis, rolling_mean_metrics, score_zone
 from .storage import (
@@ -408,12 +411,15 @@ def _maybe_alert(
         }
 
     kind = ALERT_KIND_ESCALATED if action == ACTION_ESCALATED else ALERT_KIND_OPENED
-    zone_name = str(incident.get("zone_name") or zone_id)
+    # The alert names the city and its state ("Patna, Bihar"), not the zone id: a subscriber
+    # asked to hear about flood risk in monitored Indian cities. The labels come from the
+    # incident's own record where it has them, otherwise from the city table.
+    zone_label = str(zone_geography(incident)["display_name"] or incident.get("zone_name") or zone_id)
     try:
         result = notifier.publish(
             # the subject states the provenance of the incident, not of the deployment:
             # a live-weather incident over real rainfall is never labelled "simulated"
-            alert_subject(kind, zone_name, alert_severity,
+            alert_subject(kind, zone_label, alert_severity,
                           simulated=is_simulated_only(incident)),
             build_alert_message(kind, incident),
         )
@@ -824,9 +830,16 @@ def _zone_view(
     resolved_mode = zone_mode_for_env({}) if mode is None else mode
     resolved_refresh = WEATHER_REFRESH_SECONDS if refresh_seconds is None else refresh_seconds
     sources = METRIC_SOURCES_LIVE if resolved_mode == ZONE_MODE_LIVE else METRIC_SOURCES_SIMULATED
+    scope = city_scope_for(str(zone["zone_id"]))
     view: dict[str, Any] = {
         "zone_id": zone["zone_id"],
         "name": zone["name"],
+        # The monitored unit is a city, and the page needs to say which one and where:
+        # ``city`` is the same name under the label the UI reads, ``display_name`` is the
+        # "City, State" form used in headings and alerts. All three come from the one city
+        # table in ``config`` - the API never assembles geography from a payload.
+        "city": scope["city"] if scope["city"] is not None else zone["name"],
+        "display_name": scope["display_name"] if scope["city"] is not None else zone["name"],
         "latitude": zone["latitude"],
         "longitude": zone["longitude"],
         "description": zone["description"],
@@ -838,6 +851,12 @@ def _zone_view(
     }
     if zone.get("country"):
         view["country"] = zone["country"]
+    # A demo zone has no state or region: the keys are omitted rather than sent empty, so a
+    # reader can tell "this zone has no geography" from "this city's state is unknown".
+    if scope["state"] is not None:
+        view["state"] = scope["state"]
+    if scope["region"] is not None:
+        view["region"] = scope["region"]
     if weather_cache is not None:
         age = cache_age_seconds(weather_cache, now_epoch)
         attempt = attempt_age_seconds(weather_cache, now_epoch)
@@ -1116,6 +1135,8 @@ def _handle_zones(
         highest = {
             "zone_id": top["zone_id"],
             "name": top["name"],
+            "city": top.get("city", top["name"]),
+            "display_name": top.get("display_name", top["name"]),
             "risk_score": top["latest"]["risk_score"],
             "risk_class": top["latest"]["risk_class"],
             "timestamp": top["latest"]["timestamp"],
@@ -1124,6 +1145,9 @@ def _handle_zones(
             "age_seconds": leader_age,
             "stale": leader_age > STALE_READING_SECONDS,
         }
+        for key in ("state", "region"):
+            if top.get(key) is not None:
+                highest[key] = top[key]
 
     # Zones whose newest stored reading is too old to describe the present. They still appear
     # with their real values; this says which ones are no longer current (no extra reads: the
@@ -1160,6 +1184,10 @@ def _handle_zones(
         ),
         "highest_risk_zone": highest,
         "zone_ranking": ranking,
+        # What the fleet covers, and what it does not. Derived from the same city table that
+        # produced ``zones``, so a count here can never disagree with the list below it, and
+        # the dashboard has no reason to hardcode 15 anywhere.
+        "coverage": coverage_summary(active_mode),
         # a fleet-level answer to "is anything on this board out of date?"
         "stale_zone_ids": stale_zones,
         "stale_after_seconds": STALE_READING_SECONDS,

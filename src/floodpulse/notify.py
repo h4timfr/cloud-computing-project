@@ -19,6 +19,7 @@ import re
 from typing import Any, Mapping
 
 from .config import (
+    city_scope_for,
     DATA_CLASSIFICATION_MIXED,
     DATA_CLASSIFICATION_SIMULATED,
     MIXED_DATA_DISCLAIMER,
@@ -206,20 +207,40 @@ def alert_disclaimer(incident: Mapping[str, Any]) -> str:
     return SIMULATION_DISCLAIMER if is_simulated_only(incident) else MIXED_DATA_DISCLAIMER
 
 
-def alert_subject(kind: str, zone_name: str, severity: str, *, simulated: bool = True) -> str:
+def zone_geography(incident: Mapping[str, Any]) -> dict[str, Any]:
+    """Where the incident's city is, for the alert text.
+
+    The stored labels win (they are what the city table said when the incident opened); a
+    record written before M11 has none, so they are derived from the zone id in the same
+    table. An unknown id yields ``None`` rather than a guessed state, and the alert then
+    names the city alone.
+    """
+    scope = city_scope_for(str(incident.get("zone_id") or ""))
+    state = incident.get("zone_state", scope["state"])
+    region = incident.get("zone_region", scope["region"])
+    name = incident.get("zone_name") or scope["city"] or incident.get("zone_id")
+    display = incident.get("zone_display_name") or (
+        f"{name}, {state}" if state else (str(name) if name else None)
+    )
+    return {"name": name, "state": state, "region": region, "display_name": display}
+
+
+def alert_subject(kind: str, zone_label: str, severity: str, *, simulated: bool = True) -> str:
     """Human-readable subject line for an incident alert.
 
-    The provenance marker follows the incident: a live-weather incident is never labelled
-    "simulated", and a fully simulated one keeps its full simulation wording.
+    ``zone_label`` is the city with its state where one is known ("Patna, Bihar"), so an
+    alert identifies which monitored city it is about without the reader having to know the
+    zone ids. The provenance marker follows the incident: a live-weather incident is never
+    labelled "simulated", and a fully simulated one keeps its full simulation wording.
     """
     if kind == ALERT_KIND_ESCALATED:
         tail = "(simulated)" if simulated else "(live rainfall, simulated hydraulics)"
-        return sanitise_subject(f"FloodPulse ESCALATION to {severity}: {zone_name} {tail}")
+        return sanitise_subject(f"FloodPulse ESCALATION to {severity}: {zone_label} {tail}")
     if kind == ALERT_KIND_TEST:
         tail = "(simulated data)" if simulated else "(live rainfall mode)"
-        return sanitise_subject(f"FloodPulse test alert: {zone_name} {tail}")
+        return sanitise_subject(f"FloodPulse test alert: {zone_label} {tail}")
     tail = "(simulated flood risk)" if simulated else "(live rainfall, simulated hydraulics)"
-    return sanitise_subject(f"FloodPulse {severity}: {zone_name} {tail}")
+    return sanitise_subject(f"FloodPulse {severity}: {zone_label} {tail}")
 
 
 def _number(value: Any) -> float | None:
@@ -239,6 +260,7 @@ def build_alert_message(kind: str, incident: Mapping[str, Any]) -> str:
     """
     provenance = alert_provenance(incident)
     simulated_only = provenance == DATA_CLASSIFICATION_SIMULATED
+    geography = zone_geography(incident)
     payload = {
         "source": "floodpulse",
         "kind": kind,
@@ -248,6 +270,11 @@ def build_alert_message(kind: str, incident: Mapping[str, Any]) -> str:
         "zone": {
             "zone_id": incident.get("zone_id"),
             "name": incident.get("zone_name"),
+            # Which monitored city this is, and where it is. A subscriber who asked to hear
+            # about Indian cities should not have to know what a zone id is.
+            "state": geography["state"],
+            "region": geography["region"],
+            "display_name": geography["display_name"],
         },
         "incident": {
             "incident_id": incident.get("incident_id"),

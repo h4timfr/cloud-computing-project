@@ -192,7 +192,16 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(payload["source"], "floodpulse")
         self.assertEqual(payload["kind"], "incident_escalated")
         self.assertEqual(payload["severity"], "CRITICAL")
-        self.assertEqual(payload["zone"], {"zone_id": "zone-riverside-north", "name": "Riverside North"})
+        # The alert names the monitored city and its geography: a subscriber asked about
+        # cities, not about zone ids. A simulated zone has no state, and says so with
+        # nulls rather than a guessed one.
+        self.assertEqual(payload["zone"], {
+            "zone_id": "zone-riverside-north",
+            "name": "Riverside North",
+            "state": None,
+            "region": None,
+            "display_name": "Riverside North",
+        })
         self.assertEqual(payload["incident"]["incident_id"], INCIDENT["incident_id"])
         self.assertEqual(payload["incident"]["top_driver_label"], "Water level")
         self.assertEqual(payload["incident"]["risk_score_now"], 0.99)
