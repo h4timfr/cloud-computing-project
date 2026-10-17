@@ -922,7 +922,11 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .nav { grid-area: nav; justify-self: center; min-width: 0; }
 .nav-list { display: flex; align-items: center; gap: 4px; list-style: none; margin: 0; padding: 0; }
 .nav-link {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  /* A nav link is the most-tapped control on a phone, so it is a full touch target rather than
+   * a piece of text with padding: 44px is the size a fingertip can be expected to hit. */
+  min-height: 44px;
   padding: 8px 15px;
   border-radius: 999px;
   border: 1px solid transparent;
@@ -1633,8 +1637,9 @@ body {
 .footer-nav a { font-size: var(--text-sm); font-weight: 600; }
 
 /* Touch targets: a nav link is a finger target on a phone, so it gets height, not padding
- * tricks. `min-height` also keeps the active underline in a predictable place. */
-.nav-link { min-height: 44px; display: inline-flex; align-items: center; }
+ * tricks. `min-height` also keeps the active underline in a predictable place. The 44px lives
+ * on the base rule above; this only documents the intent for the letter-spacing pass. */
+.nav-link { letter-spacing: 0; }
 
 /* --------------------------------------------------------------- surfaces --- */
 
@@ -1856,11 +1861,13 @@ body {
 
 .help { display: inline-block; }
 
+/* A help button is a finger target on a phone, where a 26px dot is not. It grows to a full
+ * touch size under 560px and stays compact (32px, still comfortable for a mouse) above it. */
 .help summary {
   display: inline-grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   color: var(--slate-400);
   border: 1px solid var(--stroke);
@@ -2208,6 +2215,9 @@ body {
   .city-measures { gap: 6px 14px; }
   .block-title { margin-top: 22px; }
   .chart-summary { font-size: var(--text-xs); }
+  /* touch targets: help buttons and disclosure summaries reach 44px on a small screen */
+  .help summary { width: 44px; height: 44px; }
+  .tech > summary { min-height: 44px; display: flex; align-items: center; }
 }
 
 @media (max-width: 400px) {

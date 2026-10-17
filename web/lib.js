@@ -1543,7 +1543,7 @@
   }
 
   var CITY_ARROW = '<svg class="arrow" viewBox="0 0 16 16" width="14" height="14" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ' +
+    'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" ' +
     'aria-hidden="true" focusable="false"><path d="M3 8h9"/><path d="M8.5 4.5 12 8l-3.5 3.5"/></svg>';
 
   /* One measurement tile: icon, value, provenance, distance to its own limits. */
@@ -2002,7 +2002,10 @@
         return '<li>' + escapeHtml(item) + '</li>';
       }).join('') + '</ul>';
     }
-    return '<div class="empty-state' + tone + '"' + key + ' role="status">' +
+    // Deliberately NOT a live region: an empty state is a paragraph the reader arrives at, and
+    // several of them can appear in one poll. The polite regions in the header and the view lede
+    // already announce the state change once, which is what a screen-reader user needs.
+    return '<div class="empty-state' + tone + '"' + key + '>' +
       (opt.icon ? '<span class="empty-icon">' + icon(opt.icon, 26) + '</span>' : '') +
       '<p class="empty-title">' + escapeHtml(opt.title || 'Nothing to show') + '</p>' +
       (opt.detail ? '<p class="empty-detail">' + escapeHtml(opt.detail) + '</p>' : '') +

@@ -979,6 +979,178 @@ async function main() {
     });
   })();
 
+  /* ------------------------------------------- M9 surfaces, under hostile input --- */
+
+  group('M9: the new surfaces stay honest and readable under hostile input');
+
+  await (async () => {
+    // A payload string reaches the new sentences too: the city card, the driver block, the
+    // per-city alert history, the alert reason and the delivery panel all interpolate one.
+    const hostile = createRuntime();
+    const poison = '<img src=x onerror="window.__m9 = true">';
+    hostile.on(zonesRoute, () => ({
+      body: {
+        ...live.payload,
+        zones: (live.payload.zones || []).map((zone, index) => (index === 0
+          ? {
+            ...zone,
+            name: zone.name + ' ' + poison,
+            latest: { ...zone.latest, top_drivers: [poison], top_driver_label: poison }
+          }
+          : zone))
+      }
+    }));
+    hostile.on(incidentsRoute, () => ({
+      body: {
+        ...live.incidents,
+        incidents: (live.incidents.incidents || []).map((incident, index) => (index === 0
+          ? { ...incident, zone_name: poison, top_driver_label: poison, close_reason: poison }
+          : incident)),
+        alerting: { enabled: true, severities: [poison], cooldown_seconds: 900 }
+      }
+    }));
+    hostile.on(historyRoute, () => ({ body: live.history }));
+
+    const dom = boot(hostile);
+    await hostile.settle();
+
+    await check('no M9 sentence executes a payload string', () => {
+      // Two assertions carry this, and a third would be worse than useless: an "attribute scan"
+      // cannot tell an escaped payload inside aria-label from a live attribute without writing a
+      // real HTML parser, and it reports the escaped case as a failure. The escaping itself is
+      // the mechanism, so the test is that the text is *escaped and present* (1) while no
+      // executable tag was emitted (2) — with the injected global as the ground truth (3).
+      const surfaces = ['city-cards', 'hero', 'alerts-active', 'alerts-closed', 'alerts-delivery'];
+      // <svg> is deliberately absent from this list: the icon set is inline SVG, which is how the
+      // page avoids an icon CDN. The tags below are the ones a payload could use to load or run
+      // something, and none of them belongs in a card.
+      const executable = /<(img|script|iframe|object|embed|link|style|form|input|video|audio|math)\b/i;
+      surfaces.forEach((id) => {
+        const html = dom.html(id);
+        assert.ok(!executable.test(html), `${id} emitted a live tag: ${html.slice(0, 160)}`);
+        // Where the payload reaches a surface it must be escaped; where it does not (the hero
+        // shows the highest-risk city, which is not necessarily the poisoned one) there is
+        // nothing to escape, and the coverage assertion below proves the case is not vacuous.
+        if (/img src=x/.test(html)) {
+          assert.ok(html.includes('&lt;img src=x onerror='),
+            `${id} carried the payload unescaped: ${html.slice(0, 160)}`);
+        }
+      });
+      assert.ok(['city-cards', 'alerts-active', 'alerts-closed']
+        .some((id) => dom.html(id).includes('&lt;img src=x onerror=')),
+      'the payload never reached any surface: this check proves nothing');
+      assert.equal(dom.window.__m9, undefined, 'the injected handler ran');
+      // the methodology legend takes provenance labels from the same payload vocabulary
+      assert.ok(!executable.test(dom.html('provenance-legend')), 'the legend emitted a tag');
+    });
+
+    await check('a payload with no field values still reads as sentences', async () => {
+      // An incident written by a half-finished ingest: ids and a status, nothing else.
+      const bare = createRuntime();
+      bare.on(zonesRoute, () => ({
+        body: { zone_mode: 'live_weather', zone_count: 1, zones: [{ zone_id: 'city-kochi', name: 'Kochi' }] }
+      }));
+      bare.on(incidentsRoute, () => ({
+        body: { incidents: [{ incident_id: 'inc-1', zone_id: 'city-kochi', current_status: 'OPEN' }] }
+      }));
+      bare.on(historyRoute, () => ({ body: {} }));
+
+      const bareDom = boot(bare);
+      await bare.settle();
+      ['city-cards', 'hero', 'alerts-active', 'alerts-delivery', 'alerts-status', 'health-list', 'band-strip']
+        .forEach((id) => {
+          const html = bareDom.html(id);
+          assert.ok(!/undefined|NaN|\[object/.test(html), `${id} printed a raw value: ${html.slice(0, 200)}`);
+        });
+      const active = bareDom.html('alerts-active');
+      assert.match(active, /city-kochi/, 'the incident lost its city');
+      assert.ok(!/Content-Security|arn:/i.test(bareDom.html('alerts-delivery')), 'the panel leaks internals');
+    });
+
+    await check('a fleet that is not fully answering is called attention, not healthy', async () => {
+      const stale = createRuntime();
+      stale.on(zonesRoute, () => ({
+        body: {
+          ...live.payload,
+          stale_zone_ids: [(live.payload.zones[0] || {}).zone_id],
+          zones: (live.payload.zones || []).map((zone, index) => (index === 1 ? { ...zone, latest: null } : zone))
+        }
+      }));
+      stale.on(incidentsRoute, () => ({ body: live.incidents }));
+      stale.on(historyRoute, () => ({ body: live.history }));
+
+      const staleDom = boot(stale);
+      await stale.settle();
+      const word = staleDom.text('health-word');
+      const list = staleDom.html('health-list');
+      assert.ok(!/Healthy/i.test(word), `a degraded fleet is called "${word}"`);
+      assert.match(list, /\d+ of \d+ .* reporting/, `the status list reads "${list}"`);
+      assert.match(list, /not reporting/, 'the silent city is never named as a problem');
+      assert.ok(!/(arn:|eu-north-1|dynamodb|lambda)/i.test(list), 'the status surface leaks infrastructure');
+    });
+
+    await check('the About page and the city cards agree that simulated data is simulated', async () => {
+      // A *consistent* simulated fleet: the envelope says simulated and every per-metric
+      // classification says simulated, which is what the API produces when the simulator is the
+      // only source. (A simulated envelope with REAL per-metric labels is an API-side
+      // contradiction: the page reports each metric's own provenance rather than guessing, so it
+      // is not a case the dashboard can be asked to resolve.)
+      const allSimulated = {
+        drain_level_m: 'SIMULATED',
+        flow_rate_m3_s: 'SIMULATED',
+        rainfall_mm_per_hr: 'SIMULATED',
+        soil_saturation_pct: 'SIMULATED',
+        water_level_m: 'SIMULATED'
+      };
+      const simulated = createRuntime();
+      simulated.on(zonesRoute, () => ({
+        body: {
+          ...live.payload,
+          zone_mode: 'simulated',
+          data_classification: 'simulated',
+          zones: (live.payload.zones || []).map((zone) => ({
+            ...zone,
+            zone_mode: 'simulated',
+            metric_sources: allSimulated,
+            latest: { ...zone.latest, simulated: true, data_classification: 'simulated', metric_sources: allSimulated }
+          }))
+        }
+      }));
+      simulated.on(incidentsRoute, () => ({ body: live.incidents }));
+      simulated.on(historyRoute, () => ({ body: live.history }));
+
+      const simulatedDom = boot(simulated);
+      await simulated.settle();
+      const cards = simulatedDom.html('city-cards');
+      assert.match(cards, /SIM/, 'a simulated reading is not labelled SIM on the city cards');
+      assert.ok(!/>\s*REAL\s*</.test(cards), 'a simulated reading is labelled REAL');
+      const about = simulatedDom.html('about-cities');
+      assert.ok(!/>\s*REAL\b/.test(about), `the About page claims real data: ${about}`);
+      assert.match(about, /simulat/i, 'the About page does not describe a simulated fleet as simulated');
+    });
+
+    await check('a very long city name reaches the page intact', async () => {
+      const long = createRuntime();
+      const longName = 'Thiruvananthapuram Coastal North Extension Zone';
+      long.on(zonesRoute, () => ({
+        body: {
+          ...live.payload,
+          zones: (live.payload.zones || []).map((zone, index) => (index === 0 ? { ...zone, name: longName } : zone))
+        }
+      }));
+      long.on(incidentsRoute, () => ({ body: live.incidents }));
+      long.on(historyRoute, () => ({ body: live.history }));
+
+      const longDom = boot(long);
+      await long.settle();
+      // The renderer keeps the whole name: wrapping it is the stylesheet's job, and the static
+      // harness checks `overflow-wrap: anywhere` on these selectors. Nothing here pretends to
+      // measure layout, because a fake DOM has none.
+      assert.ok(longDom.html('city-cards').includes(longName), 'the long name was cut off in the renderer');
+      assert.ok(!/&hellip;|…/.test(longDom.html('city-cards')), 'the renderer truncated the name itself');
+    });
+  })();
+
   await check('no scenario produced an unhandled promise rejection', () => {
     assert.equal(unhandled.length, 0,
       `unhandled rejections: ${unhandled.map((reason) => String(reason && reason.message || reason)).join(' | ')}`);

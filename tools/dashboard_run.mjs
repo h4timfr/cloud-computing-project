@@ -997,6 +997,169 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       'the fleet label did not survive an empty fleet');
   });
 
+  group('M9: the About section, system status and honest delivery state');
+
+  check('the About section is reachable, marked current and lists the live fleet', () => {
+    clickNav(dom, 'about');
+    assert.equal(dom.node('view-about').hidden, false, 'the About section did not open');
+    assert.equal(dom.node('view-overview').hidden, true, 'two sections are visible at once');
+    assert.equal(dom.node('nav-about').getAttribute('aria-current'), 'page',
+      'the current section is not marked for assistive tech');
+    assert.equal(dom.node('nav-overview').getAttribute('aria-current'), null,
+      'two nav links claim to be current');
+    assert.match(dom.title(), /About FloodPulse/, `the window title reads "${dom.title()}"`);
+    // the city list is read from the payload rather than hard-coded
+    const cities = dom.html('about-cities');
+    const names = payload.zones.map((zone) => zone.name);
+    names.forEach((name) => assert.ok(cities.includes(name), `the About page omits ${name}`));
+    assert.match(cities, new RegExp(`<b>${names.length}</b>`), 'the About page does not count the fleet');
+    // and it says what the model is not, in the same words as the methodology page
+    assert.match(dom.html('about-limitations'), /not a calibrated hydrological model|hand-tuned heuristic/,
+      'the About page does not state the model limitations');
+    // the static About copy (the guidance section, the official links, the stack) is checked
+    // against index.html itself in tools/dashboard_check.mjs: this fake DOM only holds what the
+    // controller wrote, so asserting static markup here would be asserting nothing.
+    clickNav(dom, 'overview');
+  });
+
+  check('the system status says how much of the fleet is answering, in words', () => {
+    const word = dom.text('health-word');
+    const list = dom.html('health-list');
+    assert.ok(word.length > 0, 'the status pill has no word in it');
+    assert.ok(!/^\s*$/.test(word), 'the status pill is blank');
+    assert.match(list, new RegExp(`\\d+ of \\d+ ${fleetNounPlural} reporting`),
+      `the status list reads "${list}"`);
+    // the status is a state, never a number without a unit or a bare symbol
+    assert.match(list, /Weather (updated|data fresh|feed not in use)/);
+    const tone = dom.node('health-dot').className;
+    assert.match(tone, /is-(ok|watch|bad|quiet)/, `the status dot has no state: ${tone}`);
+    // a healthy live fleet is healthy, and says so in one of the two states the brief names
+    assert.match(word, /Healthy|Attention|Degraded|Connecting/, `unexpected status word "${word}"`);
+    // nothing about the infrastructure leaks into the status surface
+    ['arn:', 'eu-north-1', 'dynamodb', 'lambda', '725934295966'].forEach((needle) => {
+      assert.ok(!list.toLowerCase().includes(needle.toLowerCase()),
+        `the status surface exposes infrastructure detail: ${needle}`);
+    });
+  });
+
+  check('the alert delivery panel separates publishing from delivery', () => {
+    clickNav(dom, 'alerts');
+    const panel = dom.html('alerts-delivery');
+    assert.match(panel, /Alert publishing/, 'the panel does not state the publishing state');
+    assert.match(panel, /Configured|Not configured/, 'the publishing state has no value');
+    assert.match(panel, /publishe?d? to the notification topic/i,
+      'the panel does not use the wording the record supports');
+    // the two things the browser must never claim
+    assert.ok(!/email (was )?sent|delivered to|received by/i.test(panel),
+      'the panel claims a delivery it cannot know about');
+    assert.match(panel, /Not reported to this page/,
+      'the panel does not say that subscriber state is unknown to it');
+    // and the per-incident rows carry their own state, from the API's alert log count
+    const active = dom.html('alerts-active');
+    const openIncidents = (incidents ? incidents.incidents || [] : []).filter((i) => i.current_status === 'OPEN');
+    if (openIncidents.some((i) => (i.alert_count || 0) > 0)) {
+      assert.match(active, /Alert published to the notification topic/,
+        'an incident with a recorded publish does not say so');
+    }
+    if (openIncidents.some((i) => (i.alert_count || 0) === 0)) {
+      assert.match(active, /No alert was published for this incident/,
+        'an incident with no recorded publish does not say so');
+    }
+    clickNav(dom, 'overview');
+  });
+
+  check('the city page carries its own alert history, or says there is none', () => {
+    const target = payload.zones[payload.zones.length - 1];
+    openCity(dom, target.zone_id);
+    const host = dom.html('city-incidents');
+    assert.ok(host.length > 0, 'the city page has no alert-history area');
+    const own = (incidents ? incidents.incidents || [] : []).filter((i) => i.zone_id === target.zone_id);
+    if (own.length) {
+      assert.match(host, new RegExp(`data-incident="${own[0].incident_id}"`),
+        'the city page does not list the alerts that city has had');
+    } else {
+      assert.match(host, /No alerts for this/, `a calm city reads "${host}"`);
+      assert.match(host, /data-empty="city-history"/, 'a calm city has no empty state');
+    }
+    // switching cities must not leave the previous city's alerts behind
+    const other = payload.zones[0];
+    openCity(dom, other.zone_id);
+    const after = dom.html('city-incidents');
+    if (other.zone_id !== target.zone_id) {
+      const otherOwn = (incidents ? incidents.incidents || [] : []).filter((i) => i.zone_id === other.zone_id);
+      if (!otherOwn.length) {
+        assert.ok(!after.includes(`data-incident="${own[0] && own[0].incident_id}"`) || !own.length,
+          'the previous city\'s alert history survived a city change');
+      }
+    }
+    clickNav(dom, 'overview');
+  });
+
+  await checkAsync('a retry button asks the API again instead of reloading the page', async () => {
+    // An API that answers with nothing produces the empty state whose action is "try again";
+    // that button must actually re-request the routes rather than reload the document.
+    const quiet = boot({
+      payload,
+      incidents,
+      history,
+      overrides: {
+        zones: () => ({ body: { zone_mode: 'live_weather', zone_count: 0, zones: [] } })
+      }
+    });
+    await quiet.runtime.settle();
+    clickNav(quiet.dom, 'cities');
+    assert.match(quiet.dom.html('city-cards'), /data-action="retry"/,
+      'the empty fleet has no retry control to click');
+    quiet.runtime.requests.length = 0;
+    // the retry control is wired at the document level, so it works from any view
+    const button = { disabled: false, getAttribute: (name) => (name === 'data-action' ? 'retry' : null) };
+    quiet.dom.fire(quiet.dom.document, 'click', {
+      target: { closest: (selector) => (selector === '[data-action="retry"]' ? button : null) },
+      preventDefault() {}
+    });
+    await quiet.runtime.settle();
+    assert.ok(quiet.runtime.requests.some((url) => /\/zones(\?|$)/.test(url)),
+      `the retry button did not request the fleet again: ${quiet.runtime.requests.join(', ')}`);
+    assert.ok(quiet.runtime.requests.some((url) => /\/incidents(\?|$)/.test(url)),
+      'the retry button did not request the incidents again');
+    assert.equal(button.disabled, true, 'the button was not disabled while the retry was in flight');
+  });
+
+  await checkAsync('the loading state is a skeleton that cannot be mistaken for data', async () => {
+    const slow = boot({ payload, incidents, history, overrides: {} });
+    // before the runtime settles, the fleet area shows placeholders and nothing else
+    const early = slow.dom.html('city-cards');
+    assert.match(early, /skel-card/, `the first paint shows "${early}"`);
+    assert.ok(!/class="card city-card/.test(early), 'a placeholder carries the class of a real card');
+    assert.ok(!/risk_score/.test(early), 'a placeholder invents a score');
+    assert.match(early, /data-f="loading"/, 'the loading marker is gone');
+    await slow.runtime.settle();
+    const settled = slow.dom.html('city-cards');
+    assert.ok(!/skel-card/.test(settled), 'the skeleton stayed on screen after the data arrived');
+    assert.equal(cityCardsIn(settled), payload.zones.length, 'the cards did not replace the skeleton');
+  });
+
+  await checkAsync('every view survives an API that reports nothing at all', async () => {
+    const bare = boot({
+      payload,
+      incidents,
+      history,
+      overrides: {
+        zones: () => ({ body: { zone_mode: 'live_weather', zone_count: 0, zones: [] } }),
+        incidents: () => ({ body: {} })
+      }
+    });
+    await bare.runtime.settle();
+    ['overview', 'cities', 'alerts', 'data', 'about'].forEach((view) => clickNav(bare.dom, view));
+    // an incidents payload with no alerting block must not throw or print "undefined"
+    assert.ok(!/undefined|NaN/.test(bare.dom.html('alerts-delivery')),
+      `the delivery panel reads "${bare.dom.html('alerts-delivery')}"`);
+    assert.ok(!/undefined|NaN/.test(bare.dom.html('health-list')),
+      `the status list reads "${bare.dom.html('health-list')}"`);
+    assert.ok(!/undefined|NaN/.test(bare.dom.html('about-cities')),
+      `the About fleet sentence reads "${bare.dom.html('about-cities')}"`);
+  });
+
   console.log(`\n${passed} runtime checks passed, ${failures.length} failed`);
   if (failures.length) {
     for (const failure of failures) console.log(`  - ${failure.name}: ${failure.message}`);

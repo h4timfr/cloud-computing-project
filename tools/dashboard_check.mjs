@@ -2033,6 +2033,207 @@ check('every interactive element can be reached and seen when focused', () => {
   assert.match(cssSource, /@media \(prefers-reduced-motion: reduce\)/, 'motion is never reduced');
 });
 
+/* ==================================================================== M9 === */
+
+check('M9: the page is built for a phone before it is built for a desktop', () => {
+  // a viewport tag is what makes the phone breakpoints apply at all
+  assert.match(htmlSource, /<meta name="viewport" content="width=device-width, initial-scale=1"[\s/>]/,
+    'the page has no device-width viewport tag');
+  // the widths the brief names: a phone needs its own rules, not just a squeezed desktop layout
+  ['1180px', '900px', '760px', '560px', '400px'].forEach((width) => {
+    assert.ok(cssSource.includes(`@media (max-width: ${width})`), `no breakpoint for ${width}`);
+  });
+  // grid definitions must never demand more than the viewport: min(X, 100%) is what keeps a
+  // 320px phone from being forced sideways by a 260px column plus padding
+  const grids = [...cssSource.matchAll(/grid-template-columns:\s*([^;]+);/g)].map((match) => match[1].trim());
+  grids.forEach((value) => {
+    const fixed = [...value.matchAll(/(\d+(?:\.\d+)?)(px|rem)/g)]
+      .map((match) => parseFloat(match[1]) * (match[2] === 'rem' ? 16 : 1));
+    const guarded = value.includes('min(') || value.includes('100%') || value.includes('auto') || value.includes('1fr');
+    fixed.forEach((width) => {
+      assert.ok(width <= 320 || guarded,
+        `a grid column demands ${width}px with nothing to shrink it: ${value}`);
+    });
+  });
+  // long payload text (a city name, a close reason) must wrap instead of widening the page
+  assert.match(cssSource, /overflow-wrap:\s*anywhere/, 'payload text is never told how to wrap');
+  assert.match(cssSource, /min-width:\s*0/, 'grid children are never allowed to shrink below their content');
+  // landscape phones and tablets are covered by the existing tablet/phone rules
+  assert.match(cssSource, /\.incident-scroll\s*\{[^}]*overflow-x:\s*auto/,
+    'the wide incident table has no horizontal scroll container of its own');
+});
+
+check('M9: the touch targets a phone actually taps are big enough', () => {
+  const minTouch = (selector, reason) => {
+    const rule = new RegExp(`\\${selector}\\s*\\{[^}]*min-height:\\s*(\\d+)px`).exec(cssSource);
+    assert.ok(rule, `${selector} has no minimum height (${reason})`);
+    assert.ok(parseFloat(rule[1]) >= 44, `${selector} is only ${rule[1]}px tall (${reason})`);
+  };
+  minTouch('.nav-link', 'a nav link is the most-tapped control on a phone');
+  minTouch('.btn', 'empty-state actions are buttons on a phone');
+  // the help disclosure is compact on a pointer device and full-size on a small screen
+  assert.match(cssSource, /@media \(max-width: 560px\)[\s\S]*?\.help summary\s*\{\s*width:\s*44px/,
+    'the help button never grows to a touch size');
+});
+
+check('M9: icons are local, consistent and hidden from assistive tech', () => {
+  // one stroke width and one grid: the icons have to look like one set, not seven borrowed ones
+  const iconBlock = /var ICON_PATHS = \{([\s\S]*?)\n  \};/.exec(libSource);
+  assert.ok(iconBlock, 'the icon table is missing');
+  const names = [...iconBlock[1].matchAll(/^\s{4}([a-z]+):/gm)].map((match) => match[1]);
+  assert.ok(names.length >= 15, `only ${names.length} icons are defined`);
+  ['rain', 'droplet', 'soil', 'drain', 'water', 'flow', 'clock', 'warning', 'check', 'info', 'bell',
+    'shield', 'up', 'down', 'flat', 'external', 'city', 'layers', 'refresh', 'chart'].forEach((name) => {
+    assert.ok(names.includes(name), `the icon set is missing "${name}"`);
+  });
+  // every icon is drawn through one builder, so stroke width and viewBox cannot drift
+  const builders = [...libSource.matchAll(/stroke-width="(\d+(?:\.\d+)?)"/g)].map((match) => match[1]);
+  assert.deepEqual([...new Set(builders)], ['1.6'], `inconsistent icon stroke widths: ${[...new Set(builders)].join(', ')}`);
+  assert.match(libSource, /aria-hidden="true" focusable="false"/, 'icons are not hidden from assistive tech');
+  assert.match(libSource, /'<svg' \+ cls/, 'icons are not all built by the same function');
+  // no icon font, no sprite request, nothing to fetch
+  assert.ok(!/font-awesome|material-icons|@font-face|\.woff/i.test(htmlSource + cssSource + libSource + appSource),
+    'an icon font or webfont was introduced');
+  assert.ok(!/<img[^>]+(?:cdn|unpkg|jsdelivr)/i.test(htmlSource), 'an icon is loaded from a CDN');
+  // every metric has an icon, and every name used in the markup exists in the table
+  FP.METRIC_ORDER.forEach((metric) => {
+    assert.ok(/\bicon\b/.test(FP.metricIcon(metric) || ''), `${metric} has no icon`);
+  });
+  const used = [...(libSource.matchAll(/icon\('([a-z]+)'/g))].map((match) => match[1]);
+  used.forEach((name) => assert.ok(names.includes(name), `icon("${name}") is not in the icon table`));
+});
+
+check('M9: the copy reads like a product, not like a payload', () => {
+  // field names belong in the technical disclosures, never in a sentence a visitor reads
+  const userFacing = htmlSource.replace(/<code>[\s\S]*?<\/code>/g, '')
+    .replace(/<details class="tech"[\s\S]*?<\/details>/g, '')
+    .replace(/<script[\s\S]*?<\/script>/g, '');
+  ['age_seconds', 'zone_mode', 'ts_epoch', 'risk_score_at_open', 'data_classification',
+    'top_drivers', 'zone_id', 'stale_zone_ids'].forEach((field) => {
+    assert.ok(!userFacing.includes(field), `the visible page shows the raw field name "${field}"`);
+  });
+  // ...and the renderers must not print them either: those strings are built at runtime
+  const renderers = libSource.slice(libSource.indexOf('function cityStatusCard'));
+  ['age_seconds=', 'zone_mode=', 'dominant_driver ='].forEach((pattern) => {
+    assert.ok(!renderers.includes(pattern), `a renderer prints "${pattern}"`);
+  });
+  // the words the brief asks for, in place of the engineering ones
+  assert.match(libSource, /Updated ' \+ escapeHtml\(freshness\)|'Updated ' \+/, 'freshness is not phrased as "Updated …"');
+  assert.match(libSource, /is the main factor/, 'the driver is not phrased as a sentence');
+  assert.match(libSource, /is the largest contributor/, 'the driver block has no plain-language lead');
+  // over-long sentences make a page unreadable: the explanations stay inside a reading budget
+  const longStrings = [...libSource.matchAll(/'([A-Z][^']{190,})'/g)].map((match) => match[1]);
+  assert.deepEqual(longStrings, [], `${longStrings.length} copy strings are over 190 characters`);
+});
+
+check('M9: the headline question is answered in the first screen', () => {
+  // the reading order the brief asks for: the answer, then the four numbers, then the detail
+  const order = ['ov-title', 'ov-headline', 'ov-stats', 'hero', 'band-strip', 'city-cards', 'recent-activity']
+    .map((id) => htmlSource.indexOf(`id="${id}"`));
+  order.forEach((index, position) => {
+    assert.ok(index > 0, `the Overview is missing element ${position}`);
+    if (position > 0) {
+      assert.ok(index > order[position - 1], 'the Overview sections are in the wrong reading order');
+    }
+  });
+  // a question, answered in words, before any number
+  assert.match(htmlSource, /<h2[^>]*id="ov-title"[^>]*>[^<]*\?/, 'the Overview heading is not a question');
+  assert.match(htmlSource, /id="ov-headline"[^>]*role="status"[^>]*aria-live="polite"/,
+    'the one-sentence answer is not announced politely');
+  // the question is answered before any number: only the Overview's own content is scanned, since
+  // the header carries the model tag on every page and that is a provenance marker, not a formula
+  const overviewBody = htmlSource.slice(htmlSource.indexOf('<section id="view-overview"'),
+    htmlSource.indexOf('id="view-cities"'));
+  assert.ok(!/heuristic-v1/.test(overviewBody), 'the Overview shows the model name');
+  assert.ok(!/weight|coefficient|0\.30/.test(overviewBody), 'the Overview shows scoring weights');
+});
+
+check('M9: every view has a designed empty, loading and error state', () => {
+  // one builder for all of them, so no view can invent its own unstyled placeholder
+  assert.match(libSource, /function emptyState\(/, 'there is no shared empty-state builder');
+  assert.match(libSource, /function skeletonLines\(/, 'there is no shared skeleton builder');
+  assert.match(libSource, /data-action="retry"/, 'the empty states offer no way to try again');
+  assert.match(appSource, /closest\('\[data-action="retry"\]'\)/, 'the retry button is not wired up');
+  // the states the brief lists, each reachable in code
+  assert.match(appSource, /key: 'no-cities'/, 'no empty state for a fleet with no readings');
+  assert.match(libSource, /data-empty="' \+ escapeHtml\(opt\.key\)/, 'no empty state for the alert lists');
+  assert.match(appSource, /key: 'unknown-city'/, 'no empty state for a city that does not exist');
+  assert.match(libSource, /key: 'city-history'/, 'no empty state for a city with no alerts');
+  // the chart reports its own failure twice: painted on the canvas, and as text on the page, so a
+  // reader who cannot see the canvas still learns that the history did not load
+  assert.match(appSource, /'History could not be loaded\.'/, 'the chart does not report a load failure');
+  assert.match(appSource, /Risk score history could not be loaded\./, 'the failure has no text equivalent');
+  assert.match(appSource, /setText\('history-summary'/, 'the chart has no text summary on the page');
+  // loading must never be the word "loading" alone, and must never be permanent
+  assert.match(libSource, /skel-sweep|skel-card/, 'the loading state is not a skeleton');
+  assert.ok(!/['"]Loading…['"]/.test(libSource + appSource), 'a renderer prints a bare "Loading…"');
+  // an empty state is not a live region: several can appear in one poll, and that is an
+  // announcement storm rather than information
+  assert.ok(!/class="empty-state[^"]*"[^>]*role="status"/.test(libSource),
+    'the empty state announces itself and can flood a screen reader');
+});
+
+check('M9: the front-end budget still holds', () => {
+  const sizes = ['index.html', 'styles.css', 'lib.js', 'app.js']
+    .map((file) => ({ file, bytes: fs.statSync(path.join(webDir, file)).size }));
+  const total = sizes.reduce((sum, entry) => sum + entry.bytes, 0);
+  const biggest = sizes.sort((a, b) => b.bytes - a.bytes)[0];
+  // The whole point of staying vanilla is that the page fits in one round trip on a phone. The
+  // numbers are ceilings, not targets: they only fail if a framework or a build step sneaks in.
+  assert.ok(total <= 400 * 1024, `the front-end is ${(total / 1024).toFixed(0)} KB of source`);
+  assert.ok(biggest.bytes <= 200 * 1024, `${biggest.file} alone is ${(biggest.bytes / 1024).toFixed(0)} KB`);
+  // the backdrop image: compressed WebP, local, and inside the brief's ceiling
+  const backdrop = fs.statSync(path.join(webDir, 'bg-storm.webp'));
+  assert.ok(backdrop.size <= 250 * 1024, `the backdrop is ${(backdrop.size / 1024).toFixed(0)} KB`);
+  const files = fs.readdirSync(webDir).sort();
+  assert.deepEqual(files, ['app.js', 'bg-storm.webp', 'index.html', 'lib.js', 'styles.css'],
+    'the web directory gained or lost a file: the deploy list has to be updated with it');
+  // the backdrop is decorative, decoded off the main thread, and has a gradient underneath it
+  assert.match(cssSource, /\.bg-layer\s*\{[^}]*background-image:\s*url\("bg-storm\.webp"\)/,
+    'the backdrop image is not the local asset');
+  assert.match(htmlSource, /class="bg-layer" aria-hidden="true"/,
+    'the backdrop is exposed to assistive tech');
+  assert.match(cssSource, /body\s*\{[^}]*background:\s*linear-gradient/,
+    'there is no gradient fallback for a failed background image');
+});
+
+check('M9: the About page stays inside its lane', () => {
+  const about = /<section id="view-about"[\s\S]*?<\/section>\s*<!--/.exec(htmlSource)
+    || /<section id="view-about"[\s\S]*$/.exec(htmlSource);
+  assert.ok(about, 'the About view is missing');
+  const copy = about[0];
+  ['What FloodPulse is', 'Why it exists', 'Cities monitored', 'How it works', 'Built on',
+    'Flood safety guidance', 'Limitations'].forEach((heading) => {
+    assert.ok(copy.includes(heading), `the About page has no "${heading}" section`);
+  });
+  // the safety guidance must not read as an official warning from FloodPulse
+  assert.match(copy, /does <b>not<\/b> issue official warnings|not issue official warnings/,
+    'the guidance does not disclaim authority');
+  assert.match(copy, /follow your local government and disaster-management\s+authorities/i,
+    'the guidance does not defer to the authorities');
+  ['mausam.imd.gov.in', 'ndma.gov.in'].forEach((host) => {
+    assert.ok(copy.includes(host), `the guidance does not link to ${host}`);
+  });
+  // links out are links, not integrations: no script, no fetch, no key
+  assert.ok(!/fetch\(|XMLHttpRequest/.test(copy), 'the About page talks to a third party');
+  // and no infrastructure detail leaks into the user-facing copy
+  ['arn:aws', 'eu-north-1', 'account', '725934295966'].forEach((secret) => {
+    assert.ok(!copy.includes(secret), `the About page exposes infrastructure detail: ${secret}`);
+  });
+});
+
+check('M9: the heading outline has no skipped level', () => {
+  const tags = [...htmlSource.matchAll(/<(h[1-4])[^>]*>/g)].map((match) => Number(match[1][1]));
+  assert.equal(tags[0], 1, 'the page does not start with an h1');
+  let deepest = 1;
+  tags.forEach((level) => {
+    assert.ok(level <= deepest + 1, `a heading jumps from h${deepest} to h${level}`);
+    deepest = Math.max(deepest, level);
+  });
+  // exactly one h1: the product name, in the header, once
+  assert.equal(tags.filter((level) => level === 1).length, 1, 'the page has more than one h1');
+});
+
 /* ------------------------------------------------------------------ report --- */
 
 console.log(`\n${passed} checks passed, ${failures.length} failed`);
