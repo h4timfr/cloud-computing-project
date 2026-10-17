@@ -56,9 +56,16 @@ def _require(condition: bool, reason: str, field: str | None = None) -> None:
 
 
 def validate_body_size(raw_body: str | None) -> None:
-    """Reject oversized or missing request bodies before parsing JSON."""
+    """Reject missing, blank or oversized request bodies before parsing JSON.
+
+    A blank body is reported as missing rather than as malformed JSON: "you sent nothing"
+    is the more useful answer for a client that forgot the payload, and it keeps the
+    distinction out of the caller's way.
+    """
     _require(raw_body is not None, "request body is required", "body")
-    size = len(raw_body.encode("utf-8"))  # type: ignore[union-attr]
+    text = raw_body if isinstance(raw_body, str) else str(raw_body)  # type: ignore[union-attr]
+    _require(text.strip() != "", "request body is required", "body")
+    size = len(text.encode("utf-8"))
     _require(
         size <= BODY_MAX_BYTES,
         f"request body is {size} bytes; limit is {BODY_MAX_BYTES}",
@@ -159,8 +166,12 @@ def validate_reading(
     ``accept_non_simulated`` is for FloodPulse's *own* ingestion path (M4 live weather),
     which is the only caller allowed to store a reading whose metrics are not all
     simulated. Externally supplied payloads must still declare ``simulated: true``.
-    ``metric_sources``/``source`` are recorded only when supplied, so simulated records
-    keep their exact pre-M4 shape.
+
+    Every record states where each metric came from. A caller that supplies no
+    ``metric_sources`` gets all-``SIMULATED`` tags, which is exactly what the external route
+    guarantees, so a stored reading never has to be *interpreted* to work out its provenance
+    and a live fleet's ``REAL`` rainfall tag can never be applied to a posted value. ``source``
+    is still recorded only when supplied.
     """
     _require(isinstance(payload, Mapping), "payload must be a JSON object", "payload")
     extra = sorted(set(payload) - ALLOWED_TOP_LEVEL)  # type: ignore[arg-type]
@@ -231,10 +242,11 @@ def validate_reading(
         "readings": readings,
         "meta": meta,
         "ingested_at_epoch": int(now_epoch),
+        "metric_sources": {
+            metric: str((metric_sources or {}).get(metric, source or SOURCE_SIMULATED))
+            for metric in METRIC_ORDER
+        },
     }
-    if metric_sources is not None:
-        record["metric_sources"] = {metric: str(metric_sources.get(metric, source or SOURCE_SIMULATED))
-                                    for metric in METRIC_ORDER}
     if source is not None:
         record["source"] = str(source)
     return record

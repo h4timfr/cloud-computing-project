@@ -54,6 +54,9 @@ from .config import (
     RISK_MODEL_ID,
     SIMULATION_DISCLAIMER,
     SMOOTHING_WINDOW,
+    SOURCE_MODEL_DERIVED,
+    SOURCE_REAL,
+    SOURCE_SIMULATED,
     STALE_READING_SECONDS,
     TREND_LOOKBACK_SECONDS,
     TREND_LOOKBACK_TOLERANCE_SECONDS,
@@ -231,7 +234,11 @@ def _header_value(headers: Mapping[str, Any] | None, name: str) -> str | None:
 
 
 def _reject_content_type(content_type: str | None) -> tuple[int, dict[str, Any]] | None:
-    """Refuse a declared non-JSON body before anything is parsed or scored."""
+    """Refuse a declared non-JSON body before anything is parsed or scored.
+
+    The received media type is *not* echoed back: it is caller-supplied text, and there is
+    no reason for a response to repeat it.
+    """
     if content_type is None:
         return None
     media_type = str(content_type).split(";", 1)[0].strip().lower()
@@ -239,7 +246,7 @@ def _reject_content_type(content_type: str | None) -> tuple[int, dict[str, Any]]
         return None
     return 415, {
         "error": "unsupported_media_type",
-        "detail": f"send application/json (received {_brief(media_type, 60)!r})",
+        "detail": "send application/json",
     }
 
 
@@ -788,6 +795,17 @@ def _zone_view(
         return view
 
     detail = latest.get("risk_detail", {})
+    # The zone's tags describe the reading being presented, not the fleet's plan for it: a
+    # posted simulated reading on a live city must not be labelled with the fleet's REAL
+    # rainfall tag while the number on the card came from that post. The fallback keeps a
+    # legacy item (written before tags were stored) honest too - a simulated record is
+    # simulated whatever the fleet is.
+    record_sources = (
+        METRIC_SOURCES_SIMULATED
+        if str(latest.get("data_classification") or "") == DATA_CLASSIFICATION_SIMULATED
+        else sources
+    )
+    view["metric_sources"] = metric_sources_for_records([latest], record_sources)
     view["latest"] = {
         "simulated": bool(latest.get("simulated", True)),
         "data_classification": latest["data_classification"],
@@ -1078,6 +1096,47 @@ def provenance_of_records(records: Iterable[Mapping[str, Any]], fallback: str) -
     return fallback
 
 
+#: Weakest claim first. A metric is never labelled more confidently than the least
+#: confident record in the selection it is shown with.
+SOURCE_TRUST_ORDER = (
+    SOURCE_SIMULATED,
+    SOURCE_MODEL_DERIVED,
+    SOURCE_REAL,
+)
+
+
+def metric_sources_for_records(
+    records: Iterable[Mapping[str, Any]],
+    fallback: Mapping[str, str],
+) -> dict[str, str]:
+    """Per-metric provenance for the readings a response is about to serve.
+
+    A card, a history window or any other selection that mixes a provider observation with a
+    posted one must not borrow the stronger label. Each metric is therefore labelled by the
+    *weakest* tag any selected record gives it, which is what keeps a fabricated value from
+    ever sitting under a ``REAL`` tag. An unrecognised tag is treated as the weakest one.
+
+    Records without tags (written before tags were stored, or a partial item) contribute
+    nothing, so the caller's fallback survives where the records are silent.
+    """
+    result = {metric: str(label) for metric, label in fallback.items()}
+    seen: dict[str, list[str]] = {}
+    for record in records:
+        tags = record.get("metric_sources") if isinstance(record, Mapping) else None
+        if not isinstance(tags, Mapping):
+            continue
+        for metric, label in tags.items():
+            seen.setdefault(str(metric), []).append(str(label))
+    for metric, labels in seen.items():
+        result[metric] = min(
+            labels,
+            key=lambda label: (
+                SOURCE_TRUST_ORDER.index(label) if label in SOURCE_TRUST_ORDER else -1
+            ),
+        )
+    return result
+
+
 def _handle_history(
     store: LocalStore,
     zone_id: str,
@@ -1139,8 +1198,11 @@ def _handle_history(
         "simulated": classification == DATA_CLASSIFICATION_SIMULATED,
         "data_classification": classification,
         "zone_mode": active_mode,
-        "metric_sources": dict(
-            METRIC_SOURCES_LIVE if active_mode == ZONE_MODE_LIVE else METRIC_SOURCES_SIMULATED
+        # Labelled by the records in the window, for the same reason the classification is:
+        # a window of posted readings must not inherit the live fleet's REAL rainfall tag.
+        "metric_sources": metric_sources_for_records(
+            sampled,
+            METRIC_SOURCES_LIVE if active_mode == ZONE_MODE_LIVE else METRIC_SOURCES_SIMULATED,
         ),
         "model": RISK_MODEL_ID,
         "points": points,
@@ -1283,6 +1345,10 @@ def dispatch(
                 "ingest_rejected reason=%s status=%s", denial[1].get("error"), denial[0]
             )
             return denial
+        # In live-weather mode a posted reading is still accepted for a live city, but it is
+        # stored and served as SIMULATED: the zone allowlist keeps demo zones out, and the
+        # provenance on the record - not the fleet's label - is what the dashboard shows, so
+        # a posted value can never be presented as a REAL provider observation.
         return _handle_reading(
             body,
             store,
