@@ -197,6 +197,21 @@ class ResourceSelectionTests(ScriptText):
         self.assertIn("NextToken", body, "the list helper ignores NextToken")
         self.assertRegex(body, r"did not advance", "a stuck pagination token would loop forever")
 
+    def test_the_list_helper_always_returns_an_array(self) -> None:
+        # Measured in tools/deploy_logic_check.ps1: a one-item result used to arrive as a bare
+        # object, whose .Count is $null - which reads as "nothing there" and sends the caller
+        # down the create path. The leading comma keeps the array whole.
+        body = self.body_of("Get-AwsAllItems")
+        self.assertRegex(body, r"return\s*,\s*@\(",
+                         "the list helper can still return a bare object for a single item")
+
+    def test_no_call_site_wraps_the_list_helper(self) -> None:
+        # @(command) would collect the returned array as a single element, making .Count always 1
+        offenders = [f"line {number}: {line.strip()}"
+                     for number, line in enumerate(self.code, start=1)
+                     if "@(Get-AwsAllItems" in line]
+        self.assertEqual(offenders, [], "a call site wraps the list helper in @()")
+
 
 class PostDeploymentTests(ScriptText):
     def test_the_deployed_code_is_verified_at_the_end_of_a_run(self) -> None:

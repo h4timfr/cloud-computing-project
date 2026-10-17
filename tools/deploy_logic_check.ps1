@@ -147,7 +147,7 @@ function Invoke-AwsJson {
     $script:pageIndex++
     return $page
 }
-$items = @(Get-AwsAllItems -AwsArguments @('apigatewayv2', 'get-apis') -ItemsProperty 'Items')
+$items = Get-AwsAllItems -AwsArguments @('apigatewayv2', 'get-apis') -ItemsProperty 'Items'
 Assert-True ($items.Count -eq 3) "both pages collected (got $($items.Count) items: $($items -join ','))"
 Assert-True ($items -contains 'third') 'the item from page 2 is present'
 Assert-True (@($script:awsJsonCalls | Where-Object { $_ -like '*--next-token TOKEN-1*' }).Count -eq 1) 'the second call carried the token as --next-token'
@@ -159,7 +159,7 @@ $script:pages = @(
     @{ PolicyNames = @('FloodPulseSnsPublish'); Marker = 'M1' },
     @{ PolicyNames = @('Other'); Marker = $null }
 )
-$null = @(Get-AwsAllItems -AwsArguments @('iam', 'list-role-policies', '--role-name', 'r') -ItemsProperty 'PolicyNames' -TokenArgument '--marker' -TokenProperty 'Marker')
+$null = Get-AwsAllItems -AwsArguments @('iam', 'list-role-policies', '--role-name', 'r') -ItemsProperty 'PolicyNames' -TokenArgument '--marker' -TokenProperty 'Marker'
 Assert-True (@($script:awsJsonCalls | Where-Object { $_ -like '*--marker M1*' }).Count -eq 1) 'the IAM Marker shape uses --marker'
 
 $script:pageIndex = 0
@@ -168,8 +168,29 @@ Assert-Throws { Get-AwsAllItems -AwsArguments @('apigatewayv2', 'get-apis') -Ite
 
 $script:pageIndex = 0
 $script:pages = @(@{ Items = $null; NextToken = $null })
-$empty = @(Get-AwsAllItems -AwsArguments @('apigatewayv2', 'get-apis') -ItemsProperty 'Items')
-Assert-True ($empty.Count -eq 0) 'an empty page yields no items'
+$empty = Get-AwsAllItems -AwsArguments @('apigatewayv2', 'get-apis') -ItemsProperty 'Items'
+Assert-True ($empty.Count -eq 0) 'an empty page yields no items (not $null, which would read the same but for the wrong reason)'
+
+# A one-item account is the usual case here (one API, one integration, one log group), and a
+# single item used to be unrolled into a bare object on the way out of the helper - where
+# ".Count" is $null, which reads as "nothing there" and sends the caller down the create path.
+# That is how a deploy would have created a *second* integration on a live API.
+$script:pageIndex = 0
+$script:pages = @(@{ Items = @(@{ IntegrationId = 'only-one' }); NextToken = $null })
+$single = Get-AwsAllItems -AwsArguments @('apigatewayv2', 'get-integrations') -ItemsProperty 'Items'
+Assert-True ($single.Count -eq 1) "a single item still answers .Count (got: $($single.Count))"
+Assert-True ($single[0].IntegrationId -eq 'only-one') 'and the item that came back is the one that was there'
+Assert-True ($single -is [System.Collections.IList]) 'the result is still a collection, not a bare object'
+# and the call sites must not re-wrap it: @(command) would collect the array as one element
+Assert-False ($source -match '@\(Get-AwsAllItems') 'no call site wraps the list helper in @(), which would make .Count always 1'
+Assert-True ($source -match '\$integrations = Get-AwsAllItems') 'the integration list is read through the helper'
+
+# the same shape through the IAM helper (a role with exactly one inline policy)
+$script:pageIndex = 0
+$script:pages = @(@{ PolicyNames = @('FloodPulseSnsPublish'); Marker = $null })
+$onePolicy = Get-AwsAllItems -AwsArguments @('iam', 'list-role-policies', '--role-name', 'r') -ItemsProperty 'PolicyNames' -TokenArgument '--marker' -TokenProperty 'Marker'
+Assert-True ($onePolicy.Count -eq 1) 'a single inline policy is reported as one policy'
+Assert-True ($onePolicy -contains 'FloodPulseSnsPublish') 'and it is the expected one'
 
 Write-Host '== item 19: the dry-run gate =='
 $DryRun = $true

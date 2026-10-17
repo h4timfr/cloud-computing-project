@@ -296,6 +296,14 @@ function Get-AwsAllItems {
       this the script only ever saw page 1, so in a large account the target API, integration,
       route, stage, log group, subscription or role policy could look absent and be recreated
       or left inconsistent.
+
+      The result is always an array - zero items, one item or many - so ".Count" is always
+      meaningful. A call site must NOT wrap it in the array subexpression operator: applied to a
+      *command*, that collects the returned array as one element and makes .Count always 1.
+      The behaviour is measured, not assumed: without the comma below, a one-item result arrives
+      as a bare object whose .Count is $null, which reads as "nothing there" - and that is how
+      the integration check would have created a second integration on a live API instead of
+      refusing to guess.
     #>
     param(
         [Parameter(Mandatory = $true)][string[]]$AwsArguments,
@@ -324,7 +332,10 @@ function Get-AwsAllItems {
             Write-Fail "the AWS pagination token for 'aws $($AwsArguments -join ' ')' did not advance ('$token'); refusing to loop forever."
         }
     } while ($token)
-    return @($items)
+    # The leading comma keeps the array whole: without it, a *single* item is unrolled into a
+    # scalar on the way out, and "$x.Count" on a scalar is $null - which reads as "no items" and
+    # would send the caller down the create path. Callers wrap this in @(...) as well.
+    return , @($items)
 }
 
 function Get-ValidatedEnvDocument {
@@ -888,7 +899,9 @@ Write-Step 'Routes and integration'
 if (-not $apiId) {
     Write-Info 'the API does not exist yet: integrations and routes are reported on the next run.'
 } else {
-    # item 14: paginated
+    # item 14: paginated. Note the idiom: this helper always returns an array (even for one item
+    # and even for none), so it must NOT be wrapped in @() at a call site - @(command) would
+    # collect the returned array as a *single* element and make ".Count" always 1.
     $integrations = Get-AwsAllItems -AwsArguments @('apigatewayv2', 'get-integrations', '--api-id', $apiId) -ItemsProperty 'Items'
     # item 5: integrations are matched on IntegrationUri. The old code took the *first*
     # integration in the listing and retargeted every route at it, which would silently point
