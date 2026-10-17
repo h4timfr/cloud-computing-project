@@ -288,14 +288,22 @@
     return date.toISOString().substr(11, 8) + 'Z';
   }
 
+  /* How the water level moved since the last lookback window - or a plain statement that the page
+   * cannot know yet. "no lookback" was the model's own shorthand for a missing delta: true, but a
+   * phrase only the model's author understands, and it sat on two public views. */
   function trendLabel(trend) {
-    if (!trend || typeof trend !== 'object') return 'no lookback';
+    if (!trendHasHistory(trend)) return 'not enough history yet';
     var delta = toNumber(trend.water_level_delta_m);
-    if (delta === null) return 'no lookback';
     var sign = delta > 0 ? '+' : '';
     var fraction = toNumber(trend.rise_fraction);
     var suffix = fraction === null ? '' : ' (rise ' + Math.round(fraction * 100) + '%)';
     return sign + delta.toFixed(2) + ' m / 5 min' + suffix;
+  }
+
+  /* Whether a trend carries a measured change at all, as a question about the payload rather than
+   * a comparison against a phrase in the copy. */
+  function trendHasHistory(trend) {
+    return !!(trend && typeof trend === 'object' && toNumber(trend.water_level_delta_m) !== null);
   }
 
   function trendDirection(trend) {
@@ -342,8 +350,15 @@
     var latest = zone && zone.latest ? zone.latest : null;
     var contributions = (latest && latest.contributions) || [];
     var map = {};
+    // The API names this field `variable`; an earlier fixture (and the harness built on it)
+    // called it `metric`. Both are accepted, because reading only one of them left the map
+    // empty on every real payload - the weighted contributions, the driver shares and the
+    // "what is not driving this" half of the plain sentence all silently disappeared, with no
+    // error anywhere. The live payload is checked against this in the runtime harness.
     contributions.forEach(function (entry) {
-      if (entry && entry.metric) map[entry.metric] = entry;
+      if (!entry) return;
+      var key = entry.variable || entry.metric;
+      if (key) map[key] = entry;
     });
     return map;
   }
@@ -811,13 +826,15 @@
   function renderMetricRow(zone, metric) {
     var value = (zone.latest && zone.latest.readings) ? zone.latest.readings[metric] : null;
     var scale = metricScale(metric, value, zone.thresholds || {});
-    var contribution = contributionMap(zone)[metric];
-    var contributionText = contribution ? formatScore(contribution.contribution) : '–';
     // a zone with no reading yet (or without thresholds) has no measurable position:
     // show an empty bar rather than guessing a value
     var valuePct = scale.valuePct === null ? 0 : scale.valuePct;
     var watchPct = scale.watchPct === null ? 0 : scale.watchPct;
     var criticalPct = scale.criticalPct === null ? 0 : scale.criticalPct;
+    // The weighted contribution used to sit here as a bare number next to the value. On a list
+    // of cities that is an unexplained figure a visitor cannot use: the measurement, its value
+    // and its position against the thresholds are the public facts, and the weighting is part
+    // of "how was this calculated" on the city page and the methodology page.
     return (
       '<li class="metric" data-metric="' + escapeHtml(metric) + '">' +
       '<span class="metric-name">' + escapeHtml(METRIC_META[metric].label) +
@@ -828,9 +845,6 @@
       '<i class="metric-fill" data-f="metric-fill" style="--pct:' + valuePct.toFixed(1) + '"></i>' +
       '<i class="metric-tick watch" style="--pct:' + watchPct.toFixed(1) + '"></i>' +
       '<i class="metric-tick critical" style="--pct:' + criticalPct.toFixed(1) + '"></i>' +
-      '</span>' +
-      '<span class="metric-weight" title="weighted contribution to the heuristic score">' +
-      escapeHtml(contributionText) +
       '</span>' +
       '</li>'
     );
@@ -850,13 +864,12 @@
       ? '<div class="zone-score">' +
         '<div class="ring band-' + band + '" data-f="ring" style="--pct:' + riskPercent(latest.risk_score).toFixed(1) + '">' +
         '<span class="ring-value" data-f="risk_score">' + escapeHtml(formatScore(latest.risk_score)) + '</span>' +
-        '<span class="ring-caption">heuristic score</span>' +
+        '<span class="ring-caption">risk score</span>' +
         '</div>' +
         '<dl class="kv">' +
-        '<div><dt>Candidate</dt><dd data-f="risk_class_candidate">' + escapeHtml(classLabel(latest.risk_class_candidate)) + '</dd></div>' +
         '<div><dt>Trend</dt><dd data-f="trend" data-dir="' + escapeHtml(trendDirection(latest.trend)) + '">' + escapeHtml(trendLabel(latest.trend)) + '</dd></div>' +
-        '<div><dt>Top driver</dt><dd data-f="top_driver">' + escapeHtml((latest.top_drivers || [])[0] || '–') + '</dd></div>' +
-        '<div><dt>Reading #</dt><dd data-f="sequence">' + escapeHtml(latest.sequence) + '</dd></div>' +
+        '<div><dt>Main risk factor</dt><dd data-f="top_driver">' +
+          escapeHtml(latest.top_drivers && latest.top_drivers.length ? driverLabel(latest.top_drivers[0]) : '–') + '</dd></div>' +
         '</dl>' +
         '</div>'
       // A city with no reading yet is not waiting for a simulator: in live mode the
@@ -889,7 +902,14 @@
           '<canvas class="spark" data-f="spark" width="280" height="56" aria-label="session trend"></canvas>' +
           '<span class="spark-label">session trend from this page\'s polls</span>' +
           '</div>' +
-          '<p class="explain" data-f="explanation">' + escapeHtml(latest.explanation) + '</p>'
+          // The plain-language reason, not the model's own output string. The raw line
+          // ("risk_score 0.3877 = weighted base ...") used to be printed here verbatim, which
+          // put the formula, the variable names and the arithmetic in front of every visitor on
+          // the city list. It stays in the technical disclosures on the city page.
+          '<p class="explain" data-f="why">' + escapeHtml(plainRiskSummary(zone).why) + '</p>' +
+          '<p class="muted small">Weights, thresholds and the raw model output for this reading are on the ' +
+          '<a class="zone-link" href="#/cities/' + escapeHtml(zone.zone_id) + '">' + escapeHtml(zone.name) +
+          ' page</a>, under "Technical details".</p>'
         : '') +
       '</article>'
     );
@@ -1142,7 +1162,44 @@
   function metricPlain(metric) {
     return hasOwn(METRIC_PLAIN, metric)
       ? METRIC_PLAIN[metric]
-      : { noun: String(metric || 'reading').replace(/_/g, ' '), phrase: 'this measurement' };
+      : { noun: humaniseVariable(metric).toLowerCase(), phrase: 'this measurement' };
+  }
+
+  /* ------------------------------------------------------------------ names --- */
+
+  /* Every engineering identifier the API can send, in words a visitor can read.
+   *
+   * The rule for the public views is absolute: a snake_case token never reaches them. A
+   * variable this page has not seen before still has to be described somehow, so the fallback
+   * strips the unit suffix and the underscores rather than printing the raw name - and the raw
+   * name itself stays available in the technical disclosures, where it belongs. */
+  var UNIT_SUFFIXES = ['_mm_per_hr', '_mm_per_hour', '_m3_per_s', '_m3_s', '_pct', '_percent', '_mm', '_m'];
+
+  function humaniseVariable(value) {
+    var text = String(value === null || value === undefined ? '' : value);
+    UNIT_SUFFIXES.forEach(function (suffix) {
+      if (text.length > suffix.length + 1 && text.slice(-suffix.length).toLowerCase() === suffix) {
+        text = text.slice(0, -suffix.length);
+      }
+    });
+    text = text.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!text) return 'Reading';
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  /* The label for a driver, a variable or anything else the payload calls a measurement. */
+  function driverLabel(value) {
+    if (hasOwn(METRIC_META, value)) return METRIC_META[value].label;
+    return humaniseVariable(value);
+  }
+
+  /* ['rainfall', 'drain level'] -> "rainfall and drain level"; three or more get commas. */
+  function labelList(items, conjunction) {
+    var list = (items || []).filter(function (item) { return !!item; });
+    var joiner = conjunction || 'and';
+    if (!list.length) return '';
+    if (list.length === 1) return list[0];
+    return list.slice(0, -1).join(', ') + ' ' + joiner + ' ' + list[list.length - 1];
   }
 
   /* Inline SVG per channel: one small path set, stroked in currentColor so it inherits
@@ -1258,7 +1315,58 @@
   }
 
   /* One plain sentence explaining *why* the city is in its band, plus one line of advice.
-   * No weights, no formula: those live in the collapsible technical section. */
+   *
+   * The sentence answers the two questions a visitor actually has: which measurement is pushing
+   * the score up, and which ones are not. Both halves come from the API's own contribution
+   * entries - the named driver is the one the API listed first, and a measurement is only called
+   * quiet when its own value and its own watch threshold say so. Nothing is assumed about the
+   * channels that are not driving risk, and no formula, weight or variable name appears here:
+   * those live in the collapsed technical section and on the methodology page.
+   *
+   *   "Risk is currently WATCH. Soil saturation is the main contributor, while rainfall, drain
+   *    level and flow rate remain below their watch levels. Conditions are holding steady."
+   */
+  function reasonSentence(zone) {
+    var latest = zone && zone.latest;
+    if (!latest) return '';
+    var text = 'Risk is currently ' + classLabel(latest.risk_class) + '.';
+    var drivers = (latest.top_drivers || []).filter(function (driver) { return !!driver; });
+    var lead = drivers.length ? drivers[0] : null;
+    if (!lead) return text;
+    text += ' ' + driverLabel(lead) + ' is the main contributor';
+    var contributions = contributionMap(zone);
+    var quiet = [];
+    var alsoUp = [];
+    METRIC_ORDER.forEach(function (metric) {
+      if (metric === lead) return;
+      var entry = contributions[metric];
+      if (!entry) return;
+      var value = toNumber(entry.value);
+      var watch = toNumber(entry.watch_threshold);
+      if (value === null || watch === null) return;
+      if (value < watch) quiet.push(metricPlain(metric).noun);
+      else alsoUp.push(driverLabel(metric));
+    });
+    if (quiet.length) {
+      text += ', while ' + labelList(quiet) +
+        (quiet.length === 1 ? ' remains below its watch level' : ' remain below their watch levels');
+    }
+    if (alsoUp.length) {
+      text += (quiet.length ? ', and ' : ', while ') + labelList(alsoUp) + ' is also above its watch level';
+    }
+    text += '.';
+
+    // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one that
+    // answers "which way is this going". Comparing the label to 'rising'/'falling' never
+    // matched, so neither sentence could ever appear on a flash-flood board. The numbers stay
+    // in the technical table: this sentence is the plain-language one.
+    var direction = trendDirection(latest.trend);
+    if (direction === 'up') text += ' Conditions are getting worse.';
+    else if (direction === 'down') text += ' Conditions are easing.';
+    else if (trendHasHistory(latest.trend)) text += ' Conditions are holding steady.';
+    return text;
+  }
+
   function plainRiskSummary(zone) {
     var latest = zone && zone.latest;
     var band = classLabel(latest ? latest.risk_class : null);
@@ -1279,31 +1387,10 @@
     var drivers = latest.top_drivers || [];
     var driver = drivers.length ? drivers[0] : null;
     summary.driver = driver;
-    if (driver) {
-      summary.driverLabel = metricMeta(driver).label;
-      var plain = metricPlain(driver);
-      var state = metricState(zone, driver);
-      var valueText = formatValueWithUnit(driver, state.value);
-      if (state.state === 'critical') {
-        summary.why = 'The main reason is ' + plain.noun + ' — ' + plain.phrase + ' — at ' + valueText +
-          ', at or above the level where flooding starts.';
-      } else if (state.state === 'watch') {
-        summary.why = 'The main reason is ' + plain.noun + ' — ' + plain.phrase + ' — at ' + valueText +
-          ', above the watch level.';
-      } else {
-        summary.why = 'The largest contribution comes from ' + plain.noun + ' — ' + plain.phrase +
-          ' — at ' + valueText + '.';
-      }
-    }
-
-    // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one that
-    // answers "which way is this going". Comparing the label to 'rising'/'falling' never
-    // matched, so neither sentence could ever appear on a flash-flood board. The numbers stay
-    // in the technical table: this sentence is the plain-language one.
-    var direction = trendDirection(latest.trend);
-    if (direction === 'up') summary.why += ' Conditions are getting worse.';
-    else if (direction === 'down') summary.why += ' Conditions are easing.';
-    else if (trendLabel(latest.trend) !== 'no lookback') summary.why += ' Conditions are holding steady.';
+    if (driver) summary.driverLabel = driverLabel(driver);
+    // One composer for the plain sentence, so the hero, the city card and the city page cannot
+    // drift into three different explanations of the same reading.
+    summary.why = reasonSentence(zone);
     return summary;
   }
 
@@ -1609,7 +1696,7 @@
       '<div class="detail-score band-' + band + '">' +
       '<span class="detail-class" data-f="risk_class">' + escapeHtml(classLabel(latest ? latest.risk_class : null)) + '</span>' +
       '<span class="detail-value" data-f="risk_score">' + escapeHtml(formatScore(latest ? latest.risk_score : null)) + '</span>' +
-      '<span class="detail-caption">heuristic score 0-1</span>' +
+      '<span class="detail-caption">risk score 0-1</span>' +
       '</div>' +
       '</header>' +
       '<section class="explain-block band-' + band + '">' +
@@ -1622,39 +1709,49 @@
       '<span data-f="freshness">' + escapeHtml(feed ? freshnessLine(feed) : (latest ? ageLabel(latest.age_seconds) : 'no reading')) + '</span>' +
       (latest && trendDirection(latest.trend) !== 'flat' ? trendIcon(latest.trend, 'detail-trend') : '') +
       '</div>' +
-      driverBlock(zone) +
+      // The reading order a visitor needs: what is happening (above), the measurements, then why
+      // the score moved, then how it has been moving - and the model itself last, folded away.
       '<h3 class="block-title">Measurements</h3>' +
       '<div class="tile-grid" data-f="tiles">' + metricTiles(zone) + '</div>' +
       '<p class="muted small">Each measurement carries its own provenance: ' +
       escapeHtml(sources.map(function (tag) { return sourceMeta(tag).label; }).join(', ') || 'unknown') +
       '. REAL values come from the weather provider, MODEL values are derived from them, SIM values are generated by FloodPulse.</p>' +
+      driverBlock(zone) +
       '<h3 class="block-title">Trend and history</h3>' +
       '<p class="muted small">The chart below is this ' + escapeHtml((options && options.noun) || 'site') +
-      '\'s own risk history, fetched from ' +
-      '<code>GET /zones/{zone_id}/history</code>.</p>' +
+      '\'s own risk history, stored by FloodPulse each time a reading is scored.</p>' +
       (opts.technical === false ? '' : technicalDetails(zone)) +
       '</article>'
     );
   }
 
-  /* The raw model, folded away by default. Native <details>: keyboard accessible, no JS. */
+  /* The raw model, folded away by default: native <details>, keyboard accessible, no JS.
+   *
+   * This is where the engineering detail lives now - the variable names, the weights, the
+   * sub-scores, the arithmetic and the model's own output string. Nothing here is hidden from a
+   * reader who wants it; it is simply behind a click instead of in front of one. */
   function technicalDetails(zone) {
     var latest = (zone && zone.latest) || null;
     var grouped = sourceCounts(zone);
     var limits = (zone && zone.thresholds) || {};
+    var contributions = contributionMap(zone);
     var rows = METRIC_ORDER.map(function (metric) {
       var limitsForMetric = limits[metric] || {};
-      var contribution = contributionMap(zone)[metric];
-      return '<tr><th scope="row">' + escapeHtml((METRIC_META[metric] || {}).label || metric) + '</th>' +
+      var contribution = contributions[metric];
+      return '<tr><th scope="row">' + escapeHtml((METRIC_META[metric] || {}).label || metric) +
+        ' <code class="var-name">' + escapeHtml(metric) + '</code></th>' +
         '<td>' + escapeHtml(formatValueWithUnit(metric, latest && latest.readings ? latest.readings[metric] : null)) + '</td>' +
         '<td>' + escapeHtml(formatMetric(metric, limitsForMetric.watch)) + '</td>' +
         '<td>' + escapeHtml(formatMetric(metric, limitsForMetric.critical)) + '</td>' +
+        '<td>' + escapeHtml(contribution && contribution.weight !== undefined
+          ? formatPercentShare(contribution.weight) : '–') + '</td>' +
         '<td>' + escapeHtml(contribution ? formatScore(contribution.contribution) : '–') + '</td>' +
         '<td>' + escapeHtml(sourceMeta(metricSource(zone, metric)).label) + '</td></tr>';
     }).join('');
     return (
       '<details class="tech" data-f="technical">' +
-      '<summary>Technical details (model inputs and thresholds)</summary>' +
+      '<summary>Technical details: how is this risk calculated?</summary>' +
+      scoreBreakdown(zone) +
       '<dl class="kv tech-kv">' +
       '<div><dt>Class before hysteresis</dt><dd>' + escapeHtml(classLabel(latest ? latest.risk_class_candidate : null)) + '</dd></div>' +
       '<div><dt>Effective class</dt><dd>' + escapeHtml(classLabel(latest ? latest.risk_class : null)) + '</dd></div>' +
@@ -1669,17 +1766,67 @@
       freshnessRows(zone) +
       '<div class="table-scroll" tabindex="0" role="group" aria-label="Per-metric detail, scrollable">' +
       '<table class="tech-table">' +
-      '<caption>Per-metric value, configured limits and weighted contribution to the heuristic score</caption>' +
+      '<caption>Per-metric value, configured limits, fixed weight and weighted contribution to the heuristic score</caption>' +
       '<thead><tr><th scope="col">Measurement</th><th scope="col">Value</th><th scope="col">Watch</th>' +
-      '<th scope="col">Flooding</th><th scope="col">Weighted contribution</th><th scope="col">Provenance</th></tr></thead>' +
+      '<th scope="col">Flooding</th><th scope="col">Weight</th><th scope="col">Weighted contribution</th>' +
+      '<th scope="col">Provenance</th></tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
       '</table>' +
       '</div>' +
-      '<p class="muted small" data-f="explanation">' + escapeHtml(latest ? latest.explanation : 'no reading yet') + '</p>' +
+      // The model's own output string, quoted verbatim: it names every variable and the exact
+      // arithmetic behind the score, and it is the same line the API returns.
+      '<p class="raw-label">Raw model output, as returned by the API</p>' +
+      '<p class="raw-model"><code data-f="explanation">' + escapeHtml(latest ? latest.explanation : 'no reading yet') + '</code></p>' +
+      // where the page's numbers come from, in the fold with the rest of the plumbing
+      '<p class="muted small">This page reads <code>GET /zones</code> every 5 s, ' +
+      '<code>GET /zones/{zone_id}/history</code> for the chart above, and <code>GET /incidents</code> for the alert log.</p>' +
       '<p class="muted small">Provenance per metric: ' +
       escapeHtml(grouped.map(function (entry) { return entry.label + ' = ' + entry.count; }).join(' · ') || 'unknown') + '</p>' +
       '</details>'
     );
+  }
+
+  /* '0.2' -> '20%': the weights arrive as fractions of 1. */
+  function formatPercentShare(value) {
+    var num = toNumber(value);
+    if (num === null) return '–';
+    var pct = num <= 1 ? num * 100 : num;
+    return (Math.round(pct * 10) / 10) + '%';
+  }
+
+  /* The arithmetic behind one reading, written out. Every number is the API's own: the weighted
+   * contributions are added up and the reported score is quoted beside them, so a reader can
+   * check the sum rather than take the ring's word for it. The trend term is only shown when the
+   * payload carries one, because the total is not always the sum of the five channels. */
+  function scoreBreakdown(zone) {
+    var latest = (zone && zone.latest) || null;
+    if (!latest) return '';
+    var contributions = contributionMap(zone);
+    var parts = [];
+    var sum = 0;
+    var counted = 0;
+    METRIC_ORDER.forEach(function (metric) {
+      var entry = contributions[metric];
+      if (!entry) return;
+      var value = toNumber(entry.contribution);
+      if (value === null) return;
+      sum += value;
+      counted += 1;
+      parts.push('<li><code class="var-name">' + escapeHtml(metric) + '</code> ' +
+        '<span class="breakdown-label">' + escapeHtml((METRIC_META[metric] || {}).label || metric) + '</span> ' +
+        '× weight ' + escapeHtml(formatPercentShare(entry.weight)) + ' = ' +
+        '<b>' + escapeHtml(formatScore(value)) + '</b></li>');
+    });
+    if (!counted) return '';
+    return '<div class="breakdown">' +
+      '<p class="breakdown-formula">' +
+        'risk score = <span class="breakdown-base">weighted base</span> + trend' +
+      '</p>' +
+      '<ul class="breakdown-list">' + parts.join('') + '</ul>' +
+      '<p class="breakdown-total">Weighted base (sum of the contributions above): <b>' +
+        escapeHtml(formatScore(Math.round(sum * 10000) / 10000)) + '</b> · risk score reported by the API: <b>' +
+        escapeHtml(formatScore(latest.risk_score)) + '</b></p>' +
+      '</div>';
   }
 
   /* The four different clocks behind one number, named so they cannot be confused.
@@ -2018,8 +2165,11 @@
 
   /* Trend as an icon plus words. The arrow alone would be colour-and-shape only information. */
   function trendIcon(trend, extraClass) {
+    // trendDirection() answers "which way is this going" - 'up', 'down' or 'flat'. This compared
+    // it against 'rising'/'falling', which it never returns, so every trend arrow on the board was
+    // the flat one no matter which way the water was moving.
     var direction = trendDirection(trend);
-    var name = direction === 'rising' ? 'up' : (direction === 'falling' ? 'down' : 'flat');
+    var name = direction === 'up' ? 'up' : (direction === 'down' ? 'down' : 'flat');
     return '<span class="trend trend-' + escapeHtml(direction) + (extraClass ? ' ' + extraClass : '') + '">' +
       icon(name, 15) + '<span data-f="trend">' + escapeHtml(trendLabel(trend)) + '</span></span>';
   }
@@ -2065,31 +2215,33 @@
     var max = 0;
     drivers.forEach(function (metric) {
       var entry = contributions[metric];
-      if (entry && entry.points > max) max = entry.points;
+      // `contribution` is the API's field: the bar was reading `points` (never sent), so every
+      // share was 0 and the bars sat empty next to a number that was not zero.
+      var value = entry ? toNumber(entry.contribution) : null;
+      if (value !== null && value > max) max = value;
     });
     var rows = drivers.map(function (metric, index) {
-      var meta = METRIC_META[metric] || {};
-      var plain = metricPlain(metric);
       var entry = contributions[metric];
-      var share = max > 0 && entry ? Math.max(4, Math.round((entry.points / max) * 100)) : 0;
+      var value = entry ? toNumber(entry.contribution) : null;
+      var share = max > 0 && value !== null ? Math.max(4, Math.round((value / max) * 100)) : 0;
       return '<li class="driver' + (index === 0 ? ' is-primary' : '') + '">' +
         '<span class="driver-icon">' + icon(metricIconName(metric) || 'droplet', 18) + '</span>' +
         '<span class="driver-body">' +
-        '<b>' + escapeHtml(meta.label || metric) + '</b>' +
+        '<b>' + escapeHtml(driverLabel(metric)) + '</b>' +
         '<span class="driver-role">' + (index === 0 ? 'largest contributor' : 'also contributes') + '</span>' +
         '<span class="driver-bar" aria-hidden="true"><i style="--w:' + share + '"></i></span>' +
         '</span>' +
         '<span class="driver-share">' + (entry ? escapeHtml(formatScore(entry.contribution)) : '–') + '</span>' +
-        '<span class="sr-only">' + escapeHtml(plain.phrase || '') + '</span>' +
+        '<span class="sr-only">' + escapeHtml(metricPlain(metric).phrase || '') + '</span>' +
         '</li>';
     }).join('');
     // Only the leading driver gets a sentence: a list of two explanations reads like a report.
-    var lead = METRIC_META[drivers[0]] || {};
     return '<section class="driver-block">' +
       '<h3 class="block-title">What is driving risk?</h3>' +
-      '<p class="driver-lead">' + escapeHtml((lead.label || drivers[0]) ) + ' is the largest contributor to this score right now.</p>' +
+      '<p class="driver-lead">' + escapeHtml(driverLabel(drivers[0])) + ' is the largest contributor to this score right now.</p>' +
       '<ul class="driver-list">' + rows + '</ul>' +
-      '<p class="muted small">Contributions come from the API\'s own <code>heuristic-v1</code> breakdown for this reading.</p>' +
+      '<p class="muted small">Contributions come from the API\'s own risk score breakdown for this reading. ' +
+      'The weights and the arithmetic are under "Technical details" below.</p>' +
       '</section>';
   }
 
@@ -2282,6 +2434,7 @@
     clockLabel: clockLabel,
     trendLabel: trendLabel,
     trendDirection: trendDirection,
+    trendHasHistory: trendHasHistory,
     metricsFrom: metricsFrom,
     metricScale: metricScale,
     contributionMap: contributionMap,
@@ -2328,6 +2481,12 @@
     metricState: metricState,
     metricStateCaption: metricStateCaption,
     plainRiskSummary: plainRiskSummary,
+    // the public-name layer and the one composer for the plain "why" sentence
+    humaniseVariable: humaniseVariable,
+    driverLabel: driverLabel,
+    labelList: labelList,
+    reasonSentence: reasonSentence,
+    scoreBreakdown: scoreBreakdown,
     relativeTime: relativeTime,
     routeFromHash: routeFromHash,
     hashFor: hashFor,

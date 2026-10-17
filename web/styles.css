@@ -479,18 +479,25 @@ main {
   color: var(--slate-400);
   font-variant-numeric: tabular-nums;
 }
-.hero-explain {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 0.82rem;
-  color: var(--slate-300);
-  background: var(--glass-flat);
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-sm);
-  padding: 11px 13px;
-  overflow-wrap: anywhere;
+/* The spotlight sentence: prose, in the text face, at reading size with a comfortable measure.
+ * It used to be a monospace box holding the model's own output line ("risk_score 0.3877 =
+ * weighted base 0.3877 (soil_saturation_pct=0.1807, ...)"), which is what made the front page
+ * of a public flood monitor look like a debug console. */
+.hero-reason {
+  margin: 12px 0 0;
+  max-width: 66ch;
+  font-size: var(--text-lg);
+  line-height: 1.55;
+  color: var(--slate-100);
 }
-.hero-drivers { margin: 13px 0 0; font-size: 0.82rem; color: var(--slate-400); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.hero-facts {
+  margin: 11px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
 .chip {
   font-family: var(--mono);
   font-size: 0.74rem;
@@ -695,7 +702,6 @@ main {
 .metric-tick { position: absolute; top: 0; bottom: 0; width: 2px; left: calc(var(--pct, 0) * 1%); opacity: 0.85; }
 .metric-tick.watch { background: rgba(251, 191, 36, 0.75); }
 .metric-tick.critical { background: rgba(239, 68, 68, 0.85); }
-.metric-weight { font-family: var(--mono); font-size: 0.72rem; color: var(--slate-400); text-align: right; font-variant-numeric: tabular-nums; }
 
 .spark-row { display: flex; align-items: center; gap: 10px; }
 .spark { width: 100%; height: 56px; display: block; }
@@ -1405,7 +1411,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   .stat-row { grid-template-columns: minmax(0, 1fr); }
   .stat-value { font-size: 1.32rem; }
   .metric { grid-template-columns: 88px 74px minmax(0, 1fr); }
-  .metric-weight { display: none; }
   .band-tile { flex: 1 1 44%; min-width: 0; }
   .alert-chip { max-width: 100%; }
   .alert-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
@@ -2233,6 +2238,7 @@ body {
   :root { --pad-x: 13px; --gap: 14px; --radius-lg: 16px; }
   body { font-size: 0.98rem; }
   .hero-kicker { letter-spacing: 0; }
+  .hero-reason { font-size: var(--text-base); }
   .health-summary { gap: 6px; }
   .city-figures { gap: 6px; }
   .city-trend { margin-left: 0; }
@@ -2250,6 +2256,84 @@ main, .topbar, .footer { max-width: 100%; }
 .city-card h3, .alert-title b, .driver-body b, .status-label, .figure-body, .city-headline {
   overflow-wrap: anywhere;
 }
+
+/* ------------------------------------------------- the model, folded away --- */
+
+/* Everything below appears only inside a collapsed technical section (the city page and the
+ * methodology page), so it may look like the model it describes: monospace for identifiers and
+ * arithmetic, because that is what they are. Keeping it inside a fold rather than on a public
+ * view is the point - the words a visitor reads are the ones at reading size. */
+.var-name {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--slate-300);
+  background: rgba(2, 6, 23, 0.5);
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  padding: 1px 5px;
+  overflow-wrap: anywhere;
+}
+
+.raw-label {
+  margin: 18px 0 6px;
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
+
+.raw-model {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--stroke);
+  background: rgba(2, 6, 23, 0.55);
+  overflow-wrap: anywhere;
+}
+.raw-model code {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--slate-200);
+}
+
+.breakdown {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--stroke);
+  background: var(--surface-flat);
+}
+.breakdown-formula {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  color: var(--slate-200);
+}
+.breakdown-base { color: var(--cyan-400); }
+.breakdown-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+.breakdown-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
+.breakdown-list b { color: var(--white); font-variant-numeric: tabular-nums; }
+.breakdown-label { color: var(--slate-200); }
+.breakdown-total {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--stroke);
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
+.breakdown-total b { color: var(--white); font-variant-numeric: tabular-nums; }
 
 @media (prefers-reduced-motion: reduce) {
   .skel-line, .skel-title, .skel-badge, .skel-body { animation: none; }

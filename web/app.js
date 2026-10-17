@@ -114,6 +114,9 @@
     detailSignature: null,
     alertsSignature: null,
     dataSignature: null,
+    // the worked example on the methodology page is tied to the reading it shows, not to the
+    // payload's mode, so it re-renders when that reading changes
+    breakdownSignature: null,
     // M9: the activity panel, the About page and the system-health pill each render from a
     // signature so a poll that changed nothing does not rewrite the DOM
     activitySignature: null,
@@ -162,7 +165,7 @@
       'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
       'alerts-lede', 'alerts-summary', 'alerts-active', 'alerts-closed',
       'provenance-legend', 'attribution-block', 'attribution-detail', 'summary-weather-provider',
-      'method-block', 'why-simulated', 'limitations', 'summary-model-data',
+      'method-block', 'why-simulated', 'limitations', 'summary-model-data', 'score-breakdown',
       // M9: system health, recent activity, alert delivery, per-city alert history and About
       'health', 'health-pill', 'health-dot', 'health-word', 'health-detail', 'health-list',
       'recent-activity', 'alerts-status', 'alerts-delivery', 'city-incidents',
@@ -552,25 +555,31 @@
     var zone = findZone(highest.zone_id);
     var latest = zone && zone.latest ? zone.latest : null;
     var band = FP.bandKey(highest.risk_class);
+    var summary = zone ? FP.plainRiskSummary(zone) : null;
+    // The spotlight answers "why this city?" in a sentence, and keeps everything else about the
+    // reading short: the band, the score, the main factor, how old it is and which way it is
+    // going. The model's own output line, the weights and the variable names are deliberately not
+    // here - they belong to the city page's technical section and to Data & Methodology.
+    var trendWords = { up: 'getting worse', down: 'easing', flat: 'holding steady' };
+    var direction = latest ? FP.trendDirection(latest.trend) : 'flat';
+    var facts = [];
+    if (summary && summary.driverLabel) facts.push('Main risk factor: ' + summary.driverLabel);
+    if (latest) facts.push('Updated ' + FP.ageLabel(latest.age_seconds));
+    if (latest) facts.push('Trend: ' + (trendWords[direction] || 'holding steady'));
     container.innerHTML =
       '<div class="card hero band-' + band + '">' +
       '<div class="hero-main">' +
       '<p class="hero-kicker">Highest risk ' + noun + '</p>' +
       '<h2 class="hero-name">' + FP.escapeHtml(highest.name) + '</h2>' +
-      '<p class="hero-meta">' + FP.escapeHtml(highest.zone_id) + ' · reading ' +
-      FP.escapeHtml(FP.clockLabel(highest.timestamp)) +
-      (latest ? ' · ' + FP.escapeHtml(FP.ageLabel(latest.age_seconds)) : '') + '</p>' +
-      '<p class="hero-explain">' + FP.escapeHtml(latest ? latest.explanation : 'no explanation available') + '</p>' +
-      (latest && latest.top_drivers && latest.top_drivers.length
-        ? '<p class="hero-drivers">Dominant drivers: ' + latest.top_drivers.map(function (driver) {
-          return '<span class="chip">' + FP.escapeHtml(driver) + '</span>';
-        }).join('') + '</p>'
-        : '') +
+      '<p class="hero-reason" data-f="hero-why">' +
+      FP.escapeHtml(summary && summary.why ? summary.why : 'No scored reading has been computed for this ' + noun + ' yet.') +
+      '</p>' +
+      (facts.length ? '<p class="hero-facts">' + FP.escapeHtml(facts.join(' · ')) + '</p>' : '') +
       '</div>' +
       '<div class="hero-gauge">' +
       '<div class="ring ring-lg band-' + band + '" style="--pct:' + FP.riskPercent(highest.risk_score).toFixed(1) + '">' +
       '<span class="ring-value">' + FP.escapeHtml(FP.formatScore(highest.risk_score)) + '</span>' +
-      '<span class="ring-caption">heuristic-v1 score</span>' +
+      '<span class="ring-caption">risk score</span>' +
       '</div>' +
       '<span class="pill band-' + band + '">' + FP.escapeHtml(FP.classLabel(highest.risk_class)) + '</span>' +
       '</div>' +
@@ -656,12 +665,16 @@
 
     setText('risk_score', FP.formatScore(latest.risk_score));
     setText('risk_class', FP.classLabel(latest.risk_class));
-    setText('risk_class_candidate', FP.classLabel(latest.risk_class_candidate));
-    setText('top_driver', (latest.top_drivers || [])[0] || '–');
-    setText('sequence', latest.sequence);
+    // the human label, never the payload's variable name: this list is a public view
+    setText('top_driver', latest.top_drivers && latest.top_drivers.length
+      ? FP.driverLabel(latest.top_drivers[0]) : '–');
     setText('sensor_node_id', latest.sensor_node_id);
     setText('age', FP.ageLabel(latest.age_seconds));
-    setText('explanation', latest.explanation);
+    // The plain-language reason is patched like every other value on this card: the card is only
+    // rebuilt when the *fleet* changes, so a sentence written once at build time would freeze
+    // while the reading behind it moved. The raw model output string is not patched into any
+    // visible node: it lives in the city page's technical section, which is redrawn on navigation.
+    setText('why', FP.plainRiskSummary(zone).why);
 
     var trend = card.querySelector('[data-f="trend"]');
     if (trend) {
@@ -1517,6 +1530,38 @@
         }).join('');
       }
     }
+    // The exact arithmetic of one real reading, folded away: which variable carried which weight,
+      // what each contributed, and the model's own output line - the transparency that used to sit
+      // on the Overview, in the place where a reader goes looking for it.
+    if (el['score-breakdown']) {
+      var leader = null;
+      (state.zones || []).forEach(function (zone) {
+        if (!zone || !zone.latest) return;
+        if (!leader || FP.riskPercent(zone.latest.risk_score) > FP.riskPercent(leader.latest.risk_score)) leader = zone;
+      });
+      var breakdownSignature = leader
+        ? leader.zone_id + '|' + leader.latest.risk_score + '|' + (leader.latest.sequence === undefined ? '' : leader.latest.sequence)
+        : 'none';
+      if (breakdownSignature !== state.breakdownSignature) {
+        state.breakdownSignature = breakdownSignature;
+        el['score-breakdown'].innerHTML = leader
+          ? '<details class="tech" data-f="data-breakdown">' +
+            '<summary>Worked example: the highest-risk reading, number by number</summary>' +
+            '<p class="muted small">Every figure below is a value this page received from the API: the ' +
+            'measurement, its own reading, the fixed weight of that channel, and the weighted ' +
+            'contribution it made to this particular score.</p>' +
+            FP.scoreBreakdown(leader) +
+            '<p class="raw-label">Raw model output, as returned by the API</p>' +
+            '<p class="raw-model"><code>' + FP.escapeHtml(leader.latest.explanation || '') + '</code></p>' +
+            '</details>'
+          : FP.emptyState({
+            key: 'no-breakdown',
+            icon: 'info',
+            title: 'No scored reading to show yet',
+            detail: 'The worked example fills in as soon as the first reading is computed.'
+          });
+      }
+    }
     if (el['attribution-detail'] && payload) {
       var attribution = FP.attributionLine(payload);
       setText('attribution-detail', attribution.text);
@@ -1771,6 +1816,7 @@
       state.cityCardSignature = null;
       state.activitySignature = null;
       state.healthSignature = null;
+      state.breakdownSignature = null;
       state.detailSignature = null;
       renderCityCards(state.zones);
       renderSystemHealth();

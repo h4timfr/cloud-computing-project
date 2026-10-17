@@ -64,6 +64,24 @@ function loadLib() {
 
 const FP = loadLib();
 
+/* The words a reader would actually read: tags and attributes removed (a `data-metric=
+ * "soil_saturation_pct"` attribute is how a row is addressed, not copy), and `<code>` blocks
+ * exempt because the technical disclosures quote real identifiers on purpose. Used by every
+ * check that asks "is this engineering detail leaking into a public view?". */
+function proseOf(markup) {
+  return String(markup || '')
+    .replace(/<code[\s\S]*?<\/code>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&[a-z]+;|&#\d+;/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+/* Any snake_case identifier in that prose. Exported to the checks so one definition of "a
+ * variable name" is used everywhere. */
+function variableNamesIn(markup) {
+  return proseOf(markup).match(/\b[a-z][a-z0-9]*_[a-z0-9_]+\b/g) || [];
+}
+
 /* ------------------------------------------------------------------ fixtures --- */
 
 const THRESHOLDS = {
@@ -98,9 +116,20 @@ function zoneFixture(overrides) {
         water_level_m: 0.95,
         flow_rate_m3_s: 1.88
       },
+      // The shape the API really sends: `variable` (not `metric`) plus the two thresholds the
+      // model used. The fixture used to carry `metric` and no thresholds, which is exactly why
+      // nothing noticed that the interface could not read a real contribution at all - the map
+      // was keyed on a field the API has never sent. One entry keeps the old `metric` key so the
+      // alias stays covered.
       contributions: [
-        { metric: 'water_level_m', value: 0.95, sub_score: 0.2375, weight: 0.25, contribution: 0.0594 },
-        { metric: 'rainfall_mm_per_hr', value: 1.81, sub_score: 0.0603, weight: 0.3, contribution: 0.0181 }
+        { variable: 'water_level_m', value: 0.95, unit: 'm', weight: 0.25, sub_score: 0.2375,
+          contribution: 0.0594, watch_threshold: 2.0, critical_threshold: 3.5 },
+        { metric: 'rainfall_mm_per_hr', value: 1.81, unit: 'mm/h', weight: 0.3, sub_score: 0.0603,
+          contribution: 0.0181, watch_threshold: 15.0, critical_threshold: 45.0 },
+        { variable: 'soil_saturation_pct', value: 38.97, unit: '%', weight: 0.2, sub_score: 0.4329,
+          contribution: 0.0866, watch_threshold: 70.0, critical_threshold: 90.0 },
+        { variable: 'drain_level_m', value: 0.43, unit: 'm', weight: 0.15, sub_score: 0.0573,
+          contribution: 0.0086, watch_threshold: 1.5, critical_threshold: 2.5 }
       ],
       top_drivers: ['water_level_m', 'soil_saturation_pct', 'drain_level_m'],
       trend: { weight: 0.1, reference_rise_m: 1.0, water_level_delta_m: null, rise_fraction: null, contribution: 0.0 },
@@ -201,8 +230,22 @@ check('age and clock labels', () => {
 });
 
 check('trend label and direction', () => {
-  assert.equal(FP.trendLabel({ water_level_delta_m: null }), 'no lookback');
-  assert.equal(FP.trendLabel(null), 'no lookback');
+  // a trend with no measured change says so in words: "no lookback" was the model's shorthand
+  assert.equal(FP.trendLabel({ water_level_delta_m: null }), 'not enough history yet');
+  assert.equal(FP.trendLabel(null), 'not enough history yet');
+  assert.equal(FP.trendHasHistory(null), false, 'a missing trend claims history');
+  assert.equal(FP.trendHasHistory({ water_level_delta_m: null }), false, 'a null delta claims history');
+  assert.equal(FP.trendHasHistory({ water_level_delta_m: 0.4 }), true, 'a measured delta is not recognised');
+  // ...and an arrow follows the direction it is drawn for. trendDirection answers 'up'/'down'/
+  // 'flat'; the icon was chosen by comparing against 'rising'/'falling', so every arrow on the
+  // board pointed "flat" whatever the water was doing.
+  const upIcon = FP.trendIcon({ water_level_delta_m: 0.4 }, 't');
+  const downIcon = FP.trendIcon({ water_level_delta_m: -0.4 }, 't');
+  assert.match(upIcon, /trend-up/, 'a rising trend is not drawn as rising');
+  assert.match(downIcon, /trend-down/, 'a falling trend is not drawn as falling');
+  assert.notEqual(upIcon.slice(0, 80), downIcon.slice(0, 80), 'both directions render the same icon');
+  assert.match(FP.trendIcon({ water_level_delta_m: null }, 't'), /trend-flat/,
+    'a trend with no history is not drawn as flat');
   assert.equal(FP.trendLabel({ water_level_delta_m: 1.2, rise_fraction: 1 }), '+1.20 m / 5 min (rise 100%)');
   assert.equal(FP.trendLabel({ water_level_delta_m: -0.3, rise_fraction: 0 }), '-0.30 m / 5 min (rise 0%)');
   assert.equal(FP.trendDirection({ water_level_delta_m: 0.4 }), 'up');
@@ -335,7 +378,6 @@ check('live zone card contains every value the API returned', () => {
   assert.ok(html.includes(zone.name), 'zone name missing');
   assert.ok(html.includes(zone.latest.sensor_node_id), 'sensor node id missing');
   assert.ok(html.includes(zone.latest.risk_score.toFixed(2)), 'score missing');
-  assert.ok(html.includes(zone.latest.explanation), 'explanation missing');
   for (const metric of FP.METRIC_ORDER) {
     assert.ok(html.includes(FP.METRIC_META[metric].label), `metric label ${metric} missing`);
   }
@@ -345,6 +387,19 @@ check('live zone card contains every value the API returned', () => {
   assert.ok(!html.includes('undefined'), 'card contains undefined');
   assert.ok(!html.includes('NaN'), 'card contains NaN');
   assert.ok(html.includes(`band-${FP.bandKey(zone.latest.risk_class)}`), 'effective band class missing');
+  // The model's own output line used to be printed on this card verbatim. It is one line of
+  // formula, variable names and arithmetic - the single worst thing to put in front of a visitor
+  // on a list of cities - so it now lives in the technical fold on the city page (asserted in
+  // "the city view leads with plain language"). What must be here instead is the plain sentence
+  // and the driver under its human name.
+  assert.ok(!html.includes('weighted base'), 'the city list still prints the raw formula');
+  assert.ok(!/risk_score [0-9]/.test(html), 'the city list still prints the raw formula');
+  assert.deepEqual(variableNamesIn(html), [], 'the city list reads out variable names');
+  const driver = (zone.latest.top_drivers || [])[0];
+  if (driver) {
+    assert.ok(html.includes(FP.driverLabel(driver)), `the main risk factor is not labelled: ${driver}`);
+    assert.match(html, /is the main contributor/, 'the card does not say what is driving risk in words');
+  }
 });
 
 check('no-data zone renders an explicit empty state', () => {
@@ -1736,6 +1791,21 @@ check('the city view leads with plain language and folds the model away', () => 
   // the score and class always come from the payload, never recomputed here
   assert.ok(detail.includes(FP.formatScore(zone.latest.risk_score)), 'the city view lost the API risk score');
   assert.match(detail, new RegExp(zone.latest.risk_class, 'i'), 'the city view lost the API class');
+
+  // No variable name may appear in the words a visitor reads, anywhere in the visible part - not
+  // in a sentence and not as a label. Tags and attributes are stripped first, so `data-metric=
+  // "soil_saturation_pct"` (which has to stay, it is how the tiles are addressed) is not
+  // mistaken for copy, and `<code>` blocks are exempt because the technical disclosures quote
+  // real identifiers on purpose.
+  assert.deepEqual(variableNamesIn(visible),
+    [], `the city view reads out variable names: ${variableNamesIn(visible).join(', ')}`);
+  // ...while the folded section keeps every identifier, the description and the formula itself
+  assert.match(folded, /Technical details/, 'the fold is not labelled as technical detail');
+  assert.match(folded, /weighted base/, 'the fold no longer carries the weighted-base arithmetic');
+  FP.METRIC_ORDER.forEach((metric) => {
+    assert.ok(folded.includes(metric), `the folded section lost the variable name ${metric}`);
+  });
+  assert.match(folded, /Raw model output/, 'the fold does not label the API\'s own output line');
 });
 
 check('each measurement is one tile with its own icon, value and provenance', () => {
@@ -2136,9 +2206,92 @@ check('M9: the copy reads like a product, not like a payload', () => {
   assert.match(libSource, /Updated ' \+ escapeHtml\(freshness\)|'Updated ' \+/, 'freshness is not phrased as "Updated …"');
   assert.match(libSource, /is the main factor/, 'the driver is not phrased as a sentence');
   assert.match(libSource, /is the largest contributor/, 'the driver block has no plain-language lead');
+  assert.match(libSource, /is the main contributor/, 'the plain sentence does not name a main contributor');
+  // the public-name layer: any identifier the payload carries is turned into words
+  assert.match(libSource, /function driverLabel\(/, 'there is no variable-name to label map');
+  assert.match(libSource, /function humaniseVariable\(/, 'an unknown variable name would be printed raw');
+  assert.equal(FP.driverLabel('soil_saturation_pct'), 'Soil saturation', 'soil saturation is mislabelled');
+  assert.equal(FP.driverLabel('water_level_m'), 'Water level', 'water level is mislabelled');
+  assert.equal(FP.driverLabel('drain_level_m'), 'Drain level', 'drain level is mislabelled');
+  assert.equal(FP.driverLabel('rainfall_mm_per_hr'), 'Rainfall', 'rainfall is mislabelled');
+  assert.equal(FP.driverLabel('flow_rate_m3_s'), 'Flow rate', 'flow rate is mislabelled');
+  ['a_future_sensor', 'rainfall_mm_per_hr_2', 'mystery_sensor'].forEach((unknown) => {
+    const label = FP.driverLabel(unknown);
+    assert.ok(!label.includes('_'), `the label for ${unknown} keeps its underscores: ${label}`);
+    assert.equal(FP.humaniseVariable(unknown), label, 'the fallback and driverLabel disagree');
+  });
+  assert.equal(FP.driverLabel(null), 'Reading', 'a missing variable has no label');
+  assert.equal(FP.labelList(['rainfall']), 'rainfall', 'a one-item list is punctuated as a list');
+  assert.equal(FP.labelList(['rainfall', 'drain level']), 'rainfall and drain level', 'two items lost their "and"');
+  assert.equal(FP.labelList(['a', 'b', 'c']), 'a, b and c', 'three items lost the serial comma');
   // over-long sentences make a page unreadable: the explanations stay inside a reading budget
   const longStrings = [...libSource.matchAll(/'([A-Z][^']{190,})'/g)].map((match) => match[1]);
   assert.deepEqual(longStrings, [], `${longStrings.length} copy strings are over 190 characters`);
+});
+
+check('M9: the plain sentence is composed from the API\'s own numbers', () => {
+  // The sentence names the main contributor, then says which measurements are *not* driving the
+  // score - and that second half is derived from each metric's own value and watch threshold, so
+  // it cannot claim a channel is quiet when the payload says it is not.
+  const quiet = zoneFixture({});
+  const sentences = FP.reasonSentence(quiet);
+  const lead = FP.driverLabel(quiet.latest.top_drivers[0]);
+  assert.match(sentences, /^Risk is currently [A-Z]+\./, `the sentence does not lead with the band: ${sentences}`);
+  assert.ok(sentences.includes(lead + ' is the main contributor'), `the sentence lost its driver: ${sentences}`);
+  assert.match(sentences, /remain below their watch levels|remains below its watch level/,
+    `the sentence does not say what is quiet: ${sentences}`);
+  assert.deepEqual(variableNamesIn(sentences), [], `the sentence leaks variable names: ${sentences}`);
+
+  // raise one quiet channel above its watch level: the sentence must say so instead
+  const shifted = JSON.parse(JSON.stringify(quiet));
+  shifted.latest.contributions = shifted.latest.contributions.map((entry) => (
+    (entry.variable || entry.metric) === 'rainfall_mm_per_hr'
+      ? Object.assign({}, entry, { value: 20 }) : entry
+  ));
+  const shiftedSentence = FP.reasonSentence(shifted);
+  assert.match(shiftedSentence, /Rainfall is also above its watch level/,
+    `a channel above its threshold is still described as quiet: ${shiftedSentence}`);
+  assert.ok(!/while rainfall/.test(shiftedSentence), 'a loud channel is listed among the quiet ones');
+
+  // a reading with no driver list at all still says something true and useful
+  const bare = JSON.parse(JSON.stringify(quiet));
+  bare.latest.top_drivers = [];
+  assert.match(FP.reasonSentence(bare), /^Risk is currently [A-Z]+\./,
+    'a reading without a driver list lost its sentence');
+  // and nothing at all renders as nothing, not as "undefined"
+  assert.equal(FP.reasonSentence({ latest: null }), '', 'a missing reading produced a sentence');
+  assert.ok(!/undefined|NaN/.test(FP.reasonSentence({})), 'an empty zone produced "undefined"');
+});
+
+check('M9: the contribution map reads the field the API actually sends', () => {
+  // regression: the map was keyed on `metric`, which the API does not send (it sends `variable`),
+  // so every weighted contribution, every driver share and the whole "what is not driving this"
+  // half of the plain sentence were silently empty on every real payload.
+  const live = zoneFixture({});
+  const map = FP.contributionMap(live);
+  FP.METRIC_ORDER.forEach((metric) => {
+    if (metric === 'flow_rate_m3_s') return; // the fixture carries four of the five channels
+    assert.ok(map[metric], `a contribution is not mapped: ${metric}`);
+  });
+  assert.ok(map.rainfall_mm_per_hr, 'the legacy "metric" key stopped working');
+  const real = JSON.parse(JSON.stringify(live));
+  real.latest.contributions = real.latest.contributions.map((entry) => ({
+    variable: entry.variable || entry.metric, value: entry.value, unit: entry.unit, weight: entry.weight,
+    sub_score: entry.sub_score, contribution: entry.contribution,
+    watch_threshold: entry.watch_threshold, critical_threshold: entry.critical_threshold
+  }));
+  assert.equal(Object.keys(FP.contributionMap(real)).length, 4, 'a real payload lost a channel');
+  // the driver shares are computed from the contribution, not from a field that is never sent
+  const drivers = FP.driverBlock(real);
+  assert.match(drivers, /--w:[1-9]/, 'the driver bars are all empty: the share is read from the wrong field');
+  // and the breakdown the fold prints is built from those entries
+  const breakdown = FP.scoreBreakdown(real);
+  assert.match(breakdown, /weighted base/, 'the breakdown has no formula line');
+  assert.match(breakdown, /risk score reported by the API/, 'the breakdown does not quote the API score');
+  ['water_level_m', 'rainfall_mm_per_hr', 'soil_saturation_pct', 'drain_level_m'].forEach((metric) => {
+    assert.ok(breakdown.includes(metric), `the breakdown is missing the variable ${metric}`);
+  });
+  assert.equal(FP.scoreBreakdown({ latest: null }), '', 'a zone with no reading produced a breakdown');
 });
 
 check('M9: the headline question is answered in the first screen', () => {
@@ -2161,6 +2314,26 @@ check('M9: the headline question is answered in the first screen', () => {
     htmlSource.indexOf('id="view-cities"'));
   assert.ok(!/heuristic-v1/.test(overviewBody), 'the Overview shows the model name');
   assert.ok(!/weight|coefficient|0\.30/.test(overviewBody), 'the Overview shows scoring weights');
+  // The spotlight is rendered at runtime, so this is a source-level guard for the renderer that
+  // produced the leak browser QA found on the deployed page: it printed the model's own output
+  // string ("risk_score 0.3973 = weighted base ...") and the raw driver variables under the
+  // heading "Dominant drivers" on the front page of a public flood monitor.
+  const hero = appSource.slice(appSource.indexOf('function renderHero'),
+    appSource.indexOf('function zoneSignature'));
+  assert.ok(hero.length > 200, 'renderHero was not found where this check expects it');
+  ['explanation', 'top_drivers', 'heuristic-v1', 'weighted', 'clockLabel', 'Dominant drivers',
+    'hero-explain', 'hero-drivers'].forEach((term) => {
+    assert.ok(!hero.includes(term), `the Overview spotlight still renders ${term}`);
+  });
+  // the internal id and the raw clock used to be printed on the line under the city name:
+  // "city-chennai · reading 03:28:53Z · 2 min ago" is a developer's line, not a visitor's
+  assert.ok(!/escapeHtml\(highest\.zone_id\)/.test(hero), 'the spotlight prints the internal zone id');
+  assert.match(hero, /hero-reason/, 'the spotlight has no plain-language sentence');
+  assert.match(hero, /Main risk factor/, 'the spotlight does not name the main risk factor');
+  assert.match(hero, /'Updated ' \+ FP\.ageLabel/, 'the spotlight does not say how old the reading is');
+  // and the arrow in the other direction: the plain sentence the spotlight prints must be the
+  // same composer the city page uses, so the two can never disagree
+  assert.match(hero, /FP\.plainRiskSummary\(/, 'the spotlight composes its own sentence instead of reusing the shared one');
 });
 
 check('M9: every view has a designed empty, loading and error state', () => {

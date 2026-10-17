@@ -57,10 +57,17 @@ the demo needs it.
 On the dashboard, confirm with your own eyes (it opens on **Overview**): the connection badge reads
 **LIVE**, the headline answers the question in one sentence (e.g. "2 of 5 cities are at a critical
 flood risk right now."), the four summary cards are filled, the highest-risk spotlight names a city
-with its band, the fleet strip shows five tiles with real counts, and the freshness line counts up
-between polls. Then open **Cities → any city**: five measurement tiles carry per-metric provenance
+with its band and says **why** in a sentence ("Risk is currently NORMAL. Soil saturation is the main
+contributor, while rainfall, drain level, water level and flow rate remain below their watch
+levels.") with one facts line under it (main risk factor, how old the reading is, which way it is
+going), the fleet strip shows five tiles with real counts, and the freshness line counts up between
+polls. There is no formula, no variable name and no model name anywhere on this screen — if you can
+see `weighted base`, `soil_saturation_pct` or `heuristic-v1` outside a fold, that is the bug this
+pass was about. Then open **Cities → any city**: five measurement tiles carry per-metric provenance
 chips (`REAL` / `MODEL` / `SIM`) and a small "?" that explains the metric in one sentence, the
-"What is driving risk?" block names the primary factor, and *Technical details* is folded away.
+"What is driving risk?" block names the primary factor, and *Technical details* is folded away —
+open it and the variable names, weights, arithmetic and the API's own output line are all still
+there.
 
 Then check the page the way a phone would (F12 → the device toolbar, or just drag the window narrow):
 at ~390 px the nav collapses to a menu button that closes on Escape, the cards stack, nothing scrolls
@@ -72,9 +79,9 @@ sideways, and the tap targets are finger-sized. Widths worth a glance: 320, 360,
 | Click | What it shows | The line to say |
 |---|---|---|
 | **Overview** | Plain-language fleet answer, highest-risk spotlight, active alerts, cities reporting, weather freshness, band strip, one status card per city | "This is the whole fleet in one screen, and it says in words what the numbers mean." |
-| **Cities → a city** | Score and class **as the API reported them**, a plain-English reason, five measurement tiles with thresholds, provenance and per-metric help, what is driving risk with shares, freshness, history chart (click it and use the arrow keys), then folded *Technical details* and the city's own alert history | "Same city, detail on demand. The model is one click away, not in the visitor's face. The chart is reachable without a mouse, too." |
+| **Cities → a city** | Score and class **as the API reported them**, a plain-English reason, five measurement tiles with thresholds, provenance and per-metric help, what is driving risk with shares, freshness, history chart (click it and use the arrow keys), then folded *Technical details* and the city's own alert history | "Same city, detail on demand. The model is one click away, not in the visitor's face — open it and you get the variable names, the weights and the arithmetic." |
 | **Alerts** | Active and resolved as separate sections, then System status: reporting count, weather freshness, and an alert-delivery panel that separates *publishing* from *delivery* | "Nothing is open right now — and look at the wording: publishing is configured, but this page will not pretend an email arrived. It cannot know that." |
-| **Data & Methodology** | REAL / MODEL_DERIVED / SIMULATED as three cards, Open-Meteo attribution, `heuristic-v1` broken down visually, the simulated hydraulics, and the limitations | "This is the honest page: what is measured, what is simulated, and what this score is **not**." |
+| **Data & Methodology** | REAL / MODEL_DERIVED / SIMULATED as three cards, Open-Meteo attribution, `heuristic-v1` broken down visually, **the calculation number by number** as a folded worked example of the highest-risk reading, the simulated hydraulics, and the limitations | "This is the honest page: what is measured, what is simulated, and what this score is **not** — and if you want the arithmetic, here it is, one fold down." |
 | **About** | What FloodPulse is, why it exists, the five cities, how it works, what it is built on, flood safety guidance with links to IMD and NDMA, and the limitations | "And this is the part a professor or a resident should read: it is an academic prototype, it is not an official warning service, and for official guidance follow the authorities it links to." |
 
 The URL follows the section (`#/overview`, `#/cities/city-chennai`, `#/alerts`, `#/data`, `#/about`),
@@ -267,7 +274,7 @@ demo, with F12 open.
 | # | Check | What good looks like |
 |---|---|---|
 | 1 | **Console is empty** | no output *at all*: no CSP violation, no ignored-directive warning, no 404 for any asset, no uncaught error. A missing `bg-storm.webp` shows as a 404 here and the page still reads well (the gradient underneath is the fallback). |
-| 2 | **Overview in five seconds** | the question, then the sentence that answers it, then four cards. If you have to read a formula to understand the page, that is the bug this pass was about. |
+| 2 | **Overview in five seconds** | the question, then the sentence that answers it, then four cards. If you have to read a formula to understand the page, that is the bug this pass was about — the spotlight must say *why* in words ("Soil saturation is the main contributor, while rainfall … remain below their watch levels"), and the only numbers on the screen are the score, the band, the age and the trend. |
 | 3 | **The backdrop** | the storm image is atmosphere behind the content, not something the text sits on. Anywhere a heading competes with the image is a defect: say so rather than squinting at it. |
 | 4 | **Widths** | 320, 360, 390, 430, 768, 1024, 1280, 1440+. No sideways scrolling at any of them; cards stack logically; the hero does not fill a phone screen; long city names wrap. |
 | 5 | **Keyboard only** | Tab through: skip link, nav, every card, the chart, the "?" explanations, the *Technical details* folds, the footer. Focus is always visible, never lost, and the mobile menu closes on Escape. |
@@ -280,6 +287,10 @@ demo, with F12 open.
 ## 5. What not to claim
 
 * Do not say the cities are "at risk" as a forecast — the bands are illustrative.
+* Do not say the score is a prediction, and do not present the plain sentence as science: it repeats
+the model's own contribution list in words. The model itself, with its weights and its arithmetic,
+is one fold down on the city page and on Data & Methodology — point there rather than paraphrasing
+it from memory.
 * Do not say "real-time sensor data" for drain/water/flow.
 * Do not say the dashboard is "fully live" while a stale banner is showing: the board says what it is.
 * Do not say alerts reach anyone until a subscription is confirmed on `floodpulse-alerts`. The

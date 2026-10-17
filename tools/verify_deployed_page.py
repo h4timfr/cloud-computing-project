@@ -39,6 +39,8 @@ EXPECTED = {
     "the guidance defers to the authorities": "does <b>not</b> issue official warnings",
     "the meteorological department is linked": "mausam.imd.gov.in",
     "the disaster management authority is linked": "ndma.gov.in",
+    # M10: the worked example the methodology page fills in at runtime has somewhere to land
+    "the methodology page has a slot for the worked example": 'id="score-breakdown"',
 }
 
 FORBIDDEN = {
@@ -88,6 +90,15 @@ NEEDLES = {
         "the delivery panel states what the API does not expose": "Not reported to this page",
         "the publishing wording is the honest one": "published to the notification topic",
         "the status counts reporting cities in words": "reporting'",
+        # M10: the served copy is the plain one, and the model is folded rather than removed
+        "a variable name is turned into words before it is shown": "function driverLabel",
+        "an unknown variable is humanised instead of printed raw": "function humaniseVariable",
+        "the plain reason sentence is composed, not pasted": "function reasonSentence",
+        "the city page folds the model behind a question": "how is this risk calculated?",
+        "the fold still prints the weighted base": "weighted base",
+        "the fold quotes the API's own output line": "Raw model output, as returned by the API",
+        "the city page keeps the driver's human name": "is the main contributor",
+        "the spotlight names the main risk factor": "Main risk factor",
     },
     "app.js": {
         "the chart answers the arrow keys": "handleHistoryKey",
@@ -100,6 +111,9 @@ NEEDLES = {
         "the retry re-requests instead of reloading": 'data-action="retry"',
         "the empty fleet is a named state": "key: 'no-cities'",
         "the chart has a text equivalent on the page": "history-summary",
+        # M10: the methodology page publishes a worked example, folded, from the live reading
+        "the worked example is built from the payload": "score-breakdown",
+        "the spotlight reuses the shared plain sentence": "FP.plainRiskSummary",
     },
     "styles.css": {
         "change note": "change-note",
@@ -110,6 +124,10 @@ NEEDLES = {
         "the skeleton is styled": "skel-sweep",
         "a placeholder has its own shape": ".skel-card",
         "the touch target rule is deployed": "min-height: 44px",
+        # M10: the spotlight sentence is set as prose, and the model's own words are set apart
+        "the spotlight sentence is styled": ".hero-reason",
+        "the raw model line is styled": ".raw-model",
+        "the worked example is styled": ".breakdown-list",
     },
 }
 for asset, wanted in NEEDLES.items():
@@ -119,6 +137,39 @@ for asset, wanted in NEEDLES.items():
     print(
         f"  {'ok  ' if not missing else 'FAIL'} {asset} served ({len(body)} characters)"
         + (f" — missing: {', '.join(missing)}" if missing else "")
+    )
+
+# ------------------------------------------------------------- what the assets must NOT say ---
+# A needle test proves a string is being served; it cannot prove the copy that leaked Model
+# internals onto the front page was actually removed. That is what browser QA found on the
+# deployed Overview ("risk_score 0.3973 = weighted base 0.3973 (soil_saturation_pct=..."), so the
+# served assets are checked for the shape of that line as well.
+FORBIDDEN_ASSETS = {
+    "app.js": {
+        # the spotlight must not print the model's own line or a raw driver list. The API string
+        # itself is still read on this page - inside the folded worked example - so the needle is
+        # the renderer that leaked it, not the field name: "latest.explanation" appears in the
+        # methodology fold on purpose, which is why the runtime harness (which reads the rendered
+        # page rather than the source) is the check that proves the leak is gone.
+        "the Overview prints a dominant-driver list": "hero-drivers",
+        "the Overview label names the model": "heuristic-v1 score",
+        "the Overview still prints the old explanation block": "hero-explain",
+        "the city list patches a raw explanation into the page": "('explanation'",
+    },
+    "lib.js": {
+        # a variable name may appear inside the fold, but it must never be the label of one
+        "a driver is labelled with its variable name": "metricMeta(driver).label",
+        "a city card carries an unexplained weighted contribution": "metric-weight",
+        "the score caption is model vocabulary": "heuristic score 0-1",
+    },
+}
+for asset, forbidden in FORBIDDEN_ASSETS.items():
+    body = urllib.request.urlopen(f"{SITE}/{asset}", timeout=20).read().decode("utf-8")
+    present = [label for label, needle in forbidden.items() if needle in body]
+    failed += len(present)
+    print(
+        f"  {'FAIL' if present else 'ok  '} {asset} carries no engineering copy in a public view"
+        + (f" — found: {', '.join(present)}" if present else "")
     )
 
 # --------------------------------------------------------------------- the policy itself ---

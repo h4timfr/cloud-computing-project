@@ -1229,6 +1229,116 @@ looking at text on a photograph.
 * The alerting system still reaches nobody: SNS has 0 confirmed subscriptions, so the honest
   wording on the Alerts page is doing real work rather than being a formality.
 
+## M10 plain language on every public view (frontend only, deployed)
+
+Milestone 9 made the *pages* readable. It did not make the *values* readable: the Overview still
+printed the model's own output line, which is what browser QA found on the deployed page —
+
+```
+risk_score 0.3973 = weighted base 0.3756 (soil_saturation_pct=0.1793, water_level_m=0.0867,
+drain_level_m=0.0510, rainfall_mm_per_hr=0.0340, flow_rate_m3_s=0.0245) + trend 0.0000;
+dominant driver: soil_saturation_pct
+```
+
+— under the heading "Dominant drivers", with the raw tokens `soil_saturation_pct`,
+`water_level_m` and `drain_level_m` rendered as chips beside it. That string is the API's own
+`latest.explanation`, and the chips are `latest.top_drivers`; the same fields were printed on every
+card of the **Cities** view. Nothing in the deployed page was wrong, exactly: it was the model's
+transparency, put in front of someone who wanted to know whether to worry about the rain.
+
+### What the browser sees now
+
+| Where | Before | After |
+| --- | --- | --- |
+| Overview spotlight | `city-chennai · reading 16:33:03Z · 2 min ago`, then the formula block, then "Dominant drivers: `soil_saturation_pct` `water_level_m` `drain_level_m`", with the ring captioned `heuristic-v1 score` | "Risk is currently NORMAL. Soil saturation is the main contributor, while rainfall, drain level, water level and flow rate remain below their watch levels." plus one facts line: "Main risk factor: Soil saturation · Updated 5 s ago · Trend: holding steady", ring captioned `risk score` |
+| Overview city card | "Soil saturation is the main factor" (already plain) + `Risk score 0.39` + `Updated 5 s ago` | unchanged in shape, and the trend line no longer says `no lookback` |
+| Cities card | "Dominant driver: `soil_saturation_pct`" (a `Top driver` row), a bare weighted-contribution number beside every measurement, and the raw `explanation` printed verbatim under the sparkline | "Main risk factor: Soil saturation", "Risk is currently NORMAL. Soil saturation is the main contributor, …", and a pointer: "Weights, thresholds and the raw model output for this reading are on the Chennai page, under \"Technical details\"." The unexplained contribution number is gone |
+| City page | header, then "What is driving risk?" with the variable names, then the measurements | plain sentence ("Risk is currently WATCH…") → advice → measurements → "What is driving risk?" → "Trend and history" → **the model, folded** |
+| Data & Methodology | steps, fixed weights, risk bands | the same, plus a folded worked example built from the live reading: `risk score = weighted base + trend`, one line per channel (`soil_saturation_pct × weight 20% = 0.1807`), the sum next to the API's own score, and the API's output line quoted verbatim |
+
+`dominant_driver`, `soil_saturation_pct`, `water_level_m`, `drain_level_m`, `rainfall_mm_per_hr`
+and `flow_rate_m3_s` never reach a public view any more: they are rendered as "Main risk factor",
+"Soil saturation", "Water level", "Drain level", "Rainfall" and "Flow rate", and a variable the page
+has never seen is humanised (`mystery_sensor` → "Mystery sensor") rather than printed with its
+underscores.
+
+### Where the engineering detail went (nothing was hidden)
+
+Transparency is a requirement, so the raw material is *moved*, not deleted, and every path to it is
+one click away:
+
+* **City page → "Technical details: how is this risk calculated?"** (a native `<details>`, collapsed
+  by default, keyboard reachable with no JavaScript): the exact arithmetic, a per-measurement table
+  with the variable name, value, watch level, flooding level, fixed weight and weighted
+  contribution, the four clocks behind the reading, and `<code data-f="explanation">` holding the
+  API's output line byte for byte.
+* **Data & Methodology → "The calculation, number by number"**: the same breakdown for the
+  highest-risk reading in the live payload, with the sum of the contributions shown next to the
+  score the API reported, and the raw line quoted again.
+* The Methodology page still names the model (`heuristic-v1`), prints the five weights, the steps
+  and the bands, and states what the score is not — that page is where a reader goes *asking* for
+  the model, so it stays visible there.
+
+### Two real bugs this uncovered (found by tracing the leak to its source)
+
+* `contributionMap()` keyed the API's contribution entries on `metric`. The API sends `variable`.
+  The map was therefore empty on **every real payload**, which silently emptied the driver shares,
+  the weighted-contribution column and the "what is *not* driving this" half of the plain sentence —
+  no error, just missing information. Both keys are now accepted, and the static fixture (which used
+  the invented `metric` key, which is why the harness never caught it) now carries the shape the API
+  actually returns, with one entry keeping the legacy key so the alias stays covered.
+* `driverBlock()` sized its bars from `entry.points`, a field the API has never sent, so every
+  share was 0 and every bar sat empty beside a non-zero number.  It now reads `entry.contribution`.
+
+Two more were found on the way and fixed: `trendIcon()` compared `trendDirection()`'s `'up'`/`'down'`
+against `'rising'`/`'falling'`, so **every** trend arrow on the board was the flat one; and the
+no-history trend label read `no lookback`, which is the model's shorthand rather than English, on
+two public views.
+
+### The check that would have caught it
+
+`tools/dashboard_check.mjs` reads the *static* `index.html`, and the leaked string is composed at
+runtime from the payload — which is exactly why 106 passing checks coexisted with that Overview.
+`tools/dashboard_run.mjs` now boots the real page with a real payload and asserts, over every
+primary view, that the prose contains no snake_case identifier, no `weighted base`, no
+`risk_score 0.`, no `heuristic-v1` and no API route — and, in the other direction, that the city
+page's fold and the methodology page *do* still contain the formula, every variable name, the
+weights and the API's own output line, collapsed (`no <details … open`). The deployed verifier gained
+the same needles plus a forbidden list for the copy that leaked.
+
+### What this pass added to the suite
+
+| Harness | Before → after |
+| --- | --- |
+| `tools/dashboard_check.mjs` | 106 → **108 static checks** per mode (the Overview renderer's own source is now checked for the fields that leaked, and the plain sentence is derived-claim tested: a channel is only called quiet when the payload's own value and threshold say so) |
+| `tools/dashboard_run.mjs` | 54 → **58 runtime checks** live (52 → **56** for the demo fleet) |
+| `tools/dashboard_scenarios.mjs` | 49 scenarios, unchanged |
+| `python -m unittest discover -s tests -t .` | 509 tests, unchanged (frontend-only milestone) |
+
+### Asset budget after this pass (measured)
+
+| Asset | Size |
+| --- | --- |
+| `index.html` | 26.9 KB |
+| `styles.css` | 81.1 KB |
+| `lib.js` | 125.4 KB |
+| `app.js` | 91.9 KB |
+| `bg-storm.webp` | 13.7 KB |
+| **Total front end** | **~339 KB of source, five files, zero dependencies** |
+
+### Known residual gaps from this pass (recorded rather than hidden)
+
+* No browser exists on this machine, so "the Overview is now readable" is verified as rendered
+  prose and DOM structure (the harness prints what a reader would read), not by looking at it.
+* The provenance chips keep their short form (`REAL` / `MODEL` / `SIM`, `LIVE WEATHER`) with a
+  tooltip and a per-card legend. They are defined vocabulary rather than engineering detail, and the
+  field names behind them (`model_derived`, `simulated`, `live_weather`) are never shown.
+* The Cities card still prints the provider's observation clock inside the mode badge
+  (`LIVE WEATHER 16:00:00Z`), with a tooltip naming it as the provider's UTC observation time. That
+  is a real timestamp rather than model internals, and it stays where provenance matters most.
+* The two adversarial `ModeIsolationTest` tests can still fail for one run when Open-Meteo answers
+  `http_503` or times out (recorded in M9; unchanged).
+
 ## Repository layout
 
 ```
@@ -1317,9 +1427,10 @@ node tools/dashboard_scenarios.mjs
 
 # dashboard runtime check: runs the real lib.js + app.js in a fake browser and uses the page the
 # way a person does — clicking all five sections, opening each city, the alerts split and its empty
-# states, the About page, the retry button, the skeleton, the phone menu, a failed poll, recovery.
-# 54 checks against the live payloads (52 for the demo fleet), 105 static checks per mode from
-# dashboard_check.mjs.
+# states, the About page, the retry button, the skeleton, the phone menu, a failed poll, recovery,
+# and the plain-language check: with a real payload, no primary view may show a snake_case variable,
+# the formula or the model's own output line (58 checks live, 56 for the demo fleet), on top of the
+# 108 static checks per mode from dashboard_check.mjs.
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com

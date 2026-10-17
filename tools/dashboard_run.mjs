@@ -607,10 +607,19 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       // the plain-language explanation: prose that names the driver, never the formula
       const why = /data-f="why">([^<]*)</.exec(detail);
       assert.ok(why && why[1].length > 20, `${zone.zone_id}: the detail has no plain-language explanation`);
-      assert.match(why[1], /main reason|largest contribution/);
+      // The sentence was rewritten to the shape the brief asks for - "Risk is currently WATCH.
+      // Soil saturation is the main contributor, while rainfall ... remain below their watch
+      // levels." - so the phrases that mark it as a reason sentence are "main contributor" and
+      // the older "main reason"/"largest contribution" wording. What is asserted is the intent:
+      // a sentence that names a cause, not a template.
+      assert.match(why[1], /main contributor|main reason|largest contribution/,
+        `${zone.zone_id}: the sentence does not name what is driving the score`);
       const driver = (zone.latest.top_drivers || [])[0];
       if (driver) {
-        assert.ok(why[1].includes(FP.metricPlain(driver).noun),
+        // case-insensitive: the driver's noun now opens a sentence ("Soil saturation is the main
+        // contributor"), and the label the payload's variable maps to is a public name, not the
+        // variable itself.
+        assert.ok(why[1].toLowerCase().includes(FP.metricPlain(driver).noun.toLowerCase()),
           `${zone.zone_id}: the explanation does not name its dominant driver`);
       }
       assert.ok(!/[=+]|weighted|risk_score 0\./.test(why[1]),
@@ -1176,6 +1185,155 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
         `${id} printed a raw value: ${html.slice(0, 200)}`);
     });
     assert.ok(inspected >= 10, `only ${inspected} surfaces had anything in them`);
+  });
+
+  group('No engineering copy reaches a primary view');
+
+  // The words a reader would actually read: tags removed, so `data-metric="soil_saturation_pct"`
+  // (how a row is addressed) is not mistaken for copy, and `<code>` blocks are kept out of it
+  // because the technical disclosures quote real identifiers on purpose.
+  const prose = (id) => dom.html(id)
+    .replace(/<code[\s\S]*?<\/code>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  const variablesIn = (markup) => (markup.match(/\b[a-z][a-z0-9]*_[a-z0-9_]+\b/g) || []);
+  const before = (markup, needle) => markup.slice(0, markup.indexOf(needle));
+  const after = (markup, needle) => markup.slice(markup.indexOf(needle));
+
+  check('a delivered payload never puts a variable name in front of a reader', () => {
+    // The browser QA that found this looked at the deployed Overview, which printed the API's own
+    // line: "risk_score 0.3973 = weighted base 0.3973 (soil_saturation_pct=0.1909, ...)". The
+    // static harness could not catch it because that string is composed at runtime, from the
+    // payload - so the check has to run against a payload too.
+    const views = [
+      { id: 'hero', label: 'the Overview spotlight' },
+      { id: 'ov-stats', label: 'the Overview figures' },
+      { id: 'band-strip', label: 'the Overview band strip' },
+      { id: 'city-cards', label: 'the Overview city cards' },
+      { id: 'recent-activity', label: 'the Overview activity panel' }
+    ];
+    clickNav(dom, 'overview');
+    views.forEach((view) => {
+      const markup = dom.html(view.id);
+      if (!markup) return;
+      assert.deepEqual(variablesIn(prose(view.id)), [],
+        `${view.label} reads out variable names: ${variablesIn(prose(view.id)).join(', ')}`);
+      assert.ok(!/weighted base|heuristic-v1|risk_score 0\./.test(prose(view.id)),
+        `${view.label} prints model internals: ${prose(view.id).slice(0, 160)}`);
+      assert.ok(!/\bundefined\b|\bNaN\b/.test(markup), `${view.label} printed a raw value`);
+    });
+
+    clickNav(dom, 'cities');
+    const zones = dom.html('zones');
+    assert.ok(zones.length > 200, 'the city list did not render');
+    assert.deepEqual(variablesIn(prose('zones')), [],
+      `the city list reads out variable names: ${variablesIn(prose('zones')).join(', ')}`);
+    assert.ok(!/weighted base|risk_score 0\./.test(prose('zones')),
+      'the city list prints the model\'s own output line');
+
+    clickNav(dom, 'alerts');
+    ['alerts-active', 'alerts-closed', 'alerts-summary'].forEach((id) => {
+      const markup = dom.html(id);
+      if (!markup) return;
+      assert.deepEqual(variablesIn(prose(id)), [],
+        `#${id} reads out variable names: ${variablesIn(prose(id)).join(', ')}`);
+      assert.ok(!/weighted base|risk_score 0\./.test(prose(id)), `#${id} prints model internals`);
+    });
+  });
+
+  check('the Overview spotlight answers "what, how bad, why, how fresh" in words', () => {
+    clickNav(dom, 'overview');
+    const FP = app.sandbox.window.FP;
+    const hero = dom.html('hero');
+    const words = prose('hero');
+    const leader = payload.zones.find((zone) => zone.zone_id === payload.highest_risk_zone.zone_id)
+      || payload.zones.find((zone) => zone.latest);
+    // 1 and 2: what is happening, and is it dangerous
+    assert.ok(words.includes(leader.name), `the spotlight does not name the ${leader.name}`);
+    assert.match(words, /Risk is currently [A-Z]+\./,
+      `the spotlight does not state the band in a sentence: ${words.slice(0, 160)}`);
+    // 3: why - in words, naming a human driver
+    const driver = (leader.latest.top_drivers || [])[0];
+    if (driver) {
+      assert.ok(words.includes(FP.driverLabel(driver)),
+        `the spotlight does not name the main risk factor (${FP.driverLabel(driver)}): ${words}`);
+      assert.ok(words.includes('is the main contributor'),
+        `the spotlight does not say what is driving the score: ${words}`);
+      assert.ok(!words.includes(driver), `the spotlight prints the raw driver "${driver}"`);
+    }
+    // 4: how fresh
+    assert.match(words, /Updated \d/, `the spotlight does not say how old the reading is: ${words}`);
+    // 5: no internal identifier, no raw clock, no model name in the one line under the name
+    assert.ok(!words.includes(leader.zone_id), 'the spotlight prints the internal zone id');
+    assert.ok(!/\d{2}:\d{2}:\d{2}Z/.test(words), 'the spotlight prints a raw timestamp');
+    assert.ok(!/heuristic|dominant/i.test(words), `the spotlight shows model vocabulary: ${words}`);
+    // the score itself still comes from the payload, unchanged by the rewrite
+    assert.ok(hero.includes(FP.formatScore(payload.highest_risk_zone.risk_score)),
+      'the spotlight lost the API risk score');
+  });
+
+  check('the city page keeps the model behind one collapsed fold', () => {
+    const FP = app.sandbox.window.FP;
+    const leader = payload.zones.find((zone) => zone.latest);
+    openCity(dom, leader.zone_id);
+    const detail = dom.html('city-detail');
+    const foldAt = detail.indexOf('<details class="tech"');
+    assert.ok(foldAt > 0, 'the city page has no technical fold');
+    const visible = detail.slice(0, foldAt);
+    const folded = detail.slice(foldAt);
+    // the answer first: band, what is driving it, the measurements, the trend
+    assert.ok(visible.indexOf('data-f="tiles"') < foldAt && visible.includes('data-f="tiles"'),
+      'the measurements are not above the fold');
+    assert.match(visible, /What is driving risk\?/, 'the page does not ask the visitor\'s question');
+    assert.ok(visible.indexOf('What is driving risk?') < visible.indexOf('Trend and history'),
+      'the driver block must come before the history section');
+    const visibleProse = visible
+      .replace(/<code[\s\S]*?<\/code>/g, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    assert.deepEqual(variablesIn(visibleProse), [],
+      `the visible city page reads out variable names: ${variablesIn(visibleProse).join(', ')}`);
+    assert.ok(!/weighted base|weighted contribution|heuristic score|heuristic-v1/i.test(visibleProse),
+      `the visible city page carries model vocabulary: ${visibleProse.slice(0, 160)}`);
+    assert.ok(!/GET \/zones|zone_id/.test(visibleProse),
+      `the visible city page quotes an API route: ${visibleProse.slice(0, 160)}`);
+    // and then the whole model, present, folded, with its arithmetic intact
+    assert.ok(folded.includes(leader.latest.explanation),
+      'the fold no longer carries the API\'s own explanation line');
+    ['weighted base', 'Raw model output', 'Watch', 'Weight', 'Weighted contribution'].forEach((term) => {
+      assert.ok(folded.includes(term), `the fold lost "${term}"`);
+    });
+    FP.METRIC_ORDER.forEach((metric) => {
+      assert.ok(folded.includes(metric), `the fold lost the variable name ${metric}`);
+    });
+    assert.ok(!/<details[^>]*\sopen/.test(detail), 'the technical fold must start collapsed');
+  });
+
+  check('the methodology page still publishes the arithmetic, folded away', () => {
+    const FP = app.sandbox.window.FP;
+    clickNav(dom, 'data');
+    const breakdown = dom.html('score-breakdown');
+    assert.ok(breakdown.length > 100, 'the worked example did not render');
+    const foldAt = breakdown.indexOf('<details class="tech"');
+    assert.ok(foldAt >= 0, 'the worked example is not folded');
+    assert.ok(breakdown.includes('<summary>'), 'the worked example cannot be opened');
+    assert.ok(!/<details[^>]*\sopen/.test(breakdown), 'the worked example must start collapsed');
+    const leader = payload.zones.find((zone) => zone.latest);
+    assert.ok(breakdown.includes('weighted base'), 'the methodology page lost the formula');
+    assert.ok(breakdown.includes(leader.latest.explanation.replace(/&/g, '&amp;')) || breakdown.includes(leader.latest.explanation),
+      'the methodology page does not quote the API\'s own output line');
+    FP.METRIC_ORDER.forEach((metric) => {
+      assert.ok(breakdown.includes(metric), `the worked example lost the variable ${metric}`);
+    });
+    // the visible part of the page still explains the method in sentences, with the weights
+    // (the model's name is written in code formatting there on purpose, so it is read from the
+    // markup rather than from the prose this harness strips tags out of)
+    assert.ok(dom.html('method-block').includes('heuristic-v1'),
+      'the methodology page does not name the model');
+    assert.match(prose('method-block'), /\d+%/, 'the methodology page does not state the weights');
+    // and it says plainly what the score is not
+    assert.match(prose('limitations'), /\w/, 'the limitations list is empty');
   });
 
   console.log(`\n${passed} runtime checks passed, ${failures.length} failed`);
