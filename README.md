@@ -1053,6 +1053,136 @@ default" and "clamp into range"), `tests/test_deploy_script.py` (the deployment 
   confirmation link). A published alert is therefore delivered to nobody today; the deploy warns
   about exactly this, and only ever says "publish succeeded".
 
+## M9 product experience, information design and responsive polish (frontend only, deployed)
+
+The system was already correct and hardening-tested; what it was not yet was *legible*. A person
+who has never heard of FloodPulse could read the board, but they had to work: engineering wording
+(`zone_mode`, `age_seconds`, "dominant driver"), five different clock formats, formulas in the
+place a summary belongs, an alerts page that was a table under a heading, no About page, and no
+answer to the only question a visitor actually has — *is there a flood problem right now?*
+
+M9 is an information-design pass. Nothing in `src/`, `infra/` or AWS changed: no new service, no
+IAM change, no threshold change, no CSP relaxation. The whole milestone is `web/` plus the
+harnesses that check it.
+
+### The five questions the Overview answers, in order
+
+The heading is the question ("Is any city at risk of flooding right now?"), and the sentence
+under it is the answer, announced politely so a screen reader hears it once when the feed moves.
+Then four summary cards (highest risk, active alerts, cities reporting, weather freshness), then
+the highest-risk spotlight, then the distribution strip, then the city cards, then a recent-change
+panel. The model name, the weights and the raw snapshot moved into a collapsed "Technical details"
+block: a formula is now one click away instead of being the second thing on the page.
+
+### Plain language, with the number still available
+
+Every user-facing sentence is written for a reader, and every technical value stays reachable:
+
+| Before | Now |
+| --- | --- |
+| `age_seconds: 123` | "Updated 2 min ago" |
+| `zone_mode=live_weather` | "Live weather" |
+| "dominant driver: rainfall" | "Rainfall is the main factor" |
+| a bare score ring | score + band word + "SIM"/"MODEL"/"REAL" chip + a trend arrow |
+| a metric table | tiles with an icon, a unit, a provenance chip and a "?" that explains the metric in one sentence |
+
+The vocabulary is fixed and never mixed: risk `NORMAL / WATCH / WARNING / CRITICAL`; feed
+`LIVE / STALE / NOT REPORTING`; source `REAL / MODEL-DERIVED / SIMULATED`; alert
+`ACTIVE / RESOLVED`; system `HEALTHY / ATTENTION / DEGRADED`.
+
+### Icons, without an icon library
+
+A local inline-SVG set (about thirty 24×24 paths, one stroke width, `currentColor`, hidden from
+assistive tech because the word beside each icon carries the meaning). No Font Awesome, no
+Material icons, no sprite request, no webfont — which is what keeps the CSP at `script-src 'self'`
+and `img-src 'self' data:` with nothing to fetch.
+
+### Alert delivery, stated only as far as it is known
+
+The API exposes `{enabled, severities, cooldown_seconds}` and no subscriber information at all,
+so the delivery panel says exactly that: publishing is "Configured", a published alert says
+"published to the notification topic", and subscriber state says "Not reported to this page" with
+the reason. `alert_count > 0` on an incident is the only basis for saying an alert went out, and
+that is what the per-incident line uses. The page never claims an email arrived, because it cannot
+know.
+
+### Flood safety guidance, clearly not an authority
+
+The About page carries a guidance section: avoid walking or driving through floodwater, move to
+higher ground when instructed, stay away from drains and fast-moving water, follow local
+authorities, monitor official channels — and then links to the India Meteorological Department and
+the National Disaster Management Authority, with the sentence that settles the question: FloodPulse
+does not issue official warnings, and for official emergency guidance follow local government and
+disaster-management authorities. Nothing is scraped and no government API is integrated.
+
+### Responsive behaviour and the checks behind it
+
+Breakpoints at 1180 / 900 / 760 / 560 / 400 px, checked mechanically rather than by eye: the
+harness asserts the viewport tag, that each breakpoint exists, that no `grid-template-columns`
+demands more width than a phone has, that payload text is told how to wrap
+(`overflow-wrap: anywhere`), that grid children may shrink (`min-width: 0`), that the wide incident
+table has its own scroll container, and that the controls a phone taps (nav links, empty-state
+buttons, help disclosures) are ≥44 px.
+
+The honest limitation: **no browser was available on this machine**, so the layout is verified as
+CSS and DOM, not as pixels. The manual viewport checks are listed in `DEMO_RUNBOOK.md`, and they
+are the ones that would catch a visual regression the harness cannot see.
+
+### Asset budget (measured, not estimated)
+
+| Asset | Size |
+| --- | --- |
+| `index.html` | 25.9 KB |
+| `styles.css` | 79.3 KB |
+| `lib.js` | 116.7 KB |
+| `app.js` | 88.5 KB |
+| `bg-storm.webp` | 13.3 KB (1760×990, mean luminance 0.20, real photographic detail) |
+| **Total front end** | **~310 KB of source, five files, zero dependencies** |
+
+No framework, no bundler, no npm package, no CDN, no analytics, no video. The backdrop stays a
+local compressed WebP (well inside the 250 KB target) over a dark gradient, so a reader is never
+looking at text on a photograph.
+
+### What this pass added to the suite
+
+| Harness | Before → after |
+| --- | --- |
+| `tools/dashboard_check.mjs` | 96 → **105 static checks** per mode, now including the eight M9 groups (phone-first layout, touch targets, icon consistency, product copy, Overview order, empty/loading/error states, asset budget, About-page scope, heading outline) |
+| `tools/dashboard_run.mjs` | 46 → **54 runtime checks** live (44 → 52 for the demo fleet) |
+| `tools/dashboard_scenarios.mjs` | 44 → **49 scenarios** |
+| `python -m unittest discover -s tests -t .` | 509 tests, unchanged (no backend or test change in this milestone) |
+
+### Verified after the change (live, 2026-10-17)
+
+| Check | Result |
+| --- | --- |
+| `node tools/dashboard_check.mjs --payload build/zones-live-weather.json …` | **105 checks passed, 0 failed** (same against the demo fixtures) |
+| `node tools/dashboard_run.mjs --payload build/zones-live-weather.json …` | **54 runtime checks passed, 0 failed** (52 for the demo fleet) |
+| `node tools/dashboard_scenarios.mjs` | **49 scenario checks passed, 0 failed** |
+| `node tools/story_check.mjs --dir build/story` | **29 story checks passed, 0 failed** |
+| `python -m unittest discover -s tests -t .` | **509 tests, OK** |
+| `python tools/verify_deployed_code.py` | `RESULT: deployed Lambda code is byte-identical to the repository's src/` (no backend change was made) |
+| `python tools/verify_deployed_page.py` | **all deployed page contracts hold**, including the About page, the guidance links and the unchanged CSP |
+| `python tools/live_acceptance.py` | **35 checks passed, 0 failed** |
+| `node tools/dashboard_run.mjs --site <bucket> --api <api>` | **53 runtime checks passed, 0 failed** against the deployed assets and the live API |
+| Fleet state after the deploy | `live_weather`, 5 cities, all NORMAL, no open incidents, demo fleet calm |
+
+### Known residual gaps from this pass (recorded rather than hidden)
+
+* Layout is verified statically. Screenshots at each width, and the console's CSP report, are
+  manual steps with no browser on this machine.
+* `web/bg-storm.webp` was audited numerically (13.3 KB, 1760×990, dark, detailed) but could not be
+  *looked at* here, so "it still looks good" is a judgement the reader has to make once, in a
+  browser.
+* Two adversarial tests (`ModeIsolationTest`) assert on readings the live Open-Meteo provider
+  returns, and the suite asks the provider for weather many times in ~30 s. When the provider
+  answers with `http_503` or a read timeout for one of those calls, the two tests fail *for that
+  run* — recorded with the provider's own log line (`weather refresh outcome: … "error":
+  "network_error: The read operation timed out"`). Re-running is the fix; the tests are not
+  weakened to hide a third party's bad minute.
+* The alerting system still reaches nobody: SNS has 0 confirmed subscriptions, so the honest
+  wording on the Alerts page is doing real work rather than being a formality.
+
 ## Repository layout
 
 ```
@@ -1070,11 +1200,11 @@ src/floodpulse/
   handler.py                  the single Lambda handler: dispatch() + lambda_handler()
   simulator.py                deterministic phase-driven simulator (demo fleet)
 web/
-  index.html                  dashboard layout + mode-driven provenance banner and legend
-  styles.css                  storm command-centre theme, glass cards, band colours, source chips
-  lib.js                      pure render/format helpers + provenance rendering (browser + node)
-  app.js                      5 s polling controller, patching, sparkline, history chart, band strip
-  bg-storm.webp               locally generated backdrop (13.3 KB)
+  index.html                  dashboard layout: five sections, hero status, health popover, About page
+  styles.css                  storm command-centre theme, type scale, icons, skeletons, breakpoints
+  lib.js                      pure render/format helpers, icon set, empty states, provenance rendering
+  app.js                      router, 5 s polling controller, patching, sparkline, history chart
+  bg-storm.webp               locally generated backdrop (13.3 KB, WebP)
 DEMO_RUNBOOK.md               rehearsed demo: what to open, when to say what, how to recover
 tests/
   test_risk.py                scoring, bands, contributions, hysteresis (fixed vectors)
@@ -1128,19 +1258,22 @@ node tools/story_check.mjs --dir build/story
 python tools/weather_probe.py
 
 # dashboard static checks: pure helpers, rendering from a real payload, provenance, site safety,
-# and the information architecture (four views, router, phone menu, methodology vs config.py)
+# the asset budget, and the information architecture (five sections, router, phone menu, icons,
+# empty states, touch targets, methodology vs config.py): 105 checks per mode
 node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
 node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
 
-# dashboard scenario harness: 44 failure and edge cases (first-poll failure, 500s, stale feed,
-# hung requests, mode switching, history backoff, a hostile payload...) through the real poller
+# dashboard scenario harness: 49 failure and edge cases (first-poll failure, 500s, stale feed,
+# hung requests, mode switching, history backoff, a hostile payload, an incident with no fields,
+# a half-answering fleet...) through the real poller
 node tools/dashboard_scenarios.mjs
 
 # dashboard runtime check: runs the real lib.js + app.js in a fake browser and uses the page the
-# way a person does — clicking all four sections, opening each city, the alerts split and its empty
-# states, the phone menu, a failed poll, recovery. 46 checks against the live payloads (44 for the
-# demo fleet), 96 static checks per mode from dashboard_check.mjs.
+# way a person does — clicking all five sections, opening each city, the alerts split and its empty
+# states, the About page, the retry button, the skeleton, the phone menu, a failed poll, recovery.
+# 54 checks against the live payloads (52 for the demo fleet), 105 static checks per mode from
+# dashboard_check.mjs.
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
@@ -1263,7 +1396,9 @@ constant so tests never depend on the wall clock.
 | M5 | Dashboard hardening: fleet risk strip, documented colour system, honest failure/stale states, provenance fix on `/history` + `/incidents`, one-command verified storm demo | ✅ **done and verified live** |
 | M6 | Public-facing information architecture: Overview / Cities / City / Alerts / Data & Methodology as four routed views with a phone menu, plus the runtime harness to drive them | ✅ **done, verified, deployed** |
 | M7 | Final hardening and product quality pass: full-system audit, per-defect fixes with tests, accessibility and mobile work, cost and security review. No new AWS resources, no architecture change | ✅ **done, verified against the deployed stack** |
-| M8 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ |
+| M8 | Production hardening / adversarial reliability pass: API abuse and cost protection, replay and reordering under test, provider-failure behaviour, one freshness contract, observability and deployment tooling | ✅ **done, verified against the deployed stack** |
+| M9 | Product experience, information design and responsive polish: the Overview answers in one sentence, five routed sections with an About page and flood-safety guidance, a local icon set, designed empty/loading/error states, honest alert-delivery wording, phone-first layout. Front end only: no backend, IAM, threshold or CSP change | ✅ **done, verified live** |
+| M10 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ planned |
 
 ## AWS state (verified)
 

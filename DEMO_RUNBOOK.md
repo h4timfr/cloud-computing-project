@@ -47,23 +47,31 @@ check that replaces an automated one. Close the console afterwards — nothing a
 it.
 
 On the dashboard, confirm with your own eyes (it opens on **Overview**): the connection badge reads
-**LIVE**, the headline names the fleet (e.g. "2 of 5 cities are at a critical flood risk right now."),
-the four headline figures are filled, the fleet strip shows five tiles with real counts, and the
-freshness line counts up between polls. Then open **Cities → any city**: five measurement tiles carry
-per-metric provenance chips (`REAL` / `MODEL` / `SIM`), and *Technical details* is folded away.
+**LIVE**, the headline answers the question in one sentence (e.g. "2 of 5 cities are at a critical
+flood risk right now."), the four summary cards are filled, the highest-risk spotlight names a city
+with its band, the fleet strip shows five tiles with real counts, and the freshness line counts up
+between polls. Then open **Cities → any city**: five measurement tiles carry per-metric provenance
+chips (`REAL` / `MODEL` / `SIM`) and a small "?" that explains the metric in one sentence, the
+"What is driving risk?" block names the primary factor, and *Technical details* is folded away.
 
-### The 60-second tour (four views, same four clicks in either track)
+Then check the page the way a phone would (F12 → the device toolbar, or just drag the window narrow):
+at ~390 px the nav collapses to a menu button that closes on Escape, the cards stack, nothing scrolls
+sideways, and the tap targets are finger-sized. Widths worth a glance: 320, 360, 390, 430, 768, 1024,
+1280, 1440+.
+
+### The 60-second tour (five sections)
 
 | Click | What it shows | The line to say |
 |---|---|---|
-| **Overview** | Plain-language fleet answer, highest-risk city, active alerts, cities reporting, weather freshness, band strip, one status card per city | "This is the whole fleet in one screen, and it says in words what the numbers mean." |
-| **Cities → a city** | Score and class **as the API reported them**, a plain-English reason and advice, five measurement tiles with their thresholds and provenance, freshness, history chart (click it and use the arrow keys), then a collapsed *Technical details* | "Same city, detail on demand. The model is one click away, not in the visitor's face. The chart is reachable without a mouse, too." |
-| **Alerts** | Live alerts and resolved incidents as separate lists, with severity, duration, top driver and the honest SNS state | "Nothing is open right now" / during the storm: "watch it appear here, then move to the resolved list with its duration." |
-| **Data & Methodology** | REAL / MODEL_DERIVED / SIMULATED explained per metric, Open-Meteo attribution, `heuristic-v1` step by step with weights and bands, why the hydraulics are simulated, and the limitations | "This is the honest page: what is measured, what is simulated, and what this score is **not**." |
+| **Overview** | Plain-language fleet answer, highest-risk spotlight, active alerts, cities reporting, weather freshness, band strip, one status card per city | "This is the whole fleet in one screen, and it says in words what the numbers mean." |
+| **Cities → a city** | Score and class **as the API reported them**, a plain-English reason, five measurement tiles with thresholds, provenance and per-metric help, what is driving risk with shares, freshness, history chart (click it and use the arrow keys), then folded *Technical details* and the city's own alert history | "Same city, detail on demand. The model is one click away, not in the visitor's face. The chart is reachable without a mouse, too." |
+| **Alerts** | Active and resolved as separate sections, then System status: reporting count, weather freshness, and an alert-delivery panel that separates *publishing* from *delivery* | "Nothing is open right now — and look at the wording: publishing is configured, but this page will not pretend an email arrived. It cannot know that." |
+| **Data & Methodology** | REAL / MODEL_DERIVED / SIMULATED as three cards, Open-Meteo attribution, `heuristic-v1` broken down visually, the simulated hydraulics, and the limitations | "This is the honest page: what is measured, what is simulated, and what this score is **not**." |
+| **About** | What FloodPulse is, why it exists, the five cities, how it works, what it is built on, flood safety guidance with links to IMD and NDMA, and the limitations | "And this is the part a professor or a resident should read: it is an academic prototype, it is not an official warning service, and for official guidance follow the authorities it links to." |
 
-The URL follows the view (`#/overview`, `#/cities/city-chennai`, `#/alerts`, `#/data`), so you can jump
-straight to a city, the browser back button works, and a mistyped fragment falls back to the Overview.
-On a phone-sized window the links collapse into a menu button.
+The URL follows the section (`#/overview`, `#/cities/city-chennai`, `#/alerts`, `#/data`, `#/about`),
+so you can jump straight to a city, the browser back button works, and a mistyped fragment falls back
+to the Overview. On a phone-sized window the links collapse into a menu button.
 
 ---
 
@@ -242,12 +250,37 @@ deliberate opt-outs and for `-DryRun`, which reads and compares everything and c
   gap, and an incident on that city stays OPEN: closing one needs a real NORMAL reading, and no
   reading is not NORMAL.
 
+## 4b. The five-minute visual check (M9 — the parts no harness can see)
+
+The harnesses verify the CSS and the DOM; none of them can see pixels, and this machine had no
+browser. So this is the list that closes that gap. Do it once, on the deployed site, before the
+demo, with F12 open.
+
+| # | Check | What good looks like |
+|---|---|---|
+| 1 | **Console is empty** | no CSP violation, no 404 for any asset, no uncaught error. A missing `bg-storm.webp` shows as a 404 here and the page still reads well (the gradient underneath is the fallback). |
+| 2 | **Overview in five seconds** | the question, then the sentence that answers it, then four cards. If you have to read a formula to understand the page, that is the bug this pass was about. |
+| 3 | **The backdrop** | the storm image is atmosphere behind the content, not something the text sits on. Anywhere a heading competes with the image is a defect: say so rather than squinting at it. |
+| 4 | **Widths** | 320, 360, 390, 430, 768, 1024, 1280, 1440+. No sideways scrolling at any of them; cards stack logically; the hero does not fill a phone screen; long city names wrap. |
+| 5 | **Keyboard only** | Tab through: skip link, nav, every card, the chart, the "?" explanations, the *Technical details* folds, the footer. Focus is always visible, never lost, and the mobile menu closes on Escape. |
+| 6 | **Reduced motion** | Windows Settings → Accessibility → Visual effects → Animation effects **off**, then reload: the skeleton shimmer stops and nothing else moves. |
+| 7 | **Zoom** | 200% browser zoom: nothing overlaps, nothing is clipped, no horizontal scrollbar appears. |
+| 8 | **Screen reader, briefly** | with NVDA or Narrator: the fleet state is announced once when it changes (not every five seconds), each chart has its text summary, and icons are silent because the words beside them carry the meaning. |
+| 9 | **Empty and error states** | stop the API (`?api=` pointing at a dead host) and reload: every section says what is wrong and offers "Check again now" — never a blank panel, never a raw error. |
+| 10 | **Trust wording** | on Alerts, the delivery panel must never read as "email sent". If a sentence implies a subscriber received something, that sentence is a defect. |
+
 ## 5. What not to claim
 
 * Do not say the cities are "at risk" as a forecast — the bands are illustrative.
 * Do not say "real-time sensor data" for drain/water/flow.
 * Do not say the dashboard is "fully live" while a stale banner is showing: the board says what it is.
-* Do not say alerts reach anyone until a subscription is confirmed on `floodpulse-alerts`.
+* Do not say alerts reach anyone until a subscription is confirmed on `floodpulse-alerts`. The
+  Alerts page is deliberately phrased around this: "Alert publishing: Configured" and, for an
+  incident with a recorded publish, "published to the notification topic". Subscriber state reads
+  "Not reported to this page", because the API does not expose it.
+* Do not say the dashboard is an official warning service, and do not let the safety guidance read
+  as if it were: it says FloodPulse does not issue official warnings and points to IMD and NDMA for
+  those. The About page is the right place for that sentence in the demo.
 * Do not mix the two fleets in one sentence: `FLOODPULSE_ZONE_MODE` selects exactly one fleet, and the
   demo story is rehearsed on the demo fleet only.
 * Do not read a city that stopped reporting as a calm city: its score is an old one, and the board
