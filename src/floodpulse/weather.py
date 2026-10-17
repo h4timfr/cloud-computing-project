@@ -181,26 +181,91 @@ def soil_saturation_pct(soil_moisture_m3m3: float) -> float:
 
 
 def parse_response(payload: Any, zones: Sequence[Mapping[str, Any]]) -> dict[str, Observation]:
-    """Map a provider response onto the requested zones, positionally and defensively.
+    """Map a provider response onto the requested zones, defensively.
 
-    Any zone whose entry is missing, whose coordinates do not match the request, or whose
-    fields are unusable gets ``ok=False`` with a reason. No value is ever invented.
+    One entry per requested coordinate *in order* is the provider's documented shape, and
+    that is the fast path. When the response has a different length the positions cannot be
+    trusted any more: reading them positionally would shift every later zone onto its
+    neighbour's weather, and the coordinate guard would reject that as a mismatch, so one
+    missing entry would cost the whole tail of the fleet its refresh. In that case each
+    entry is matched to the requested coordinate it actually came from, within the same
+    documented tolerance, and an entry that matches nothing - or two requested zones equally
+    well - is left unassigned rather than guessed.
+
+    Any zone whose entry is missing or whose entry cannot be used gets ``ok=False`` with a
+    reason. No value is ever invented for a zone, and no entry is ever attributed to a zone
+    whose coordinates it does not carry.
     """
-    entries = payload if isinstance(payload, list) else [payload]
     if not isinstance(payload, (list, dict)):
         raise WeatherError("provider response is not an object or list")
+    raw_entries = payload if isinstance(payload, list) else [payload]
+    entries: list[Mapping[str, Any] | None] = [
+        entry if isinstance(entry, Mapping) else None for entry in raw_entries
+    ]
 
+    if len(entries) == len(zones):
+        return _parse_positionally(entries, zones)
+    return _parse_by_location(entries, zones)
+
+
+def _parse_positionally(
+    entries: Sequence[Mapping[str, Any] | None], zones: Sequence[Mapping[str, Any]]
+) -> dict[str, Observation]:
+    """Read entries in order, which is what the provider promises for a matched length."""
     observations: dict[str, Observation] = {}
     for index, zone in enumerate(zones):
         zone_id = str(zone["zone_id"])
-        if index >= len(entries) or not isinstance(entries[index], dict):
+        entry = entries[index] if index < len(entries) else None
+        if entry is None:
             observations[zone_id] = Observation(zone_id=zone_id, ok=False, error="no_provider_entry")
             continue
-        entry = entries[index]
         try:
             observations[zone_id] = _parse_entry(zone_id, zone, entry)
         except WeatherError as exc:
             observations[zone_id] = Observation(zone_id=zone_id, ok=False, error=str(exc))
+    return observations
+
+
+def _parse_by_location(
+    entries: Sequence[Mapping[str, Any] | None], zones: Sequence[Mapping[str, Any]]
+) -> dict[str, Observation]:
+    """Match entries to zones by their own coordinates when the count does not match."""
+    observations: dict[str, Observation] = {}
+    assigned: set[str] = set()
+    by_index: dict[int, str] = {}
+    for index, entry in enumerate(entries):
+        if entry is None:
+            continue
+        latitude = entry.get("latitude")
+        longitude = entry.get("longitude")
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            continue  # an entry that does not say where it is cannot be placed safely
+        candidates = [
+            str(zone["zone_id"])
+            for zone in zones
+            if str(zone["zone_id"]) not in assigned
+            and abs(float(latitude) - float(zone["latitude"])) <= WEATHER_LOCATION_TOLERANCE_DEGREES
+            and abs(float(longitude) - float(zone["longitude"])) <= WEATHER_LOCATION_TOLERANCE_DEGREES
+        ]
+        if len(candidates) == 1:
+            by_index[index] = candidates[0]
+            assigned.add(candidates[0])
+
+    for index, entry in enumerate(entries):
+        zone_id = by_index.get(index)
+        if zone_id is None or entry is None:
+            continue
+        zone = next(zone for zone in zones if str(zone["zone_id"]) == zone_id)
+        try:
+            observations[zone_id] = _parse_entry(zone_id, zone, entry)
+        except WeatherError as exc:
+            observations[zone_id] = Observation(zone_id=zone_id, ok=False, error=str(exc))
+
+    for zone in zones:
+        zone_id = str(zone["zone_id"])
+        observations.setdefault(
+            zone_id, Observation(zone_id=zone_id, ok=False, error="no_provider_entry")
+        )
     return observations
 
 
