@@ -21,6 +21,15 @@ EXPECTED = {
     "band strip": 'id="band-strip"',
     "ranking heading before its list": 'id="ranking-title"',
     "privacy/attribution footer": "Open-Meteo",
+    # the deployed page must carry the security policy itself, not just locally: a policy that
+    # only exists in the repository protects nobody
+    "content security policy": '<meta http-equiv="Content-Security-Policy"',
+    "no inline script is allowed": "script-src 'self'",
+    "no plugins, no form posts": "object-src 'none'; base-uri 'none'; form-action 'none'",
+    "the API origin is still reachable": "connect-src 'self' https://",
+    "referrer policy": '<meta name="referrer" content="strict-origin-when-cross-origin">',
+    "the API base is page data, not a script": 'data-api="https://',
+    "external links cannot reach back through window.opener": 'rel="noopener noreferrer"',
 }
 
 FORBIDDEN = {
@@ -34,6 +43,9 @@ FORBIDDEN = {
     "the resolved incident list is a live region": 'id="alerts-closed" class="alert-list" aria-live',
     "the incident column headers are hidden from assistive tech": 'class="incident-head" aria-hidden="true"',
     "the page disables focus outlines": "outline: none",
+    # script executed from the markup would defeat the policy above
+    "an inline script": "<script>",
+    "a javascript: URL": "javascript:",
 }
 
 html = urllib.request.urlopen(SITE + "/index.html", timeout=20).read().decode("utf-8")

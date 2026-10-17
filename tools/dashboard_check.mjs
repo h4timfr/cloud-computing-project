@@ -835,17 +835,34 @@ check('dashboard has no remote dependencies or CDN assets', () => {
   // A documentation *link* is allowed (it is not fetched), but only to the weather
   // provider, only over https, and only with rel="noreferrer": every other absolute URL
   // in the sources must be the project's own API endpoint.
-  const allowedRemoteHosts = ['2rg2u8quzd.execute-api.eu-north-1.amazonaws.com', 'open-meteo.com'];
+  // A Content-Security-Policy may name loopback origins so a developer can point the page at a
+  // local server with ?api=; a loopback host is not a third party and not a CDN. The policy is
+  // scanned for named origins separately, so those two names cannot become a loophole.
+  const allowedRemoteHosts = ['2rg2u8quzd.execute-api.eu-north-1.amazonaws.com', 'open-meteo.com',
+    'localhost', '127.0.0.1'];
   [['index.html', htmlSource], ['styles.css', cssSource], ['lib.js', libSource], ['app.js', appSource]]
     .forEach(([name, source]) => {
       const found = [...withoutDataUris(source).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((match) => match[1]);
       const stray = [...new Set(found)].filter((host) => !allowedRemoteHosts.includes(host));
       assert.deepEqual(stray, [], `${name} references an unexpected remote host: ${stray.join(', ')}`);
     });
+  // The loopback exception is only ever a connect-src entry, never an asset to fetch.
+  assert.ok(!/(?:src|href)\s*=\s*["']?https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(htmlSource),
+    'the page loads an asset from a loopback host');
+  const cspHosts = [...(/(?:content=")([^"]*)"/.exec(htmlSource) || [, ''])[1].matchAll(/https?:\/\/([a-z0-9.-]+)/gi)]
+    .map((match) => match[1]);
+  cspHosts.forEach((host) => {
+    const ok = host === '2rg2u8quzd.execute-api.eu-north-1.amazonaws.com' || host === 'localhost'
+      || host === '127.0.0.1' || host.endsWith('.execute-api.eu-north-1.amazonaws.com');
+    assert.ok(ok, `the policy allows an unrelated origin: ${host}`);
+  });
   // the whole tag is captured, so the rel/target checks see the attributes that follow href
   const docLinks = [...htmlSource.matchAll(/<a\b[^>]*href="(https?:[^"]+)"[^>]*>/gi)];
   docLinks.forEach((match) => {
-    assert.match(match[0], /rel="noreferrer"/, `external link ${match[1]} is missing rel="noreferrer"`);
+    assert.match(match[0], /rel="[^"]*noreferrer/, `external link ${match[1]} is missing rel="noreferrer"`);
+    // noopener is implied by modern browsers on target="_blank", but older ones honour it only
+    // when it is written out, and the API link is filled from a value the page did not author.
+    assert.match(match[0], /rel="[^"]*noopener/, `external link ${match[1]} is missing rel="noopener"`);
     assert.match(match[0], /target="_blank"/, `external link ${match[1]} does not open in a new tab`);
     assert.ok(/^https:\/\//.test(match[1]), `external link ${match[1]} is not https`);
   });
@@ -1615,6 +1632,43 @@ check('the freshness contract names every clock it measures', () => {
   assert.ok(legacyRows.length > 0 && !/undefined/.test(legacyRows), 'a legacy payload broke the detail view');
   assert.doesNotThrow(() => FP.freshnessRows(null), 'freshnessRows threw on a missing zone');
   assert.equal(FP.freshnessRows(null), '', 'a missing zone rendered freshness rows');
+});
+
+check('the page carries its own security policy, with no inline script to bypass it', () => {
+  // A payload string reaching innerHTML is a bug to fix, but a policy is what makes the bug
+  // survivable: script-src 'self' means an injected string cannot execute even if an escaping
+  // mistake slips through. That needs no inline script anywhere on the page, so the API base
+  // is a data attribute instead of a script tag.
+  const csp = /<meta http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(htmlSource);
+  assert.ok(csp, 'the page has no Content-Security-Policy');
+  const policy = csp[1];
+  for (const directive of [
+    "default-src 'none'",
+    "script-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'"
+  ]) {
+    assert.ok(policy.includes(directive), `the policy is missing ${directive}: ${policy}`);
+  }
+  // the API the page actually calls has to be reachable, or the dashboard cannot load data
+  const apiOrigin = /data-api="(https:\/\/[^"]+)"/.exec(htmlSource);
+  assert.ok(apiOrigin, 'the page does not state its API origin in a data attribute');
+  assert.ok(policy.includes(apiOrigin[1]), `connect-src does not allow ${apiOrigin[1]}`);
+  assert.match(policy, /connect-src[^;]*http:\/\/localhost:/, 'local development is blocked outright');
+  assert.ok(!/script-src[^;]*unsafe-inline/.test(policy), 'inline script is allowed by the policy');
+  assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/.test(htmlSource), 'the page still has an inline script');
+  assert.ok(!/javascript:/i.test(htmlSource), 'the markup contains a javascript: URL');
+  // an external link must not hand the opened page a handle back to this one
+  const externalLinks = htmlSource.match(/<a\b[^>]*href="https?:[^>]*>/g) || [];
+  assert.ok(externalLinks.length > 0, 'no external link was found to check');
+  externalLinks.forEach((tag) => {
+    assert.match(tag, /rel="[^"]*noopener/, `${tag} has no rel="noopener"`);
+    assert.match(tag, /rel="[^"]*noreferrer/, `${tag} has no rel="noreferrer"`);
+  });
+  assert.match(htmlSource, /<meta name="referrer" content="[^"]+">/, 'the page states no referrer policy');
+  // and the controller reads the base from the page, with the window global still supported
+  assert.match(appSource, /documentElement\.dataset\.api/, 'app.js does not read the API base from the page');
 });
 
 check('the phone layout replaces the links with a menu that is styled for it', () => {

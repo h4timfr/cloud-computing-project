@@ -10,7 +10,22 @@
   var FP = window.FP;
 
   var params = new URLSearchParams(window.location.search);
-  var API_BASE = (params.get('api') || window.FLOODPULSE_API_BASE || '').replace(/\/+$/, '');
+
+  /* The page states its own API base in a data attribute, not in a script tag: the deployed
+   * page carries a Content-Security-Policy with no 'unsafe-inline', so there is no inline
+   * script allowed anywhere on it. A window global is still honoured for local harnesses, and
+   * ?api= still overrides both for testing. */
+  function configuredApiBase() {
+    var fromPage = '';
+    try {
+      fromPage = (document.documentElement && document.documentElement.dataset.api) || '';
+    } catch (error) {
+      fromPage = '';
+    }
+    return params.get('api') || window.FLOODPULSE_API_BASE || fromPage || '';
+  }
+
+  var API_BASE = configuredApiBase().replace(/\/+$/, '');
 
   /* An API base may be overridden with ?api=<origin> for testing, which means it can also be
    * arbitrary text from a link. It is only ever used as a fetch origin and as a display link,

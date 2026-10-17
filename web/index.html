@@ -1,18 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-api="https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FloodPulse — Live flood monitoring</title>
 <meta name="description" content="FloodPulse monitors flood risk for five Indian cities: real Open-Meteo rainfall and soil moisture, simulated drain, water level and flow, scored by the deterministic heuristic-v1 model running on AWS Lambda, DynamoDB and API Gateway.">
 <meta name="color-scheme" content="dark">
+<!-- The dashboard is a static page that talks to exactly one origin: this API. The policy below
+     allows no inline script at all (the API base is a data attribute on <html>, not a script
+     tag), no plugins, no form posts and no base-tag rewriting. 'unsafe-inline' is granted for
+     styles only, because the renderers set a handful of style attributes for bar widths; script
+     -src stays strict, which is what stops an injected payload string from ever executing.
+     A different API origin (or a local server) has to be added to connect-src to be reachable:
+     see the security section of README.md. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com https://*.execute-api.eu-north-1.amazonaws.com http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23071129'/%3E%3Cpath d='M16 4c3.6 4.6 5.6 7.6 5.6 9.8A5.6 5.6 0 0 1 16 19.4a5.6 5.6 0 0 1-5.6-5.6C10.4 11.6 12.4 8.6 16 4Z' fill='%2338bdf8'/%3E%3Cpath d='M4 24c3-3.4 5.6-3.4 8.6 0s5.6 3.4 8.6 0 5.6-3.4 8.6 0' fill='none' stroke='%2322d3ee' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
-<script>
-  /* Public API base (no secret is stored anywhere in this site: the dashboard only
-     performs GET requests, which need no key). Override per visit with ?api=... */
-  window.FLOODPULSE_API_BASE = 'https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com';
-</script>
 </head>
 <body class="is-connecting">
 
@@ -234,7 +238,7 @@
       <p class="muted small">Provider: <b id="summary-weather-provider">–</b> · observation times and cache age per city are on the
         <a href="#/overview">Overview</a> page.</p>
       <p class="muted small">Provider documentation:
-        <a data-f="attribution-docs" href="https://open-meteo.com/" target="_blank" rel="noreferrer">open-meteo.com</a></p>
+        <a data-f="attribution-docs" href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">open-meteo.com</a></p>
     </div>
 
     <h3 class="block-title">How the risk score works</h3>
@@ -253,7 +257,7 @@
         <div><dt>Model</dt><dd><b id="summary-model-data">heuristic-v1</b> (deterministic, hand-tuned)</dd></div>
         <div><dt>Snapshot generated</dt><dd id="summary-generated">–</dd></div>
         <div><dt>Buffered samples</dt><dd id="poll-count">0</dd></div>
-        <div><dt>Data source</dt><dd><a id="api-base" href="#" target="_blank" rel="noreferrer">–</a></dd></div>
+        <div><dt>Data source</dt><dd><a id="api-base" href="#" target="_blank" rel="noopener noreferrer">–</a></dd></div>
       </dl>
       <p class="muted small">Read routes used by this page: <code>GET /zones</code>, <code>GET /zones/{zone_id}/history</code>,
         <code>GET /incidents</code>. Ingestion (<code>POST /readings</code>) requires a shared secret and is never called from the
