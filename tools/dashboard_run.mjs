@@ -492,12 +492,31 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
   check('the overview never calls a simulated zone a city', () => {
     const live = payload.zone_mode === 'live_weather';
     const plural = live ? 'zones?' : 'cities?';
+    // The fourth stat card is a statement about the *provider's* coverage, not about the fleet:
+    // it says "weather feed 30 min old · fetch failing on 5 zone(s)" for five cities, because the
+    // provider answers per zone and the sentence is about which of those answers arrived. It is
+    // lifted out before the noun rule - which is about the fleet's own noun - and asserted in its
+    // own right below, so neither rule can be satisfied by breaking the other.
+    const statsHtml = dom.html('ov-stats');
+    const providerCard = /<article class="stat[^"]*">(?:(?!<\/article>)[\s\S])*?Weather freshness[\s\S]*?<\/article>/.exec(statsHtml);
+    const fleetStats = (providerCard ? statsHtml.replace(providerCard[0], ' ') : statsHtml)
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
     const surfaces = {
       headline: dom.text('ov-headline'),
       subline: dom.text('ov-subline'),
       stripTitle: dom.text('band-strip-title'),
-      stats: dom.html('ov-stats').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+      stats: fleetStats
     };
+    if (providerCard) {
+      const providerText = providerCard[0].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      // the provider's own wording, in both modes, and never the fleet's noun
+      assert.ok(!/\bcit(y|ies)\b/.test(providerText),
+        `the provider coverage line names cities: "${providerText}"`);
+      if (/\d+ zone\(s\)/.test(providerText)) {
+        assert.match(providerText, /Weather freshness/,
+          'the provider coverage sentence left its own card');
+      }
+    }
     Object.entries(surfaces).forEach(([where, text]) => {
       assert.ok(!new RegExp(`\\b${plural}\\b`).test(text),
         `the ${where} uses the wrong fleet noun: "${text.trim()}"`);

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import pathlib
 import re
 import urllib.request
 
 SITE = "http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com"
+WEB = pathlib.Path(__file__).resolve().parents[1] / "web"
 
 EXPECTED = {
     # the connection state is announced by one off-screen sentence, not by the ticking line
@@ -132,6 +135,12 @@ NEEDLES = {
         "the city plate is decorative": 'class="city-thumb band-',
         "the meter marks the documented band edges": "SCORE_BAND_EDGES",
         "the mail icon is deployed": "mail:",
+        # M10.1: the prepared nightscapes, chosen by an explicit table and never by payload text
+        "the zone -> image table is deployed": "CITY_IMAGES",
+        "the lookup is an own-property test": "hasOwnProperty.call(CITY_IMAGES",
+        "a card image is decorative and reserves its box": 'alt="" width="800" height="450"',
+        "every card image below the first row is lazy": 'loading="lazy"',
+        "the image is decoded off the main thread": 'decoding="async"',
     },
     "app.js": {
         "the chart answers the arrow keys": "handleHistoryKey",
@@ -174,6 +183,12 @@ NEEDLES = {
         "the header counters are chips": ".meta-item",
         "the three steps are styled": ".works-step",
         "the subscriber's field is styled": ".subscribe-input",
+        # M10.1: the card band's shape, crop and grid
+        "the card band has a fixed 16:9 ratio": "aspect-ratio: 16 / 9",
+        "the image covers its band": "object-fit: cover",
+        "the wide desktop gets one row of five": "repeat(5, minmax(0, 1fr))",
+        "the phone gets one column": "grid-template-columns: minmax(0, 1fr)",
+        "the band gradient is deployed": ".city-thumb::after",
     },
 }
 for asset, wanted in NEEDLES.items():
@@ -211,6 +226,10 @@ FORBIDDEN_ASSETS = {
         "the page renders an AWS error class": "AuthorizationError",
         "the page renders a subscription ARN": "SubscriptionArn",
         "the page claims the address is subscribed": "You are subscribed",
+        # M10.1: the seven PNGs named *.svg are not an icon system and must stay unreferenced
+        "an icon is loaded from one of the PNG files named *.svg": "-icon.svg",
+        "the chevron is loaded from a file": "chevron-right.svg",
+        "a card image comes from outside the same directory": 'src="http',
     },
 }
 for asset, forbidden in FORBIDDEN_ASSETS.items():
@@ -222,7 +241,40 @@ for asset, forbidden in FORBIDDEN_ASSETS.items():
         + (f" — found: {', '.join(present)}" if present else "")
     )
 
-# --------------------------------------------------------------------- the policy itself ---
+# ----------------------------------------------------------------------- the images themselves ---
+# A needle proves the mapping is deployed; it does not prove the bucket serves the prepared bytes.
+# This is the one place the two can be compared directly: fetch the six objects the page loads and
+# compare each response with the file in web/ by length and MD5, and with the content type the
+# upload claimed. A 404, a stale copy or a mislabelled type would each show up here as itself.
+IMAGES = ["bg-storm.webp", "chennai-nightscape.webp", "mumbai-nightscape.webp",
+          "bengaluru-nightscape.webp", "hyderabad-nightscape.webp", "kochi-nightscape.webp"]
+print("\n  the six images the page loads, against web/")
+for name in IMAGES:
+    local = (WEB / name).read_bytes()
+    request = urllib.request.Request(f"{SITE}/{name}", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status = response.status
+            content_type = response.headers.get("Content-Type", "")
+            body = response.read()
+    except Exception as error:  # a missing object is a result, not a crash
+        failed += 1
+        print(f"  FAIL {name}: {error}")
+        continue
+    digest = hashlib.md5(body).hexdigest()
+    problems = []
+    if status != 200:
+        problems.append(f"status {status}")
+    if content_type != "image/webp":
+        problems.append(f"content type {content_type!r}")
+    if body != local or digest != hashlib.md5(local).hexdigest():
+        problems.append(f"{len(body)} B / {digest} vs web/{name} {len(local)} B")
+    failed += len(problems)
+    detail = f"{len(body)} B, md5 {digest}, image/webp"
+    print(f"  {'FAIL' if problems else 'ok  '} {name}: {detail}"
+          + (f" — {', '.join(problems)}" if problems else " — byte-identical to web/"))
+
+
 # The page carries its policy in a <meta> element, so this compares the served directive list
 # rather than looking for a substring: a directive that is present but was quietly weakened is
 # exactly what a substring test would miss.

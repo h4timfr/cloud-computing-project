@@ -39,7 +39,7 @@ Two honesty rules run through the whole project:
 | Storage | In-memory store + DynamoDB store (same interface) | ✅ **live** against table `floodpulse` |
 | API | `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (public reads) | ✅ **live** in the same handler |
 | AWS deployment | DynamoDB / Lambda / HTTP API / S3 site / SNS topic | ✅ **deployed and verified** (`infra/deploy.ps1`) |
-| Dashboard | S3-hosted static UI polling the live API, incident log panel, provenance chips | ✅ **live and verified** (`web/`) |
+| Dashboard | S3-hosted static UI polling the live API, incident log panel, provenance chips, city nightscape cards | ✅ **live and verified** (`web/`, deployed 2026-10-18) |
 | Incidents | Automatic incident records + lifecycle (open/escalate/close) | ✅ **live and verified** |
 | Alerts | One SNS topic, escalation-only publishing with a per-zone cooldown | ✅ **live and verified** (publish proof; no subscriber yet) |
 | Time-to-threshold | Estimate time to a threshold | ⛔ **deferred** (still reported as a deferred feature, never faked) |
@@ -2064,7 +2064,7 @@ Measured at the end of this pass (read-only AWS CLI, eu-north-1):
 | Lambda `floodpulse-api` | **1,841 invocations** and **441.6 s** of total duration over the two days CloudWatch reports, 0 errors, 0 throttles, 256 MB | ≈110 GB-s: inside the 400,000 GB-s monthly free tier, **$0** |
 | API Gateway HTTP API | ~1,841 requests on those two days | $1.00 per million requests: **$0.002** |
 | DynamoDB `floodpulse` | **1,364 items / 947 KB**, on-demand, TTL pruning history at 7 days, no GSI, no scans | 25 GB storage free tier: **$0**; writes are a few thousand a day (on-demand write units cost $1.25/million) |
-| S3 `floodpulse-dashboard-…` | **5 objects / 924 KB** (index, styles, lib, app, backdrop — the backdrop is the 579 KB source image as deployed on 2026-10-17; the optimised 58.8 KB file in `web/` is not uploaded yet) | a few cents **per year**, no CloudFront |
+| S3 `floodpulse-dashboard-…` | **10 objects / 612.3 KB** (index, styles, lib, app, the 60,192 B WebP backdrop and the five city nightscapes — all ten re-uploaded and byte-verified on 2026-10-18, which replaced the 579 KB PNG-as-`.webp`) | a few cents **per year**, no CloudFront |
 | CloudWatch Logs | **297 KB stored**, 7-day retention | ingestion ~$0.0002, storage negligible; retention bounds it by design |
 | SNS `floodpulse-alerts` | **0 confirmed subscriptions**, 1 pending | 1 M publishes/month free; nothing is delivered to anyone |
 | External weather API | at most 1 request per 10 minutes (~144/day), free and key-less | **$0** (attribution is the price: CC BY 4.0) |
