@@ -1368,7 +1368,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
   /* These two read the Overview as a reader arriving at the page sees it, so they run on their
    * own fresh boot: the shared `dom` above has been driven through connection failures and empty
    * fleets by the checks before them, and the point here is what a working first load looks like. */
-  await checkAsync('every city card carries a band-coloured plate and a score meter', async () => {
+  await checkAsync('every city card carries its nightscape, a band-coloured plate and a score meter', async () => {
     const fresh = boot({ payload, incidents, history, overrides: {} });
     await fresh.runtime.settle();
     const FP = fresh.sandbox.window.FP;
@@ -1380,8 +1380,54 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     // decoration must stay decoration
     assert.match(html, /<span class="city-thumb[^"]*" data-band="\w+" aria-hidden="true">/,
       'the city plate is not hidden from assistive tech');
-    assert.ok(!/<img/i.test(html), 'a city card loads an image');
-    assert.ok(!/http(s)?:\/\//.test(html), 'a city card references a remote asset');
+
+    // Per card: a mapped zone loads its prepared local nightscape - named by an explicit
+    // zone_id -> file table, never a path built from API text and never a remote asset - and an
+    // unmapped zone loads no image at all and keeps the drawn plate. Either way the card's text
+    // carries the name, the band, the score and the meter, so nothing about risk depends on a
+    // photograph.
+    const cards = html.split('<a class="card city-card').slice(1);
+    assert.equal(cards.length, payload.zones.length, 'the card count does not match the fleet');
+    let images = 0;
+    let lazy = 0;
+    cards.forEach((card) => {
+      const id = /data-zone="([^"]+)"/.exec(card)[1];
+      const file = FP.cityImageFor({ zone_id: id });
+      const tags = card.match(/<img[^>]*>/g) || [];
+      assert.ok(card.includes('class="city-thumb'), `${id}: the card has no image band`);
+      assert.ok(/data-f="risk_score"/.test(card), `${id}: the card lost its score`);
+      assert.ok(/data-f="risk_class"/.test(card), `${id}: the card lost its band in words`);
+      if (!file) {
+        assert.equal(tags.length, 0, `${id}: an unmapped zone must not load an image`);
+        return;
+      }
+      assert.equal(tags.length, 1, `${id}: expected exactly one image, found ${tags.length}`);
+      const tag = tags[0];
+      assert.ok(tag.includes(`src="${file}"`), `${id}: the card does not load ${file}`);
+      assert.match(tag, /\salt=""/, `${id}: the image is not decorative: ${tag}`);
+      assert.ok(!/\salt="[^"]+"/.test(tag), `${id}: the image repeats the city name: ${tag}`);
+      // eager (no attribute at all) or the browser's own lazy loading: no custom loader anywhere
+      assert.ok(!/\sloading="/.test(tag) || /\sloading="lazy"/.test(tag),
+        `${id}: an unexpected loading attribute: ${tag}`);
+      assert.match(tag, /\sdecoding="async"/, `${id}: the image does not decode off the main thread`);
+      assert.match(tag, /\swidth="\d+"\sheight="\d+"/, `${id}: the image reserves no space: ${tag}`);
+      images += 1;
+      if (/loading="lazy"/.test(tag)) lazy += 1;
+    });
+    // The count is exact in both directions: five images for the five mapped cities of the live
+    // fleet, and none at all for a fleet of invented zones like the demo one, where a nightscape
+    // of "riverside north" does not exist and must not be faked.
+    const mappedCount = payload.zones.filter((zone) => FP.cityImageFor(zone)).length;
+    assert.equal(images, mappedCount,
+      `the page loaded ${images} images for ${mappedCount} mapped zones`);
+    if (mappedCount > 4) {
+      assert.ok(lazy > 0, 'nothing below the first four cards is lazy-loaded');
+      assert.ok(!/loading="lazy"/.test(cards[0]), 'the first card defers its own image');
+    }
+    assert.ok(lazy <= images, 'more lazy images than images');
+    assert.ok(!/\bsrc="[^"]*https?:/.test(html), 'a city card references a remote asset');
+    assert.ok(!/src="[^"]*\.svg"/.test(html), 'a city card loads one of the fake .svg files');
+
     // the meter is drawn from the API's own score, at the documented band edges
     const zone = payload.zones.find((entry) => entry.latest);
     const pct = FP.riskPercent(zone.latest.risk_score).toFixed(1);

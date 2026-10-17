@@ -46,7 +46,7 @@ function Invoke-AwsJson { param([Parameter(ValueFromRemainingArguments = $true)]
 
 $wanted = @('Write-Fail', 'Write-OkApplied', 'Write-DryRun', 'Register-Secret', 'Remove-SecretText',
     'Compare-StringSet', 'Get-ValidatedEnvDocument', 'Test-S3PublicReadStatement', 'Get-SecretFingerprint',
-    'Get-AwsAllItems', 'Invoke-AwsWrite', 'Wait-AwsState')
+    'Get-AwsAllItems', 'Invoke-AwsWrite', 'Wait-AwsState', 'Get-DashboardAssets', 'Send-DashboardAssets')
 $defs = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
 foreach ($def in $defs) {
     if ($wanted -contains $def.Name) { Invoke-Expression $def.Extent.Text }
@@ -200,6 +200,60 @@ Assert-True ($script:awsWriteCalls.Count -eq 0) 'no AWS call was made for a writ
 Wait-AwsState lambda wait function-updated --function-name demo
 Assert-True ($script:awsWriteCalls.Count -eq 0) 'waiters are skipped in a dry run'
 $DryRun = $false
+Write-Host '== M10.1: the published front end, and the path that publishes only it =='
+
+# The asset table is lifted out of deploy.ps1 by the parser above, so it can be asked what it
+# would upload without a bucket existing. Every row has to resolve to a real file: a typo here is
+# a deploy that dies halfway through, after the first objects are already live.
+$webDir = Join-Path $repoRoot 'web'
+$DashboardBucket = 'floodpulse-dashboard-probe'
+$DryRun = $true
+$assets = @(Get-DashboardAssets)
+Assert-True ($assets.Count -eq 10) "the dashboard table lists ten objects (got $($assets.Count))"
+foreach ($asset in $assets) {
+    Assert-True (Test-Path (Join-Path $webDir $asset.File)) "web/$($asset.File) exists"
+    Assert-False ($asset.Cache -match 'immutable') "web/$($asset.File) is not marked immutable"
+    if ($asset.Cache -match 'max-age=(\d+)') {
+        Assert-True ([int]$Matches[1] -le 86400) "web/$($asset.File) caches for at most a day (got $($Matches[1])s)"
+    }
+}
+$nightscapes = @($assets | Where-Object { $_.File -like '*nightscape.webp' })
+Assert-True ($nightscapes.Count -eq 5) 'all five city nightscapes are published'
+Assert-True (@($assets | Where-Object { $_.File -like '*.webp' -and $_.Type -ne 'image/webp' }).Count -eq 0) 'every WebP is served as image/webp'
+Assert-True (@($assets | Where-Object { $_.File -like '*.webp' -and $_.Cache -ne 'public, max-age=86400' }).Count -eq 0) 'the images share one cache policy'
+Assert-True (@($assets | Where-Object { $_.File -notlike '*.webp' -and $_.Cache -ne 'no-cache' }).Count -eq 0) 'the four code files are revalidated, not cached'
+Assert-True (@($assets | Where-Object { $_.File -notlike '*.webp' -and $_.Type -match 'immutable' }).Count -eq 0) 'and no code file claims immutability'
+
+$script:awsWriteCalls.Clear()
+# The real Invoke-AwsWrite deliberately records nothing in a dry run - that is the property the
+# dry-run gate is tested for above - so this probe swaps in the recording stub to see the exact
+# commands the uploader would run. The function's own dry-run exit is still what is exercised:
+# the table is read, every path is resolved, and nothing reaches the network.
+function Invoke-AwsWrite { param([Parameter(ValueFromRemainingArguments = $true)][string[]]$AwsArguments) [void]$script:awsWriteCalls.Add(($AwsArguments -join ' ')); return 'aws-called' }
+$null = Send-DashboardAssets
+$uploads = @($script:awsWriteCalls | Where-Object { $_ -like 's3 cp *' })
+Assert-True ($uploads.Count -eq $assets.Count) "the uploader runs one command per asset (got $($uploads.Count))"
+Assert-True (@($uploads | Where-Object { $_ -notlike '*--content-type*' -or $_ -notlike '*--cache-control*' }).Count -eq 0) 'every upload carries both headers'
+Assert-True (@($uploads | Where-Object { $_ -match '--delete|sync ' }).Count -eq 0) 'no upload can delete a key it does not know about'
+Assert-True (@($uploads | Where-Object { $_ -like "*s3://$DashboardBucket/*" }).Count -eq $assets.Count) 'every upload targets the dashboard bucket'
+Assert-True (@($uploads | Where-Object { $_ -like '*\web\*' }).Count -eq $assets.Count) 'and every upload reads its file out of web/'
+
+# The front-end-only path exists so that publishing a stylesheet cannot become an excuse to ship a
+# backend change. It has to leave the script before every backend section, and it must not contain
+# a single AWS write of its own: the shared uploader is the only thing that touches S3.
+$paramBlock = $source.Substring(0, $source.IndexOf('$ErrorActionPreference'))
+Assert-True ($paramBlock -match '\[switch\]\$DashboardOnly') '-DashboardOnly is a declared switch'
+$start = $source.IndexOf('if ($DashboardOnly)')
+$exit = $source.IndexOf('exit 0', $start)
+$build = $source.IndexOf("Write-Step 'Building deployment package'")
+Assert-True ($start -gt 0 -and $exit -gt $start -and $build -gt $exit) 'the front-end-only path leaves before the build section'
+$only = $source.Substring($start, $exit - $start + 6)
+foreach ($forbidden in @('create-bucket', 'put-bucket-policy', 'put-public-access-block', 'put-bucket-website',
+        'create-function', 'create-table', 'create-api', 'create-topic', 'delete-', 'update-function-configuration')) {
+    Assert-False ($only -match [regex]::Escape($forbidden)) "the front-end-only path never runs $forbidden"
+}
+Assert-True (@($only -split "`n" | Where-Object { $_ -match 'Invoke-Aws(Write|Json)?\s' }).Count -eq 0) 'it makes no AWS call of its own'
+Assert-True ($only -match 'Send-DashboardAssets') 'it publishes through the same uploader as the full deploy'
 Write-Host ''
 if ($script:failures -eq 0) {
     Write-Host 'LOGIC CHECK: all assertions passed'

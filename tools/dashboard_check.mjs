@@ -1106,6 +1106,14 @@ check('local assets referenced by the page exist and the site stays small', () =
   const directory = fs.readdirSync(webDir)
     .map((file) => ({ file, bytes: fs.statSync(path.join(webDir, file)).size }));
   const directoryTotal = directory.reduce((sum, entry) => sum + entry.bytes, 0);
+  // The card imagery is deliberately not part of the page payload: those images are below the
+  // first screen on the layouts that matter and carry loading="lazy" (the first four are eager,
+  // because they are the ones a wide desktop shows). Reported here so the two numbers are never
+  // confused for one another.
+  const cards = ['chennai-nightscape.webp', 'mumbai-nightscape.webp', 'bengaluru-nightscape.webp',
+    'hyderabad-nightscape.webp', 'kochi-nightscape.webp'];
+  const cardBytes = cards.map((file) => fs.statSync(path.join(webDir, file)).size);
+  console.log(`         ${'card imagery'.padEnd(16)} ${(cardBytes.reduce((a, b) => a + b, 0) / 1024).toFixed(1)} KB for ${cards.length} images (4 eager with the cards, 1 lazy)`);
   console.log(`         ${'web/ TOTAL'.padEnd(16)} ${(directoryTotal / 1024).toFixed(1)} KB  (ceiling 1024 KB)`);
   assert.ok(directoryTotal <= 1024 * 1024, `web/ holds ${(directoryTotal / 1024).toFixed(0)} KB`);
 });
@@ -2770,11 +2778,197 @@ check('M10: the new decoration cannot become the only carrier of meaning', () =>
   // the meter marks the documented band edges, and reads its position from the API score
   assert.match(libSource, /SCORE_BAND_EDGES = \[0\.35, 0\.6, 0\.8\]/, 'the band edges were redefined');
   assert.match(appSource, /var BAND_EDGES = FP\.SCORE_BAND_EDGES/, 'app.js has its own copy of the edges');
-  // the plate is a vector and a gradient: no city photograph, no remote asset
-  assert.ok(!/<img/i.test(htmlSource), 'the page loads a raster image it did not ship');
+  // The static page still ships no <img>: the nightscapes are added by the renderer, for the
+  // zones the explicit mapping knows, so a page that never receives a payload never fetches one.
+  // What the images themselves must be is asserted in the M10.1 group at the end of this file.
+  assert.ok(!/<img/i.test(htmlSource), 'a raster image arrived in the static markup');
   // and the meter's own colours come from the band tokens, never from a literal hex
   assert.ok(!/#[0-9a-f]{6}/i.test(m10.match(/\.city-meter[\s\S]{0,600}/)[0]),
     'the meter hard-codes a colour instead of using a band token');
+});
+
+/* --------------------------------------------------------------- M10.1 ---
+ *
+ * The prepared raster assets, wired in. Every claim about them is made twice on purpose: the
+ * table and the markup source are checked here, the rendered DOM is checked by
+ * tools/dashboard_run.mjs, and the pixels were verified by tools/optimize_web_assets.py.
+ */
+
+group('M10.1: the prepared city imagery is wired in, and nowhere it should not be');
+
+/* The Photoshop-free way to ask "is this really a WebP, and how big is its frame?": read the
+ * container and the frame header. It is not a pixel decode - tools/optimize_web_assets.py does
+ * that with Pillow - but it does catch the bug this repository actually had, a PNG wearing a
+ * .webp extension, and it catches a file whose header claims a size the card cannot use. */
+function webpFrame(bytes) {
+  assert.equal(bytes.subarray(0, 4).toString('ascii'), 'RIFF', 'not a RIFF container');
+  assert.equal(bytes.subarray(8, 12).toString('ascii'), 'WEBP', 'not a WebP payload');
+  assert.notEqual(bytes.subarray(1, 4).toString('ascii'), 'PNG', 'a PNG wearing a .webp name');
+  const tag = bytes.subarray(12, 16).toString('ascii');
+  if (tag === 'VP8X') {
+    return { tag, width: 1 + bytes.readUIntLE(24, 3), height: 1 + bytes.readUIntLE(27, 3) };
+  }
+  if (tag === 'VP8 ') {
+    assert.equal(bytes.readUIntLE(23, 3), 0x2a019d, 'the lossy frame has no sync code');
+    return { tag, width: bytes.readUIntLE(26, 2) & 0x3fff, height: bytes.readUIntLE(28, 2) & 0x3fff };
+  }
+  if (tag === 'VP8L') {
+    assert.equal(bytes[20], 0x2f, 'the lossless frame has no signature');
+    const bits = bytes.readUInt32LE(21);
+    return { tag, width: 1 + (bits & 0x3fff), height: 1 + ((bits >> 14) & 0x3fff) };
+  }
+  throw new Error(`unknown WebP chunk ${tag}`);
+}
+
+check('M10.1: the zone -> image mapping is explicit, complete and closed', () => {
+  // A table, not a derived path. A filename assembled from `zone_id` would let whatever sets that
+  // value decide what the page loads - and an inherited key like "constructor" or "toString" would
+  // make an own-property test mandatory rather than optional, which is why that guard is pinned
+  // here too.
+  const expected = {
+    'city-chennai': 'chennai-nightscape.webp',
+    'city-mumbai': 'mumbai-nightscape.webp',
+    'city-bengaluru': 'bengaluru-nightscape.webp',
+    'city-hyderabad': 'hyderabad-nightscape.webp',
+    'city-kochi': 'kochi-nightscape.webp'
+  };
+  // copied into this realm before comparing: the sandbox's objects have another prototype
+  const table = Object.fromEntries(Object.entries(FP.CITY_IMAGES));
+  assert.deepEqual(table, expected, 'the zone -> image table changed');
+  Object.entries(expected).forEach(([id, file]) => {
+    assert.equal(FP.cityImageFor({ zone_id: id }), file, `${id} does not resolve to its own file`);
+    assert.match(file, /^[a-z][a-z0-9-]*\.webp$/, `${file} is not a bare filename inside web/`);
+  });
+  [null, undefined, {}, { zone_id: 'city-atlantis' }, { zone_id: 'constructor' },
+    { zone_id: 'toString' }, { zone_id: '../bg-storm.webp' }, { zone_id: 'CITY-CHENNAI' }].forEach((zone) => {
+    assert.equal(FP.cityImageFor(zone), null,
+      `an unmapped zone resolved to an image: ${JSON.stringify(zone)}`);
+  });
+  assert.match(libSource, /Object\.prototype\.hasOwnProperty\.call\(CITY_IMAGES/,
+    'the lookup is not an own-property check');
+  assert.match(libSource, /var src = cityImageFor\(zone\);/, 'the image is not read from the table');
+  assert.ok(!/['"][a-z-]*' \+\s*zone/.test(libSource) && !/\+\s*['"]-nightscape/.test(libSource),
+    'an image path is assembled from a zone field instead of read from the table');
+});
+
+check('M10.1: every mapped image is a real WebP inside its cap and its slot', () => {
+  const rows = [];
+  Object.entries(FP.CITY_IMAGES).forEach(([id, file]) => {
+    const filePath = path.join(webDir, file);
+    assert.ok(fs.existsSync(filePath), `web/${file} is missing (mapped from ${id})`);
+    const bytes = fs.readFileSync(filePath);
+    const frame = webpFrame(bytes);
+    assert.ok(frame.width > 0 && frame.height > 0, `${file} has no frame size`);
+    assert.ok(Math.abs(frame.width / frame.height - 16 / 9) < 0.02,
+      `${file} is not 16:9 (${frame.width}x${frame.height})`);
+    assert.ok(frame.width <= 800 && frame.height <= 450,
+      `${file} is ${frame.width}x${frame.height}, larger than the 800x450 slot`);
+    assert.ok(bytes.length <= 120 * 1024,
+      `${file} is ${(bytes.length / 1024).toFixed(1)} KB, over the 120 KB hard cap`);
+    assert.ok(!bytes.includes(Buffer.from('EXIF')) && !bytes.includes(Buffer.from('ICCP')),
+      `${file} still carries embedded metadata`);
+    rows.push(`${file} ${frame.tag.trim()} ${frame.width}x${frame.height} ${(bytes.length / 1024).toFixed(1)} KB`);
+  });
+  console.log(`         ${rows.join('\n         ')}`);
+  // the backdrop is the sixth image the page ships, and the only one it loads before the cards
+  const backdrop = fs.readFileSync(path.join(webDir, 'bg-storm.webp'));
+  const frame = webpFrame(backdrop);
+  assert.equal(`${frame.width}x${frame.height}`, '930x312', 'the backdrop is not the prepared file');
+  assert.ok(backdrop.length <= 350 * 1024, `the backdrop is ${(backdrop.length / 1024).toFixed(1)} KB`);
+  console.log(`         bg-storm.webp ${frame.width}x${frame.height} ${(backdrop.length / 1024).toFixed(1)} KB`);
+});
+
+check('M10.1: the seven files named *.svg are PNG payloads and nothing references them', () => {
+  // They are raster data with the wrong extension. Loading one as an icon would mean serving PNG
+  // bytes under image/svg+xml - a wrong type a browser may refuse - and the site already has a
+  // proper inline SVG icon set, so the correct wiring is no wiring at all.
+  const misnamed = ['alert-icon.svg', 'building-icon.svg', 'check-icon.svg', 'chevron-right.svg',
+    'city-icon.svg', 'clock-icon.svg', 'weather-rain.svg'];
+  const sources = { 'index.html': htmlSource, 'styles.css': cssSource, 'lib.js': libSource, 'app.js': appSource };
+  misnamed.forEach((name) => {
+    const filePath = path.join(webDir, name);
+    assert.ok(fs.existsSync(filePath), `web/${name} disappeared`);
+    const bytes = fs.readFileSync(filePath);
+    assert.equal(bytes.subarray(1, 4).toString('ascii'), 'PNG', `web/${name} is no longer the PNG it was`);
+    assert.notEqual(bytes.subarray(0, 5).toString('ascii'), '<?xml', `web/${name} became real SVG markup`);
+    Object.entries(sources).forEach(([source, text]) => {
+      assert.ok(!text.includes(name), `${source} references ${name}`);
+    });
+  });
+  // and the icon system is still the one that ships with the page
+  assert.match(libSource, /function icon\(/, 'the inline SVG icon set is gone');
+  assert.ok(!/\.svg"/.test(libSource + appSource + htmlSource), 'the front end loads an .svg file');
+});
+
+check('M10.1: the card image is decorative, deferred below the fold, and same-origin', () => {
+  assert.match(libSource, /<img class="city-photo" src="' \+ escapeHtml\(src\) \+ '" alt="" width="800" height="450" '/,
+    'the city image is not decorative, or it no longer reserves its space');
+  assert.match(libSource, /eager \? '' : 'loading="lazy" '/, 'no city image is deferred');
+  assert.match(libSource, /decoding="async"/, 'the city image would decode on the main thread');
+  assert.match(appSource, /eager: index < 4/, 'the renderer no longer tells the first cards apart');
+  // the band is decoration: hidden from assistive tech, with the name in text beside it
+  assert.match(libSource, /class="city-thumb band-' \+ band \+ '" data-band="' \+ escapeHtml\(band\) \+\s*'" aria-hidden="true"/,
+    'the image band is exposed to assistive tech');
+  // and every source is a bare filename from the table, so no image can come from anywhere else
+  assert.ok(!/src="[^"]*\.svg"/.test(libSource), 'a card can load a .svg');
+  assert.ok(!/https?:/.test(libSource.slice(libSource.indexOf('CITY_IMAGES'), libSource.indexOf('function cityThumb'))),
+    'the mapping can point at a remote image');
+});
+
+check('M10.1: the stylesheet gives the band a ratio, a crop and a gradient', () => {
+  const layer = m10Block();
+  assert.match(layer, /\.city-thumb\s*\{[^}]*aspect-ratio:\s*16\s*\/\s*9/,
+    'the image band has no fixed 16:9 ratio');
+  assert.match(layer, /\.city-thumb \.city-photo\s*\{[^}]*object-fit:\s*cover/,
+    'the image is not cropped to cover its band');
+  assert.match(layer, /\.city-thumb::after\s*\{[^}]*linear-gradient/,
+    'the band has no gradient, so the name can meet a bright skyline');
+  assert.match(layer, /\.city-thumb\s*\{[^}]*place-items:\s*center/,
+    'an unmapped zone has no plate to fall back to');
+  assert.match(layer, /\.zone-card \.zone-body\s*\{[^}]*padding/, 'the city list card has no padding');
+  // the backdrop's own treatment: covered, centred on the top edge, under the navy ramp
+  assert.match(layer, /\.bg-layer\s*\{[^}]*background-position:\s*center top/,
+    'the backdrop is no longer anchored to the top edge');
+  assert.match(layer, /\.card\s*\{[^}]*backdrop-filter/, 'the panels lost their scrim');
+});
+
+check('M10.1: the city grid collapses 5 -> 3 -> 2 -> 1 without overflow', () => {
+  // The tracks come from two rules: an auto-fit track that fits as many 248px columns as the
+  // width allows, and two explicit overrides (five across on a wide desktop, one on a phone).
+  const autoFit = /\.city-cards \{[^}]*repeat\(auto-fit, minmax\(248px, 1fr\)\)/.test(cssSource);
+  assert.ok(autoFit, 'the city grid lost its auto-fit track');
+  assert.match(m10Block(), /\.city-cards \{[^}]*repeat\(5, minmax\(0, 1fr\)\)/,
+    'the wide desktop never gets its single row of five');
+  assert.match(m10Block(), /@media \(max-width: 560px\)\s*\{[\s\S]*?\.city-cards\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/,
+    'the city grid does not collapse to one column on a phone');
+  // derived, not guessed: usable width = min(viewport, 1680) - 2 * 28px padding, then as many
+  // 248px columns as fit with the 18px card gap
+  const columns = (viewport) => {
+    const usable = Math.min(viewport, 1680) - 56;
+    if (viewport >= 1320) return 5;
+    if (viewport <= 560) return 1;
+    return Math.max(1, Math.floor((usable + 18) / (248 + 18)));
+  };
+  const table = [320, 390, 560, 768, 1024, 1280, 1320, 1920]
+    .map((width) => `${width}px:${columns(width)}`).join('  ');
+  console.log(`         columns by viewport width: ${table}`);
+  assert.equal(columns(1024), 3, '1024px does not give three columns');
+  assert.equal(columns(768), 2, '768px does not give two columns');
+  assert.equal(columns(560), 1, 'a 560px phone does not get one column');
+  assert.equal(columns(1920), 5, 'a wide desktop does not get one row of five');
+});
+
+check('M10.1: the imagery does not widen the policy or leave the origin', () => {
+  const policy = /<meta http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(htmlSource)[1];
+  assert.match(policy, /img-src 'self' data:/, 'img-src no longer allows exactly the local images');
+  assert.ok(!/img-src[^;]*(\*|https?:)/.test(policy), 'img-src was widened to a wildcard or a remote origin');
+  assert.ok(!/url\(\s*["']?https?:/i.test(cssSource), 'the stylesheet fetches something remote');
+  assert.ok(!/https?:\/\/[^"'\s]+\.(?:png|jpe?g|webp|gif|svg)/i.test(htmlSource + libSource + appSource + cssSource),
+    'a remote image URL is in the front end');
+  Object.values(FP.CITY_IMAGES).forEach((file) => {
+    assert.match(file, /^[a-z-]+\.webp$/, `${file} is not a same-directory file`);
+    assert.ok(fs.existsSync(path.join(webDir, file)), `web/${file} is missing`);
+  });
 });
 
 /* ------------------------------------------------------------------ report --- */

@@ -1030,9 +1030,15 @@ async function main() {
       // page avoids an icon CDN. The tags below are the ones a payload could use to load or run
       // something, and none of them belongs in a card.
       const executable = /<(img|script|iframe|object|embed|link|style|form|input|video|audio|math)\b/i;
+      // One <img> per city card is the renderer's own: its nightscape, named by the renderer's own
+      // zone_id table, with an empty alt, a reserved box and no attribute a payload can influence.
+      // Those are removed before the scan. Anything that does not match this exact shape - which is
+      // what a payload-injected tag looks like - is still a failure.
+      const ownImage = /<img class="city-photo" src="[a-z-]+\.webp" alt="" width="800" height="450"(?: loading="lazy")? decoding="async">/g;
       surfaces.forEach((id) => {
         const html = dom.html(id);
-        assert.ok(!executable.test(html), `${id} emitted a live tag: ${html.slice(0, 160)}`);
+        assert.ok(!executable.test(html.replace(ownImage, '<!-- the renderer\'s own card image -->')),
+          `${id} emitted a live tag: ${html.slice(0, 160)}`);
         // Where the payload reaches a surface it must be escaped; where it does not (the hero
         // shows the highest-risk city, which is not necessarily the poisoned one) there is
         // nothing to escape, and the coverage assertion below proves the case is not vacuous.

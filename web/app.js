@@ -642,7 +642,11 @@
     var grid = el.zones;
     if (!grid) return;
     if (grid.getAttribute('data-signature') !== zoneSignature(zones)) {
-      grid.innerHTML = zones.map(FP.renderZoneCard).join('');
+      // The index decides image loading only: the first row of cards is on screen and loads the
+      // way the browser does by default, the rest carry loading="lazy". (.map passes the index.)
+      grid.innerHTML = zones.map(function (zone, index) {
+        return FP.renderZoneCard(zone, { eager: index < 4 });
+      }).join('');
       grid.setAttribute('data-signature', zoneSignature(zones));
     }
     zones.forEach(function (zone) {
@@ -1326,8 +1330,10 @@
     var noun = FP.zoneNoun(state.payload);
     var stale = FP.staleZoneIds(state.payload);
     host.innerHTML = list.length
-      ? list.map(function (zone) {
-        return FP.cityStatusCard(zone, { noun: noun, staleZoneIds: stale });
+      ? list.map(function (zone, index) {
+        // index < 4: the first four cards are the ones a wide layout shows without scrolling, so
+        // they load eagerly (no attribute); the rest let the browser defer them.
+        return FP.cityStatusCard(zone, { noun: noun, staleZoneIds: stale, eager: index < 4 });
       }).join('')
       : (state.payload
         // the API answered and there is genuinely nothing to show: an empty state with a

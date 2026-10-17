@@ -1690,11 +1690,13 @@ icons that no view references yet and that the deploy list does not upload.
    already near it.
 3. **Nothing here is deployed.** The five-asset upload list in `infra/deploy.ps1` is unchanged, so
    the live bucket still serves the 579 KB PNG-as-`.webp` and does not carry the twelve prepared
-   assets. Deploying is a separate, explicit step.
+   assets. Deploying is a separate, explicit step. *(Closed by M10.1 below: the bucket now serves the
+   58.8 KB WebP backdrop and the five card images.)*
 4. **The city cards and icons are not wired into any view.** They are prepared and measured only;
    no layout, CSS or HTML was changed for them. When they are wired up, `object-fit: cover` makes
    the mix of 800×450 and 612×344 cards harmless, and the PNG-under-`.svg` names must be settled
-   first.
+   first. *(Closed by M10.1 below for the five card images, using exactly that `object-fit: cover`;
+   the seven `*.svg`-named PNGs are still referenced by nothing and still wait for their author.)*
 5. **No image viewer exists on this machine**, so "no obvious banding" and "the skyline stays
    recognisable" are argued from measurements — PSNR, error in the darkest decile, and the fraction
    of distinct dark luminance levels that survive (1.00 everywhere) — and not from looking at the
@@ -1703,6 +1705,115 @@ icons that no view references yet and that the deploy list does not upload.
    output, which cost a generation (32.1 dB cumulative instead of 33.2 dB). It was re-derived from
    the kept original with `--from-originals` and re-verified; the tool now skips any file already
    inside its targets so a re-run cannot repeat it.
+
+## M10.1 wiring the city imagery into the dashboard (frontend + S3 objects only, 2026-10-18)
+
+The optimisation pass prepared six raster files and left every one of them unreferenced. This pass
+puts them on the screen, and does nothing else: the Lambda, the API Gateway routes, the table, the
+risk engine, the alert topic, the subscription backend and every IAM policy are untouched. The
+deploy path that published the objects — `infra/deploy.ps1 -DashboardOnly` — cannot reach them.
+
+### The mapping
+
+Five cities, five files, one table in `web/lib.js` (`FP.CITY_IMAGES`), read through
+`FP.cityImageFor()`. The lookup is an own-property test, so an id the page has never heard of —
+including `constructor` or `toString`, or anything that arrives in a payload — resolves to `null`,
+the card keeps its drawn band-tinted plate, and the card's shape never depends on the data. The path
+is never assembled from API text; a wrong or hostile `zone_id` cannot choose what the page loads.
+
+| `zone_id` (from the API) | File in `web/` | Size | Frame |
+| --- | --- | --- | --- |
+| `city-chennai` | `chennai-nightscape.webp` | 20.6 KB | 612×344 |
+| `city-mumbai` | `mumbai-nightscape.webp` | 30.0 KB | 800×450 |
+| `city-bengaluru` | `bengaluru-nightscape.webp` | 30.2 KB | 612×344 |
+| `city-hyderabad` | `hyderabad-nightscape.webp` | 54.7 KB | 800×450 |
+| `city-kochi` | `kochi-nightscape.webp` | 47.2 KB | 640×360 |
+
+### What changed on screen
+
+* **City cards carry a photograph band.** One builder (`FP.cityThumb`) serves the Overview grid and
+  the Cities page, so the two cards are two compositions of one image element, not two
+  implementations that drift: a 16:9 band at `object-fit: cover` (which is what makes the 612×344
+  and 800×450 sources equivalent), a bottom gradient so the name never meets a bright skyline, and
+  the band-tinted gradient underneath for an unmapped zone or a failed load.
+* **The Overview card is now a navigation card**: image, city name with a chevron, the band in
+  words, the score in figures, the band meter, then one compact secondary line — rainfall, age, and
+  the provenance chips. The headline sentence, the driver sentence, the soil figure and the
+  provenance chips are no longer on *this* card; the driver sentence moved to the Cities card, and
+  everything remains on the city detail page. The direction the score is moving stayed (the arrow
+  sits beside the figure it describes).
+* **Grid**: one row of five from 1320 px, three at 1024, two at 768, one at 560 and below. Every
+  track is `minmax(0, …)`, so a long city name wraps instead of pushing the page sideways.
+* **Surfaces**: the panel gradient dropped from ~72–78% to ~60–66% opacity with a 7 px scrim, the
+  borders are a cool blue, and the hero is lighter still, so the photograph reads through the large
+  panels instead of sitting behind an opaque navy wall. Text stays opaque.
+* **Header**: same three groups in the same order (brand + subtitle, the five views, fleet health /
+  Live badge / last update), tightened padding so the bar is mostly navigation. `heuristic-v1` is
+  still out of the header and still in the Data & Methodology fold.
+* **Backdrop**: `background-size: cover` over the full-bleed layer, anchored `center top` so the
+  skyline sits where a reader looks, under the navy ramp and the inset vignette.
+
+### The two payload numbers, kept apart on purpose
+
+| Measure | Value | Ceiling | Notes |
+| --- | --- | --- | --- |
+| Primary page payload (code + backdrop) | **429.6 KB** | **512 KB** | 32.6 + 104.0 + 135.8 + 98.5 KB of code, plus the 58.8 KB backdrop |
+| Card imagery | **182.7 KB** for five files | 90 KB ideal / 120 KB hard each | the images only: four load as the first row enters the view, the fifth is `loading="lazy"` |
+| Worst case, one desktop visit | 600.8 KB | — | page payload plus all five images: a wide desktop shows five cards at once, so "below the fold" is a phone-shaped statement, not a desktop one |
+| `web/` directory | 667.5 KB, 17 files | 1024 KB | a guard on the prepared set, not a download |
+
+Imagery does not enter the primary payload: the stylesheet loads the backdrop and nothing else, and
+every card image is written by the renderer with `loading="lazy"` except the first four, which are
+left to the browser's own eager behaviour because they are the ones on screen. No custom lazy
+loader, no intersection observer, no script of ours in the image path at all.
+
+### Publishing them
+
+`infra/deploy.ps1` gained one shared asset table (`Get-DashboardAssets`, ten objects) used by both
+the full deploy and a new `-DashboardOnly` path, which re-uploads `web/` and verifies it and leaves
+`exit 0` before the build, table, Lambda, API, IAM, SNS and log-retention sections — so publishing a
+stylesheet cannot become an excuse to ship a backend change. After uploading, the script reads every
+object back and compares its ETag with the local file's MD5 and its stored metadata with what was
+asked for; a mismatch fails the run. The five card images are uploaded as `image/webp` with
+`public, max-age=86400`: a day, not a year, because the filenames are not content-hashed and an
+`immutable` year would keep a replaced nightscape out of a returning visitor's browser. `s3 cp` is
+idempotent, no bucket is created, and no policy, website configuration or lifecycle rule is touched.
+
+### What is checked, and what is not
+
+`tools/dashboard_check.mjs` (125 checks) asserts the table itself, that all five files exist, parse
+as VP8/VP8X WebP containers at 16:9 inside 800×450 and under the 120 KB cap, that the seven
+`*.svg`-named files are PNG payloads referenced by nothing in `index.html`, `styles.css`, `lib.js` or
+`app.js`, that the mapping cannot be reached by construction, that `img-src 'self' data:` was not
+widened, and that `img-src`'s companion rules still hold. `tools/dashboard_run.mjs` (66 checks)
+drives the real renderer and asserts each card's own image and its attributes (`alt=""`, a reserved
+800×450 box, `decoding="async"`, lazy except the first four), that the score, the band in words and
+the meter survive, and that the demo fleet — invented zones with no nightscape — loads no image at
+all. `tools/deploy_logic_check.ps1` asserts the ten-object table, the content types, the cache
+policy, and that the front-end-only path contains no AWS write of its own.
+`tools/dashboard_scenarios.mjs` keeps the escaping proof: the one `<img>` a card may contain is the
+renderer's own, and a payload-injected tag is still a failure.
+
+The pixel-level decode is not in those harnesses: `tools/optimize_web_assets.py --check` does it
+with Pillow (dimensions, decode, PSNR and dark-region error against the kept originals), and the
+harnesses check the container and frame headers, which is what catches a PNG wearing a `.webp`
+name.
+
+### Limitations (recorded, not smoothed over)
+
+1. **The backdrop is soft at large widths, and this is not fixable from what exists.** The file is
+   930×312; at a 1920 px viewport the browser upscales it 2.06× (4.1× at device pixel ratio 2). No
+   detail is invented on disk — that would be fake detail — so the claim here is "covered, centred,
+   atmospheric", not "native 1080p".
+2. **No image viewer exists on this machine.** Every judgement above is numeric. Whether the crop
+   keeps each skyline recognisable, and whether the dark gradient is too heavy or too light over a
+   given card, is still a human's call.
+3. **The seven `*.svg`-named PNGs remain unreferenced** and still carry misleading extensions. They
+   are not deleted (they were added from outside this work) and not referenced; the inline SVG icon
+   set is the icon system. Renaming or re-exporting them is a decision for their author.
+4. **Column counts are derived, not observed.** 5/3/2/1 comes from the grid maths over the measured
+   page padding and card gap, and the check prints that derivation — but no browser was available
+   here, so the actual rendering at each width has not been looked at.
 
 ## Repository layout
 

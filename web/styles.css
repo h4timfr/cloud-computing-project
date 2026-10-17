@@ -2801,3 +2801,316 @@ main, .topbar, .footer { max-width: 100%; }
   .skel-line, .skel-title, .skel-badge, .skel-body { animation: none; }
   .btn, .health-summary { transition: none; }
 }
+
+/* ======================================================= M10.1 - the imagery ===
+ *
+ * Wiring the prepared raster assets into the interface, and the surfaces they sit on. Three
+ * decisions are made here and nowhere else:
+ *
+ * 1. A city nightscape is the *card's* image: one 16:9 band at the top of `.city-thumb`, which
+ *    the Overview card and the city list both render from the same builder, with
+ *    `object-fit: cover` so a 612x344 file and an 800x450 file land in the same box the same
+ *    way, and a gradient at the band's foot so the city name below never meets a bright skyline.
+ *    A zone whose id is not in the mapping keeps the drawn plate - the band-tinted gradient that
+ *    was there before - so a card never changes shape with the data, and no image is guessed.
+ * 2. The backdrop is the 930x312 photograph: cover, centred on the top edge, at 55% over the
+ *    page gradient, with the navy ramp and the inset vignette over it. At 1920 CSS px the
+ *    browser upscales it 2.06x and it is visibly soft at that width. The alternative was
+ *    inventing pixels, so the softness is accepted and reported rather than hidden.
+ * 3. Surfaces get lighter, not darker. The photograph has to be visible through the large
+ *    panels - that is what "atmospheric" means here - so the panel gradient drops to ~60%
+ *    opacity and the blur stays at 7px: enough to soften the skyline behind a paragraph, far
+ *    from the frosting that makes small text work to read.
+ */
+
+/* ------------------------------------------------------------------ backdrop --- */
+
+.bg-layer {
+  background-position: center top;
+  opacity: 0.55;
+  box-shadow: inset 0 0 180px 60px rgba(2, 6, 23, 0.78);
+}
+
+.bg-layer::after {
+  background:
+    radial-gradient(115% 78% at 50% -8%, rgba(34, 211, 238, 0.10) 0%, rgba(4, 9, 26, 0.54) 52%, rgba(2, 6, 23, 0.90) 100%),
+    linear-gradient(180deg, rgba(4, 9, 26, 0.48) 0%, rgba(3, 8, 22, 0.78) 100%);
+}
+
+/* ------------------------------------------------------------------ surfaces --- */
+
+:root {
+  /* The panels were a near-opaque navy wall. Same navy, less wall: the photograph reads
+   * through a large surface, which is the whole point of having one behind it. */
+  --surface: linear-gradient(168deg, rgba(23, 44, 82, 0.60) 0%, rgba(11, 25, 52, 0.66) 100%);
+  --surface-flat: rgba(9, 21, 45, 0.52);
+}
+
+.card {
+  border-color: rgba(125, 170, 220, 0.24);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(7px) saturate(1.05);
+}
+
+/* -------------------------------------------------------------------- header --- */
+
+/* Three groups, unchanged in order and content; tightened so the bar is mostly navigation
+ * rather than empty navy. */
+.topbar {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.meta-item {
+  padding: 5px 11px;
+}
+
+@media (min-width: 981px) {
+  .topbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px 16px; }
+  .nav-link { padding: 7px 12px; }
+}
+
+/* ---------------------------------------------------------------------- hero --- */
+
+/* Compact, and lighter than the panels around it so the photograph is strongest here. */
+.hero.hero-live {
+  gap: 22px;
+  padding: 22px 24px;
+  background: linear-gradient(160deg, rgba(17, 34, 66, 0.50) 0%, rgba(7, 17, 38, 0.60) 100%);
+}
+
+.hero-aside {
+  border-left-color: rgba(125, 170, 220, 0.22);
+}
+
+/* ----------------------------------------------------------------- city cards ---
+ *
+ * The band is the image; the body under it is the answer. Everything the body holds is text,
+ * so nothing in the card depends on the photograph being there. */
+
+.city-cards {
+  gap: 18px;
+}
+
+.city-card {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  border-left: 4px solid var(--stroke-strong);
+  border-radius: var(--radius-lg);
+  /* the image band is full-bleed, so the corner radius has to clip it */
+  overflow: hidden;
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+
+.city-card:hover {
+  background: linear-gradient(168deg, rgba(30, 56, 100, 0.68) 0%, rgba(13, 29, 60, 0.72) 100%);
+}
+
+.city-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  border-radius: 0;
+  overflow: hidden;
+  color: var(--cyan-200);
+  /* the drawn plate: the fallback for an unmapped zone, and the band behind the photograph,
+   * so a card whose image fails to load is still the right shape and colour */
+  background: linear-gradient(152deg, rgba(34, 211, 238, 0.24), rgba(9, 21, 45, 0.92));
+  box-shadow: none;
+}
+
+.city-thumb .city-photo {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 260ms ease;
+}
+
+/* The gradient at the foot of the band: it keeps the name and the band pill off a bright
+ * skyline, and it ties the image into the surface below instead of ending it with a hard line. */
+.city-thumb::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 55%;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(4, 9, 26, 0) 0%, rgba(4, 9, 26, 0.45) 60%, rgba(4, 9, 26, 0.88) 100%);
+}
+
+.city-card .city-body {
+  display: grid;
+  gap: 10px;
+  padding: 15px 18px 17px;
+}
+
+.city-card .city-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* Never clipped and never ellipsised: a long name wraps (the scenario harness fails a
+ * renderer that truncates one). */
+.city-card .city-head h3 {
+  margin: 0;
+  font-size: 1.14rem;
+  line-height: 1.25;
+  color: var(--white);
+  overflow-wrap: anywhere;
+}
+
+.city-card .city-chevron {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--slate-400);
+  transition: transform 180ms ease, color 180ms ease;
+}
+
+.city-card .city-band-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.city-card .city-band-line .pill {
+  font-size: 0.72rem;
+}
+
+.city-card .city-figures {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.city-card .city-score-unit {
+  font-size: var(--text-sm);
+}
+
+.city-card .city-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 2px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--stroke);
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
+
+.city-card .city-sub-age {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--slate-400);
+}
+
+/* The card's own provenance chips sit at the end of the one secondary line: which data these
+ * numbers are, without a second row of small print. */
+.city-card .city-sub .city-provenance {
+  margin-left: auto;
+}
+
+@media (hover: hover) {
+  .city-card:hover,
+  .city-card:focus-visible {
+    transform: translateY(-3px);
+    border-color: var(--stroke-strong);
+    box-shadow: 0 22px 46px rgba(1, 4, 14, 0.52);
+  }
+  .city-card:hover .city-photo,
+  .city-card:focus-visible .city-photo { transform: scale(1.04); }
+  .city-card:hover .city-chevron,
+  .city-card:focus-visible .city-chevron { transform: translateX(2px); color: var(--cyan-300); }
+}
+
+/* ----------------------------------------------------------------- grids ---
+ *
+ * One row of five on a wide desktop, three at 1024, two at 768, one on a phone. Every track is
+ * minmax(0, ...) so a long city name can never push the page sideways. */
+
+@media (min-width: 1320px) {
+  .city-cards { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .city-cards { grid-template-columns: minmax(0, 1fr); }
+  .city-card .city-head h3 { font-size: 1.06rem; }
+}
+
+/* ------------------------------------------------------- the city list cards ---
+ *
+ * The Cities page keeps its full readings - the ring, the five channels, the session
+ * sparkline - and gains the same image band, from the same builder as the Overview cards. */
+
+.zone-card {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.zone-card .zone-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 16px;
+}
+
+.zone-driver {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
+
+.zone-driver svg { color: var(--band-warning-text); }
+.zone-driver.muted { color: var(--slate-400); }
+
+/* ----------------------------------------------------------------- skeletons --- */
+
+.skel-card {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.skel-card .skel-photo {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 0;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.16) 0%, rgba(148, 163, 184, 0.30) 50%, rgba(148, 163, 184, 0.16) 100%);
+  background-size: 220% 100%;
+  animation: skel-sweep 1.6s ease-in-out infinite;
+}
+
+.skel-card .skel-title,
+.skel-card .skel-line {
+  margin-left: 18px;
+  margin-right: 18px;
+}
+
+.skel-card .skel-title { margin-top: 15px; }
+.skel-card .skel-line:last-child { margin-bottom: 17px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skel-card .skel-photo { animation: none; }
+  .city-card,
+  .city-card .city-photo,
+  .city-card .city-chevron { transition: none; }
+  .city-card:hover,
+  .city-card:focus-visible { transform: none; }
+  .city-card:hover .city-photo,
+  .city-card:focus-visible .city-photo { transform: none; }
+}

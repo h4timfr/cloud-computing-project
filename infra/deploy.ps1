@@ -83,7 +83,8 @@ param(
     [switch]$SkipAlerts,
     # Safety switches added by the hardening pass. Each one defaults to the *refusing* behaviour,
     # so the safe path is the one you get by doing nothing.
-    [switch]$DryRun,             # read and compare everything, print the writes it would make, change nothing
+    [switch]$DashboardOnly,       # re-upload web/ to S3 and verify it, and touch nothing else
+[switch]$DryRun,             # read and compare everything, print the writes it would make, change nothing
     [switch]$AllowDirtyTree,     # deploy even though src/, web/ or infra/ have uncommitted changes
     [switch]$AllowKeyDrift,      # deploy the env-file ingest key even though .floodpulse-key disagrees
     [switch]$KeepUnknownEnvVars  # keep variables that exist in AWS but not in the local env file
@@ -416,6 +417,81 @@ function Test-S3PublicReadStatement {
     return $false
 }
 
+# ------------------------------------------------------------------ dashboard assets --- #
+
+<#
+    The dashboard's fixed asset list, defined once and used by both the full deploy and the
+    front-end-only path (-DashboardOnly). Dropping a file into web/ does not upload it: adding a
+    row here does. Nothing else in web/ is published - the prepared originals, the misnamed
+    *.svg rasters and the design sources stay out of the bucket.
+
+    Cache policy: the four code files are `no-cache` because their names never change, and the
+    six images are `public, max-age=86400` - a day, not a year - for the same reason. A year of
+    `immutable` is only safe for content-hashed filenames, and these are not hashed, so a new
+    nightscape would never reach a returning visitor.
+#>
+function Get-DashboardAssets {
+    return @(
+        @{ File = 'index.html';                   Type = 'text/html; charset=utf-8';              Cache = 'no-cache' },
+        @{ File = 'styles.css';                   Type = 'text/css; charset=utf-8';               Cache = 'no-cache' },
+        @{ File = 'lib.js';                       Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'app.js';                       Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'bg-storm.webp';                Type = 'image/webp';                            Cache = 'public, max-age=86400' },
+        @{ File = 'chennai-nightscape.webp';      Type = 'image/webp';                            Cache = 'public, max-age=86400' },
+        @{ File = 'mumbai-nightscape.webp';       Type = 'image/webp';                            Cache = 'public, max-age=86400' },
+        @{ File = 'bengaluru-nightscape.webp';    Type = 'image/webp';                            Cache = 'public, max-age=86400' },
+        @{ File = 'hyderabad-nightscape.webp';    Type = 'image/webp';                            Cache = 'public, max-age=86400' },
+        @{ File = 'kochi-nightscape.webp';        Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+    )
+}
+
+<#
+    Uploads every asset in the list and then reads each object back, comparing the ETag with the
+    MD5 of the local file and the stored metadata with what was asked for. `s3 cp` is already
+    idempotent (an unchanged file uploads to the same ETag), so this stays safe to re-run: the
+    comparison is what proves the bytes on the website are the bytes in web/.
+
+    Neither the bucket nor its policy nor its website configuration is touched here: this
+    function only writes objects that already belong in the bucket.
+#>
+function Send-DashboardAssets {
+    foreach ($asset in Get-DashboardAssets) {
+        $source = Join-Path $webDir $asset.File
+        if (-not (Test-Path $source)) { Write-Fail "dashboard asset missing: $source" }
+        Invoke-AwsWrite s3 cp $source "s3://$DashboardBucket/$($asset.File)" `
+            --content-type $asset.Type --cache-control $asset.Cache | Out-Null
+        Write-OkApplied "uploaded $($asset.File) ($($asset.Type), $($asset.Cache))"
+    }
+    if ($DryRun) {
+        Write-DryRun 'the uploaded objects cannot be compared with web/ because nothing was written.'
+        return $true
+    }
+    $mismatches = @()
+    foreach ($asset in Get-DashboardAssets) {
+        $source = Join-Path $webDir $asset.File
+        $localMd5 = (Get-FileHash -Algorithm MD5 -Path $source).Hash.ToLower()
+        $localSize = (Get-Item $source).Length
+        $head = Invoke-AwsJson s3api head-object --bucket $DashboardBucket --key $asset.File
+        $etag = "$($head.ETag)".Trim('"').ToLower()
+        $deployedSize = [int64]$head.ContentLength
+        $type = "$($head.ContentType)"
+        $cache = "$($head.CacheControl)"
+        if ($etag -ne $localMd5 -or $deployedSize -ne $localSize) {
+            $mismatches += "$($asset.File): deployed $deployedSize B/$etag vs local $localSize B/$localMd5"
+        } elseif ($type -ne $asset.Type -or $cache -ne $asset.Cache) {
+            $mismatches += "$($asset.File): deployed $type / $cache, expected $($asset.Type) / $($asset.Cache)"
+        } else {
+            Write-Ok "$($asset.File): $([math]::Round($localSize / 1KB, 1)) KB, MD5 $localMd5, $type, $cache"
+        }
+    }
+    if ($mismatches.Count -gt 0) {
+        foreach ($line in $mismatches) { Write-Warn2 "  $line" }
+        Write-Fail 'the deployed dashboard objects do not match web/ - the site is serving something else than this tree.'
+    }
+    Write-Ok "all $((Get-DashboardAssets).Count) dashboard objects match web/ byte for byte"
+    return $true
+}
+
 # --------------------------------------------------------------------------- preflight --------------------------------------------------------------------------- #
 
 Write-Step "FloodPulse deploy (profile $Profile, region $Region)"
@@ -451,6 +527,30 @@ if ($dirtyTree) {
     Write-Warn2 '-AllowDirtyTree was passed: the working tree listed above is what this run deploys.'
 } else {
     Write-Ok 'working tree clean for src/, web/ and infra/'
+}
+
+# ------------------------------------------------------------------ front-end only path --- #
+
+if ($DashboardOnly) {
+    # A dashboard-and-images deploy, and nothing else. The Lambda package, the table, the API,
+    # the routes, the log groups and the alert topic are not read or written by this path: it
+    # exists so that publishing a stylesheet or a nightscape cannot become an excuse to ship a
+    # backend change, and so that reviewing "what went live today" has one honest answer.
+    Write-Step "FloodPulse front-end deploy only (profile $Profile, region $Region)"
+    if ($SkipDashboard) {
+        Write-Fail '-DashboardOnly and -SkipDashboard cancel each other out: there would be nothing to do.'
+    }
+    if (-not (Test-AwsResource s3api head-bucket --bucket $DashboardBucket)) {
+        Write-Fail "bucket '$DashboardBucket' does not exist. This path never creates one: run the full deploy once, or fix -DashboardBucket."
+    }
+    Write-Ok "bucket exists: s3://$DashboardBucket (left exactly as it is: no policy, no website, no lifecycle is touched)"
+    Send-DashboardAssets | Out-Null
+    Write-Step 'Front-end summary'
+    Write-Host "  dashboard   : http://$DashboardBucket.s3-website.$Region.amazonaws.com"
+    Write-Host "  objects     : $((Get-DashboardAssets).Count) uploaded, each verified against web/"
+    Write-Host '  untouched   : Lambda, API Gateway, DynamoDB, IAM, SNS, log groups'
+    Write-Ok 'front-end deploy complete'
+    exit 0
 }
 
 if (-not (Test-AwsResource iam get-role --role-name $RoleName)) {
@@ -1112,24 +1212,13 @@ if ($SkipDashboard) {
     Invoke-AwsWrite s3api put-bucket-website --bucket $DashboardBucket --website-configuration "file://$websitePath" | Out-Null
     Write-OkApplied 'static website hosting enabled (index.html)'
 
-    # The list is deliberately fixed: five objects, nothing else in web/ is uploaded. Prepared card
-    # images and icons live there too (see README, "Image assets"), and adding one to this list is
-    # a deliberate act, not a side effect of dropping a file into the directory.
-    # Sizes as of 2026-10-18: code 357.7 KB + backdrop 58.8 KB = 416.5 KB per visit.
-    $assets = @(
-        @{ File = 'index.html';    Type = 'text/html; charset=utf-8';              Cache = 'no-cache' },
-        @{ File = 'styles.css';    Type = 'text/css; charset=utf-8';               Cache = 'no-cache' },
-        @{ File = 'lib.js';        Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
-        @{ File = 'app.js';        Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
-        @{ File = 'bg-storm.webp'; Type = 'image/webp';                            Cache = 'public, max-age=86400' }
-    )
-    foreach ($asset in $assets) {
-        $source = Join-Path $webDir $asset.File
-        if (-not (Test-Path $source)) { Write-Fail "dashboard asset missing: $source" }
-        Invoke-AwsWrite s3 cp $source "s3://$DashboardBucket/$($asset.File)" `
-            --content-type $asset.Type --cache-control $asset.Cache | Out-Null
-        Write-OkApplied "uploaded $($asset.File) ($($asset.Type))"
-    }
+    # The list is deliberately fixed: ten objects, nothing else in web/ is uploaded. Prepared card
+    # images and icons live there too (see README, "Image assets"), and adding one to this list -
+    # Get-DashboardAssets, shared with the -DashboardOnly path - is a deliberate act, not a side
+    # effect of dropping a file into the directory.
+    # Sizes as of 2026-10-18: code 370.1 KB + backdrop 58.8 KB = 428.9 KB per visit, plus 182.7 KB
+    # of card imagery as the cards come into view.
+    Send-DashboardAssets | Out-Null
     $dashboardReady = $true
     $dashboardUrl = "http://$DashboardBucket.s3-website.$Region.amazonaws.com"
     Write-Ok "dashboard: $dashboardUrl"

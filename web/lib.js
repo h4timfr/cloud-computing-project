@@ -850,7 +850,7 @@
     );
   }
 
-  function renderZoneCard(zone) {
+  function renderZoneCard(zone, options) {
     // A null element in the array (a malformed payload, or a hand-edited fixture) must not
     // throw inside the poll's .then, which would stop the dashboard updating entirely.
     if (!zone || typeof zone !== 'object') return '';
@@ -859,6 +859,14 @@
     var rows = METRIC_ORDER.map(function (metric) {
       return renderMetricRow(zone, metric);
     }).join('');
+    // The one thing a card of numbers cannot say for itself: which channel moved the score, in
+    // words. It used to sit on the Overview card; the Overview is now five photographs and five
+    // answers, so the sentence lives here, where the numbers that explain it already are.
+    var summary = plainRiskSummary(zone);
+    var driverLine = summary.driverLabel
+      ? '<p class="zone-driver" data-f="driver-sentence">' + icon('rain', 15) +
+        '<span>' + escapeHtml(summary.driverLabel) + ' is the main factor behind this score.</span></p>'
+      : '<p class="zone-driver muted" data-f="driver-sentence">Not enough data for a driver yet.</p>';
 
     var statusBlock = latest
       ? '<div class="zone-score">' +
@@ -882,6 +890,10 @@
 
     return (
       '<article class="card zone-card band-' + band + (latest ? '' : ' is-empty') + '" data-zone="' + escapeHtml(zone.zone_id) + '">' +
+      // The same band of imagery the Overview card uses, from the same one mapping: the city list
+      // and the city grid should not show the same city two different ways.
+      cityThumb(zone, { eager: !!(options && options.eager) }) +
+      '<div class="zone-body">' +
       '<header class="zone-head">' +
       '<div class="zone-title">' +
       // The card lifts on hover and on focus, so it has to be a real target: this list used
@@ -895,6 +907,7 @@
       '</div>' +
       '<span class="pill band-' + band + '" data-f="risk_class">' + escapeHtml(classLabel(latest ? latest.risk_class : null)) + '</span>' +
       '</header>' +
+      driverLine +
       statusBlock +
       '<ul class="metrics" data-f="metrics">' + rows + '</ul>' +
       (latest
@@ -911,6 +924,7 @@
           '<a class="zone-link" href="#/cities/' + escapeHtml(zone.zone_id) + '">' + escapeHtml(zone.name) +
           ' page</a>, under "Technical details".</p>'
         : '') +
+      '</div>' +
       '</article>'
     );
   }
@@ -1585,55 +1599,53 @@
       escapeHtml(classLabel(riskClass)) + '</span>';
   }
 
-  /* Overview card: enough to answer "is this city okay?" and nothing more.
+  /* Overview card: visual navigation, not a mini technical dashboard.
    *
-   * Reading order is deliberate: name and band first (the answer), then the score, then the two
-   * numbers people ask about next (rain and how wet the ground is), then the driver, then how
-   * old the reading is. The provenance chip sits with the values it describes, not in a legend. */
+   * Reading order is deliberate: the city's own nightscape, then its name, then the band in words
+   * (the answer), then the score and the meter, then the one line a reader asks next - rain, and
+   * how old the reading is. The headline sentence, the driver, the other channels and the
+   * provenance chips are all one click away on the city view, which is where somebody who wants
+   * them is going anyway; a card carrying them too stops being something you scan. */
   function cityStatusCard(zone, options) {
     // Same rule as cityDetail: a missing or malformed entry renders nothing instead of
     // throwing, so one bad element cannot stop the fleet grid from being drawn.
     if (!zone || typeof zone !== 'object') return '';
     var latest = zone && zone.latest;
     var band = bandKey(latest ? latest.risk_class : null);
-    var summary = plainRiskSummary(zone);
     var freshness = latest ? ageLabel(latest.age_seconds) : 'no reading';
     // the card's own words follow the fleet's mode: a simulated zone is never a "city"
     var noun = (options && options.noun) || 'city';
     var stale = !!(options && options.staleZoneIds && options.staleZoneIds.indexOf(zone.zone_id) >= 0);
-    var driver = summary.driverLabel
-      ? '<span class="city-driver" data-f="top_driver">' + icon('rain', 15) + '<span>' +
-        escapeHtml(summary.driverLabel) + ' is the main factor</span></span>'
-      : '<span class="city-driver muted">Not enough data for a driver yet</span>';
-    var sources = zoneSources(zone);
-    var provenance = sources.map(function (tag) { return sourceChip(tag); }).join('');
+    // Which data is this? The card answers it in its own corner, as it always has: the fleet
+    // banner says what the payload is, and each card repeats the provenance of the numbers on it,
+    // because a page that shows a live number beside a simulated one has to say which is which.
+    var provenance = zoneSources(zone).map(function (tag) { return sourceChip(tag); }).join('');
     return (
       '<a class="card city-card band-' + band + (latest ? '' : ' is-empty') + (stale ? ' is-stale' : '') +
         '" data-zone="' + escapeHtml(zone.zone_id) + '" data-band="' + escapeHtml(band) +
         '" href="' + escapeHtml(hashFor('city', zone.zone_id)) + '" aria-label="' + escapeHtml(zone.name) + ' ' +
         escapeHtml(noun) + ' detail">' +
+        cityThumb(zone, { eager: !!(options && options.eager) }) +
+        '<div class="city-body">' +
         '<header class="city-head">' +
-        cityThumb(zone) +
         '<h3 data-f="zone_name">' + escapeHtml(zone.name) + '</h3>' +
-        bandPill(latest ? latest.risk_class : null) +
+        '<span class="city-chevron" aria-hidden="true">' + CITY_ARROW + '</span>' +
         '</header>' +
-        '<p class="city-headline" data-f="headline">' + escapeHtml(summary.short) + '</p>' +
+        '<p class="city-band-line">' + bandPill(latest ? latest.risk_class : null) + '</p>' +
         '<div class="city-figures">' +
         '<span class="city-score" data-f="risk_score">' + escapeHtml(formatScore(latest ? latest.risk_score : null)) + '</span>' +
         '<span class="city-score-unit">risk score</span>' +
         (latest ? trendIcon(latest.trend, 'city-trend') : '') +
         '</div>' +
         cityMeter(zone) +
-        '<div class="city-measures">' +
+        '<p class="city-sub">' +
         metricFigure(zone, 'rainfall_mm_per_hr', 'figure-rainfall') +
-        metricFigure(zone, 'soil_saturation_pct', 'figure-soil') +
+        '<span class="city-sub-age" data-f="age">' + icon('clock', 15) +
+        '<span>Updated ' + escapeHtml(freshness) + (stale ? ' · not reporting' : '') + '</span></span>' +
+        (provenance ? '<span class="city-provenance" data-f="provenance">' +
+          '<span class="sr-only">Data sources on this card:</span>' + provenance + '</span>' : '') +
+        '</p>' +
         '</div>' +
-        '<p class="city-meta">' + driver + '</p>' +
-        '<p class="city-meta muted" data-f="age">' + icon('clock', 15) +
-        '<span>Updated ' + escapeHtml(freshness) + (stale ? ' · not reporting' : '') + '</span></p>' +
-        (provenance ? '<p class="city-provenance" data-f="provenance">' +
-          '<span class="sr-only">Data sources on this card:</span>' + provenance + '</p>' : '') +
-        '<span class="city-more">Open ' + escapeHtml(noun) + CITY_ARROW + '</span>' +
         '</a>'
     );
   }
@@ -2118,6 +2130,7 @@
       // indistinguishable from data to anything reading the page (a screen reader, a harness, or
       // a user whose connection is slow). The skeleton has its own shape and its own class.
       cards += '<div class="skel-card" aria-hidden="true">' +
+        '<span class="skel skel-photo"></span>' +
         '<span class="skel skel-title"></span>' + skeletonLines(2) + '</div>';
     }
     // `data-f="loading"` survives from the first version of this page: the harnesses look for it
@@ -2474,14 +2487,56 @@
     return fleet + ' All are currently below the alert level.';
   }
 
-  /* An abstract thumbnail for a city card. There is no licensed photograph of these cities in
-   * the repository and none may be fetched, so the card carries a drawn plate: a gradient whose
-   * hue follows the city's band, with the local skyline-and-water glyph on top. Decorative. */
-  function cityThumb(zone, size) {
+  /* City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a file beside
+   * this one in web/.
+   *
+   * It is a lookup table and deliberately not a derived path. A path assembled from API text would
+   * let anything that can choose a zone_id address any file on the site - and if such a value ever
+   * reached a src, anywhere else. An unknown id therefore gets no image at all rather than a guess,
+   * and the card keeps the drawn plate, so the layout never depends on the mapping growing.
+   *
+   * The five files are the ones prepared by the asset pass (README, "Image assets"). The seven
+   * files named *.svg in that directory are PNG payloads with the wrong extension: they are
+   * deliberately NOT referenced here, and the icon system stays the inline SVG in this file. */
+  var CITY_IMAGES = {
+    'city-chennai': 'chennai-nightscape.webp',
+    'city-mumbai': 'mumbai-nightscape.webp',
+    'city-bengaluru': 'bengaluru-nightscape.webp',
+    'city-hyderabad': 'hyderabad-nightscape.webp',
+    'city-kochi': 'kochi-nightscape.webp'
+  };
+
+  /* The image for a zone, or null when this zone has none. Exported so a check can assert both the
+   * mapping and that every mapped file really exists, without re-implementing the table. */
+  function cityImageFor(zone) {
+    var id = zone && zone.zone_id;
+    if (typeof id !== 'string') return null;
+    return Object.prototype.hasOwnProperty.call(CITY_IMAGES, id) ? CITY_IMAGES[id] : null;
+  }
+
+  /* One image band for every city card - the Overview grid and the Cities page both call this, so
+   * the imagery is a single implementation rather than two that drift.
+   *
+   * It is decorative: the card names the city in text and labels itself for assistive tech, so the
+   * image is alt="" and the band is aria-hidden. A reader hears "Chennai city detail", never
+   * "Chennai Chennai city Chennai image", and the risk level never depends on the photograph.
+   *
+   * The first cards of a grid are left to the browser's default eager loading - they are the ones
+   * on screen - and the rest are `loading="lazy"`: native behaviour, no script of ours involved.
+   * A zone with no mapped image keeps the drawn plate, band-tinted, so the card shape is constant. */
+  function cityThumb(zone, options) {
     var latest = zone && zone.latest;
     var band = bandKey(latest ? latest.risk_class : null);
+    var src = cityImageFor(zone);
+    var eager = !!(options && options.eager);
+    var inner = src
+      // width/height are the 16:9 layout box the band is sized to, not the file's own pixels: they
+      // reserve the space before the image arrives, and object-fit: cover does the fitting.
+      ? '<img class="city-photo" src="' + escapeHtml(src) + '" alt="" width="800" height="450" ' +
+        (eager ? '' : 'loading="lazy" ') + 'decoding="async">'
+      : icon('city', (options && options.size) || 24);
     return '<span class="city-thumb band-' + band + '" data-band="' + escapeHtml(band) +
-      '" aria-hidden="true">' + icon('city', size || 24) + '</span>';
+      '" aria-hidden="true">' + inner + '</span>';
   }
 
   /* A short progress meter for the risk score: the fill is the score, the ticks are the
@@ -2645,6 +2700,10 @@
     renderIncidents: renderIncidents,
     renderMetricRow: renderMetricRow,
     renderZoneCard: renderZoneCard,
+    // The city image mapping is exported as data plus one lookup, so a check can assert the
+    // mapping itself and that every mapped file is really in web/ - without rebuilding the table.
+    cityImageFor: cityImageFor,
+    CITY_IMAGES: CITY_IMAGES,
     renderRanking: renderRanking,
     sourceMeta: sourceMeta,
     sourceChip: sourceChip,
