@@ -75,6 +75,10 @@ LIVE_SOURCE = "open-meteo-live"
 SENSOR_NODE_PREFIX = "open-meteo"
 NO_CACHE = "no_cache"
 DISABLED = "disabled"
+# How often the provider produces the observation we read: Open-Meteo's hourly precipitation and
+# soil-moisture series. Published in the payload so a viewer can tell a fresh fetch of an hourly
+# observation apart from a provider that has stopped reporting.
+WEATHER_OBSERVATION_INTERVAL_SECONDS = 3600.0
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -325,6 +329,34 @@ def _age_from(cache: Mapping[str, Any] | None, now_epoch: float, field: str) -> 
     if not isinstance(recorded, (int, float)) or isinstance(recorded, bool):
         return None
     return max(0.0, float(now_epoch) - float(recorded))
+
+
+def observation_age_seconds(cache: Mapping[str, Any] | None, now_epoch: float) -> float | None:
+    """Seconds since the moment the provider *observed* the weather it reported.
+
+    Deliberately separate from :func:`cache_age_seconds`: Open-Meteo reports hourly
+    precipitation, so a fetch can be a minute old while the rain it describes fell 55
+    minutes ago. Collapsing the two would let a fresh fetch masquerade as fresh rain.
+    """
+    return _age_from(cache, now_epoch, "observed_at_epoch")
+
+
+def observation_is_current(
+    age_seconds: float | None,
+    *,
+    interval_seconds: float = WEATHER_OBSERVATION_INTERVAL_SECONDS,
+    refresh_seconds: float = WEATHER_REFRESH_SECONDS,
+) -> bool | None:
+    """True when the observation is no older than one provider interval plus one refresh.
+
+    ``None`` when there is no observation to judge. Anything older means the provider did not
+    produce the observation we expect next, which is worth saying out loud; it does *not* mean
+    the stored value is wrong, so callers must not treat it as a failure.
+    """
+    if age_seconds is None:
+        return None
+    budget = max(0.0, float(interval_seconds)) + max(0.0, float(refresh_seconds))
+    return float(age_seconds) <= budget
 
 
 def needs_refresh(cache: Mapping[str, Any] | None, now_epoch: float, refresh_seconds: float) -> bool:
@@ -580,6 +612,8 @@ def weather_view(
     zones = weather_zones(mode, env)
     ages: dict[str, int | None] = {}
     attempts: dict[str, int | None] = {}
+    observations: dict[str, int | None] = {}
+    current: dict[str, bool | None] = {}
     failed: dict[str, str | None] = {}
     ok: dict[str, bool | None] = {}
     for zone in zones:
@@ -587,8 +621,11 @@ def weather_view(
         cache = caches.get(zone_id)
         age = cache_age_seconds(cache, now_epoch)
         attempt = attempt_age_seconds(cache, now_epoch)
+        observation = observation_age_seconds(cache, now_epoch)
         ages[zone_id] = None if age is None else int(age)
         attempts[zone_id] = None if attempt is None else int(attempt)
+        observations[zone_id] = None if observation is None else int(observation)
+        current[zone_id] = observation_is_current(observation, refresh_seconds=refresh_seconds)
         failed[zone_id] = (cache or {}).get("last_attempt_error")
         ok[zone_id] = (cache or {}).get("last_attempt_ok")
     # With no live zone there is no provider reading anywhere in the fleet, so the block must
@@ -602,7 +639,14 @@ def weather_view(
         "enabled": live,
         "refresh_seconds": int(refresh_seconds),
         "live_zones": [str(zone["zone_id"]) for zone in zones],
+        # freshness contract, stated once for the whole fleet:
+        #   cache_age_seconds       - age of the values FloodPulse fetched
+        #   observation_age_seconds - age of the provider observation those values describe
+        #   last_attempt_age_seconds- when the provider was last called (ok or not)
         "cache_age_seconds": ages,
+        "observation_age_seconds": observations,
+        "observation_interval_seconds": int(WEATHER_OBSERVATION_INTERVAL_SECONDS),
+        "observation_is_current": current,
         "last_attempt_age_seconds": attempts,
         "last_attempt_error": failed,
         # per zone, like the per-zone blocks: did the last provider attempt succeed?
@@ -618,6 +662,7 @@ __all__ = [
     "LIVE_SOURCE",
     "NO_CACHE",
     "RefreshOutcome",
+    "WEATHER_OBSERVATION_INTERVAL_SECONDS",
     "attempt_age_seconds",
     "build_live_metrics",
     "build_live_reading_payload",
@@ -632,6 +677,8 @@ __all__ = [
     "hydraulic_water_level_m",
     "iso_utc",
     "needs_refresh",
+    "observation_age_seconds",
+    "observation_is_current",
     "refresh_live_weather",
     "sensor_node_id_for",
     "weather_view",

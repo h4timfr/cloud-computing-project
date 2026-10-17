@@ -76,9 +76,12 @@ from .config import (
     zone_mode_for_env,
 )
 from .live_weather import (
+    WEATHER_OBSERVATION_INTERVAL_SECONDS,
     RefreshOutcome,
     attempt_age_seconds,
     cache_age_seconds,
+    observation_age_seconds,
+    observation_is_current,
     refresh_live_weather,
     weather_view,
 )
@@ -115,7 +118,6 @@ from .storage import (
     WriteOutcome,
 )
 from .validation import ValidationError, validate_body_size, validate_reading
-
 LOGGER = logging.getLogger("floodpulse.handler")
 
 
@@ -209,6 +211,34 @@ def _utc_iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _iso_epoch(value: Any) -> float | None:
+    """Parse an ISO-8601 instant, returning ``None`` for anything that is not one.
+
+    Stored items are not trusted to hold a well-formed timestamp: a hand-edited item or an
+    older shape must degrade to "age unknown" rather than break the whole fleet response.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _provider_observation_age_seconds(latest: Mapping[str, Any], now_epoch: float) -> int | None:
+    """Age of the provider observation a stored reading describes, or ``None`` if there is none."""
+    observed = _iso_epoch(latest.get("provider_observed_at"))
+    if observed is None:
+        return None
+    return max(0, int(now_epoch) - int(observed))
+
+
 # Media types accepted on ``POST /readings``. A *missing* header is accepted on purpose:
 # ``curl``, ``urllib`` and several AWS SDKs send no content type, and rejecting those would
 # break the documented tools. A header that is present and plainly is not JSON (a browser
@@ -253,6 +283,11 @@ def _reject_content_type(content_type: str | None) -> tuple[int, dict[str, Any]]
 # --------------------------------------------------------------------------- #
 # Incidence tracking and alerting (M3)
 # --------------------------------------------------------------------------- #
+
+# The incident transitions worth a log line each: what was opened, escalated or closed, for
+# which zone, under which severity. ACTION_NONE is deliberately absent - a quiet reading that
+# changed nothing must not write a log line per poll, which is most readings.
+JOURNAL_ACTIONS = frozenset({ACTION_OPENED, ACTION_ESCALATED, ACTION_CLOSED})
 
 
 def _incident_summary(
@@ -630,6 +665,26 @@ def _ingest_record(
         }
         alert_summary = {"evaluated": False, "published": False, "severity": None, "reason": "tracking_failed"}
 
+    # One line per incident lifecycle transition, and nothing at all for a reading that changed
+    # no incident state: the incident log is the first thing to read when the fleet does
+    # something unexpected, and it must not be buried under a line per accepted reading.
+    action = str(incident_summary.get("action"))
+    if action in JOURNAL_ACTIONS:
+        LOGGER.info(
+            "incident_%s zone_id=%s severity=%s status=%s risk_class=%s observed_at=%s "
+            "reason=%s alert_published=%s",
+            action,
+            zone_id,
+            incident_summary.get("severity"),
+            incident_summary.get("current_status"),
+            hysteresis.get("risk_class"),
+            _utc_iso(int(reading["ts_epoch"])),
+            _brief(incident_summary.get("reason")),
+            alert_summary.get("published"),
+        )
+    elif action == "tracking_failed":
+        LOGGER.warning("incident_tracking_failed zone_id=%s", zone_id)
+
     return IngestResult(
         latest=latest,
         history=history,
@@ -745,8 +800,10 @@ def _zone_view(
     *,
     mode: str | None = None,
     weather_cache: Mapping[str, Any] | None = None,
+    refresh_seconds: float | None = None,
 ) -> dict[str, Any]:
     resolved_mode = zone_mode_for_env({}) if mode is None else mode
+    resolved_refresh = WEATHER_REFRESH_SECONDS if refresh_seconds is None else refresh_seconds
     sources = METRIC_SOURCES_LIVE if resolved_mode == ZONE_MODE_LIVE else METRIC_SOURCES_SIMULATED
     view: dict[str, Any] = {
         "zone_id": zone["zone_id"],
@@ -765,12 +822,27 @@ def _zone_view(
     if weather_cache is not None:
         age = cache_age_seconds(weather_cache, now_epoch)
         attempt = attempt_age_seconds(weather_cache, now_epoch)
+        observation = observation_age_seconds(weather_cache, now_epoch)
         view["weather"] = {
             "provider": weather_cache.get("provider", WEATHER_PROVIDER),
             "observed_at": weather_cache.get("observed_at"),
             "provider_current_time": weather_cache.get("provider_current_time"),
             "fetched_at": weather_cache.get("fetched_at"),
             "cache_age_seconds": None if age is None else int(age),
+            # Three different ages, named so they cannot be confused with each other:
+            #   cache_age_seconds       - when FloodPulse last fetched from the provider
+            #   observation_age_seconds - how old the observation the provider returned is
+            #   last_attempt_age_seconds- when the provider was last called, successfully or not
+            # A fetch can be seconds old while the observation inside it is an hour old (that is
+            # how an hourly provider works), so "fresh fetch" is never presented as "fresh rain".
+            "observation_age_seconds": None if observation is None else int(observation),
+            "observation_interval_seconds": int(WEATHER_OBSERVATION_INTERVAL_SECONDS),
+            # Is the observation the provider gave us the one we should expect by now? False
+            # means the provider is behind its own cadence - worth stating, never a failure.
+            "observation_is_current": observation_is_current(
+                observation,
+                refresh_seconds=WEATHER_REFRESH_SECONDS if resolved_refresh is None else resolved_refresh,
+            ),
             # bookkeeping for the last attempt: a failed fetch is reported per zone, and the
             # age of the failed attempt explains why a poll did not call the provider again
             "last_attempt_at": weather_cache.get("last_attempt_at"),
@@ -815,6 +887,13 @@ def _zone_view(
         # always accurate rather than optimistic.
         "metric_sources": dict(latest.get("metric_sources") or METRIC_SOURCES_SIMULATED),
         "provider_observed_at": latest.get("provider_observed_at"),
+        # The age of the provider observation behind this reading, when there is one. The reading
+        # itself is stamped when FloodPulse computed it, so a live card can read "3 min old"
+        # while the rain it describes fell 55 minutes ago - both facts, named separately, and
+        # never merged into one number that would have to lie about one of them.
+        "provider_observation_age_seconds": _provider_observation_age_seconds(latest, now_epoch),
+        # The zone's own staleness threshold, so a viewer never has to know it from the docs.
+        "stale_after_seconds": STALE_READING_SECONDS,
         "sensor_node_id": latest["sensor_node_id"],
         "timestamp": latest["timestamp"],
         "ts_epoch": latest["ts_epoch"],
@@ -841,6 +920,7 @@ def _zone_view_safely(
     *,
     mode: str,
     weather_cache: Mapping[str, Any] | None,
+    refresh_seconds: float | None = None,
 ) -> dict[str, Any]:
     """One zone's view, isolated: a failing read degrades that zone, never the fleet."""
     zone_id = str(zone["zone_id"])
@@ -849,7 +929,14 @@ def _zone_view_safely(
     except Exception as exc:  # noqa: BLE001 - one unreadable zone must not blank the board
         LOGGER.warning("readings.latest_failed zone_id=%s error=%s", zone_id, type(exc).__name__)
         latest = None
-    return _zone_view(zone, latest, now_epoch, mode=mode, weather_cache=weather_cache)
+    return _zone_view(
+        zone,
+        latest,
+        now_epoch,
+        mode=mode,
+        weather_cache=weather_cache,
+        refresh_seconds=refresh_seconds,
+    )
 
 
 def _apply_zone_mode(store: Any, env: Mapping[str, str] | None) -> tuple[str, tuple[dict[str, Any], ...]]:
@@ -972,6 +1059,9 @@ def _handle_zones(
 ) -> tuple[int, dict[str, Any]]:
     definitions = zones if zones is not None else ZONE_DEFINITIONS
     active_mode = mode if mode is not None else zone_mode_for_env(env)
+    # The configured provider cadence is part of the freshness contract published below: a zone
+    # block states how old its provider observation is, and whether that is still on schedule.
+    refresh_seconds = _weather_refresh_seconds(env)
 
     outcome, caches = _refresh_weather(
         store,
@@ -990,6 +1080,7 @@ def _handle_zones(
             now_epoch,
             mode=active_mode,
             weather_cache=caches.get(str(zone["zone_id"])),
+            refresh_seconds=refresh_seconds,
         )
         for zone in definitions
     ]

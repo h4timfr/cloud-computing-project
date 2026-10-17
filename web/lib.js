@@ -1564,6 +1564,8 @@
       '<div><dt>Model</dt><dd>' + escapeHtml((latest && latest.model) || 'heuristic-v1') + '</dd></div>' +
       '<div><dt>Zone id</dt><dd><code>' + escapeHtml(zone.zone_id) + '</code></dd></div>' +
       '</dl>' +
+      // the four clocks behind the one number on the card, folded away with the rest
+      freshnessRows(zone) +
       '<div class="table-scroll" tabindex="0" role="group" aria-label="Per-metric detail, scrollable">' +
       '<table class="tech-table">' +
       '<caption>Per-metric value, configured limits and weighted contribution to the heuristic score</caption>' +
@@ -1577,6 +1579,56 @@
       escapeHtml(grouped.map(function (entry) { return entry.label + ' = ' + entry.count; }).join(' · ') || 'unknown') + '</p>' +
       '</details>'
     );
+  }
+
+  /* The four different clocks behind one number, named so they cannot be confused.
+   *
+   * A live reading is stamped when FloodPulse computed it, but the rain it describes was
+   * observed by the provider up to an hour earlier, and the fetch that brought it may itself
+   * be minutes old. Showing one age and calling it "updated now" hides two of the three. */
+  function freshnessRows(zone) {
+    var latest = (zone && zone.latest) || null;
+    var weather = (zone && zone.weather) || null;
+    var rows = [];
+    function row(label, value, note) {
+      rows.push(
+        '<div><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(value) +
+        (note ? ' <span class="muted">' + escapeHtml(note) + '</span>' : '') + '</dd></div>'
+      );
+    }
+    if (latest) {
+      row('Reading age', ageLabel(latest.age_seconds), latest.sensor_node_id ? 'from ' + latest.sensor_node_id : '');
+      if (latest.stale_after_seconds !== undefined && latest.stale_after_seconds !== null) {
+        row('Reading counts as stale after', formatDuration(latest.stale_after_seconds));
+      }
+      var observationAge = toNumber(latest.provider_observation_age_seconds);
+      if (observationAge === null) {
+        row('Provider observation', 'this reading was not derived from the weather provider');
+      } else {
+        row('Provider observation age', ageLabel(observationAge),
+          'the provider reports hourly, so this is expected to lag the reading');
+      }
+    }
+    if (weather) {
+      if (weather.cache_age_seconds !== undefined && weather.cache_age_seconds !== null) {
+        row('Weather fetched', ageLabel(weather.cache_age_seconds));
+      }
+      var providerObservation = toNumber(weather.observation_age_seconds);
+      if (providerObservation !== null) {
+        var schedule = '';
+        if (weather.observation_is_current === false) schedule = 'behind the provider own schedule';
+        else if (weather.observation_is_current === true) schedule = 'on schedule';
+        row('Weather observed by provider', ageLabel(providerObservation), schedule);
+      }
+      var interval = toNumber(weather.observation_interval_seconds);
+      if (interval !== null) row('Provider reporting interval', formatDuration(interval));
+      if (weather.last_attempt_age_seconds !== undefined && weather.last_attempt_age_seconds !== null) {
+        row('Last provider call', ageLabel(weather.last_attempt_age_seconds),
+          weather.last_attempt_ok === false ? 'failed' : '');
+      }
+    }
+    if (!rows.length) return '';
+    return '<dl class="kv tech-kv" data-f="freshness">' + rows.join('') + '</dl>';
   }
 
   /* Alerts: what is happening now, then what has already been resolved. */
@@ -1830,6 +1882,7 @@
     feedStatus: feedStatus,
     feedState: feedState,
     freshnessLine: freshnessLine,
+    freshnessRows: freshnessRows,
     refreshCountdown: refreshCountdown,
     agePhrase: agePhrase,
     sparklinePath: sparklinePath,

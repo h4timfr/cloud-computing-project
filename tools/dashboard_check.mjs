@@ -1563,6 +1563,60 @@ check('malformed list entries are ignored, not thrown on', () => {
   assert.doesNotThrow(() => FP.cityDetail(null, { noun: 'city' }), 'cityDetail threw on a null zone');
 });
 
+check('the freshness contract names every clock it measures', () => {
+  // The backend publishes four different times behind one risk score. If the detail view shows
+  // one age and calls it "updated", a viewer reads fresh rain where there is an hour-old
+  // observation - so each clock is named, and a reading with no provider observation says so.
+  const base = {
+    zone_id: 'city-chennai', name: 'Chennai', zone_mode: 'live_weather', thresholds: {},
+    metric_sources: { rainfall_mm_per_hr: 'REAL' },
+    latest: {
+      risk_score: 0.4, risk_class: 'WATCH', risk_class_candidate: 'WATCH', sequence: 9,
+      timestamp: '2026-10-17T02:00:00Z', ts_epoch: 1, age_seconds: 120,
+      sensor_node_id: 'open-meteo-chennai',
+      provider_observation_age_seconds: 3300,
+      stale_after_seconds: 1800,
+      readings: { rainfall_mm_per_hr: 1.2 }, smoothed_readings: { rainfall_mm_per_hr: 1.2 },
+      contributions: [], top_drivers: ['rainfall_mm_per_hr'], trend: {}, explanation: 'because'
+    },
+    weather: {
+      provider: 'open-meteo', cache_age_seconds: 30, observation_age_seconds: 3300,
+      observation_interval_seconds: 3600, observation_is_current: true,
+      last_attempt_age_seconds: 30, last_attempt_ok: true
+    }
+  };
+  const rows = FP.freshnessRows(base);
+  assert.ok(rows.length > 0, 'no freshness rows were rendered');
+  assert.match(rows, /Reading age/, 'the reading age is not named');
+  assert.match(rows, /Provider observation age/, 'the provider observation age is not named');
+  assert.match(rows, /Weather observed by provider/, 'the provider observation age of the feed is not named');
+  assert.match(rows, /Provider reporting interval/, 'the provider cadence is not stated');
+  assert.match(rows, /on schedule/, 'a healthy provider observation was not reported as on schedule');
+  assert.ok(!/undefined/.test(rows), 'a freshness row rendered "undefined"');
+
+  const late = FP.freshnessRows({ ...base, weather: { ...base.weather, observation_is_current: false } });
+  assert.match(late, /behind the provider own schedule/, 'a late observation was not flagged');
+
+  const simulated = FP.freshnessRows({
+    ...base,
+    latest: { ...base.latest, provider_observation_age_seconds: null, stale_after_seconds: null },
+    weather: null
+  });
+  assert.match(simulated, /was not derived from the weather provider/,
+    'a reading with no provider observation did not say so');
+  assert.ok(!/undefined/.test(simulated), 'a simulated reading rendered "undefined"');
+
+  // A payload that predates the field must still render a complete block, not a broken one.
+  const legacy = JSON.parse(JSON.stringify(base));
+  delete legacy.latest.provider_observation_age_seconds;
+  delete legacy.latest.stale_after_seconds;
+  delete legacy.weather.observation_age_seconds;
+  const legacyRows = FP.freshnessRows(legacy);
+  assert.ok(legacyRows.length > 0 && !/undefined/.test(legacyRows), 'a legacy payload broke the detail view');
+  assert.doesNotThrow(() => FP.freshnessRows(null), 'freshnessRows threw on a missing zone');
+  assert.equal(FP.freshnessRows(null), '', 'a missing zone rendered freshness rows');
+});
+
 check('the phone layout replaces the links with a menu that is styled for it', () => {
   assert.match(cssSource, /\.sr-only\s*\{/, 'there is no screen-reader-only class for the menu button label');
   assert.match(htmlSource, /<span class="sr-only">/, 'the menu button has no readable label');
