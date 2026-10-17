@@ -213,6 +213,28 @@ class ResourceSelectionTests(ScriptText):
         self.assertEqual(offenders, [], "a call site wraps the list helper in @()")
 
 
+class SubscriptionRouteTests(ScriptText):
+    """The public subscribe route, and the permission it must NOT be granted by a deploy."""
+
+    def test_the_route_is_deployed(self) -> None:
+        self.assertIn("'POST /subscriptions'", self.raw, "the subscribe route is never created")
+
+    def test_the_permission_it_needs_is_not_granted_automatically(self) -> None:
+        # The inline policy is the Publish-only statement, and the manual approval for
+        # sns:Subscribe is a comment. If a later edit puts Subscribe in the policy document,
+        # a routine deploy would widen the execution role - which is exactly what must not
+        # happen without the project owner saying so.
+        publish = self.raw.index("Sid      = 'PublishOnlyToTheFloodPulseAlertTopic'")
+        window = self.raw[publish : publish + 400]
+        self.assertIn("Action   = 'sns:Publish'", window)
+        self.assertNotIn("sns:Subscribe", window)
+        self.assertNotIn("sns:*", self.raw)
+
+    def test_the_manual_step_is_documented_where_it_is_needed(self) -> None:
+        self.assertIn("NOT APPLIED HERE ON PURPOSE", self.raw)
+        self.assertIn("sns:Subscribe", self.raw)
+
+
 class PostDeploymentTests(ScriptText):
     def test_the_deployed_code_is_verified_at_the_end_of_a_run(self) -> None:
         self.assertIn("verify_deployed_code.py", self.raw,

@@ -49,6 +49,14 @@ class NoopNotifier:
     def publish(self, subject: str, message: str) -> dict[str, Any]:
         return {"published": False, "reason": self.reason}
 
+    def subscribe_email(self, address: str) -> dict[str, Any]:
+        """No topic is configured, so no subscription can be requested.
+
+        Reported as ``not_configured`` rather than raised: the route turns it into "we
+        couldn't create the subscription request right now", which is exactly true.
+        """
+        return {"requested": False, "reason": self.reason}
+
 
 class SnsNotifier:
     """Publishes one message per alert to a single SNS topic."""
@@ -87,6 +95,38 @@ class SnsNotifier:
             }
         return {"published": True, "message_id": str(response.get("MessageId") or "")}
 
+    def subscribe_email(self, address: str) -> dict[str, Any]:
+        """Ask SNS to subscribe one email address to this topic.
+
+        The topic and the protocol are fixed here, in trusted code: neither is a parameter,
+        so no request can reach this call with a topic or a protocol of its choosing. The
+        returned ARN is *not* reported back to the caller - whether the address was new,
+        already pending or already confirmed is exactly what the endpoint must not reveal -
+        so only the outcome (requested / refused) leaves this method.
+
+        ``ReturnSubscriptionArn=True`` is what makes a *new* subscription's ARN visible
+        (otherwise SNS returns ``"pending confirmation"`` as a string). The confirmation
+        message itself is sent by AWS; nothing here composes or sends mail.
+        """
+        try:
+            response = self._sns().subscribe(
+                TopicArn=self._topic_arn,
+                Protocol="email",
+                Endpoint=str(address),
+                ReturnSubscriptionArn=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never raised: the route answers with a friendly message
+            return {
+                "requested": False,
+                "reason": "subscribe_failed",
+                "detail": self.redact(f"{exc.__class__.__name__}: {exc}")[:200],
+            }
+        arn = str(response.get("SubscriptionArn") or "")
+        return {
+            "requested": True,
+            "state": subscription_state_for_arn(arn),
+        }
+
 
 def build_notifier(topic_arn: str | None = None, client: Any = None) -> NoopNotifier | SnsNotifier:
     """Choose the notifier for this process from an explicit ARN or the environment."""
@@ -99,6 +139,35 @@ def build_notifier(topic_arn: str | None = None, client: Any = None) -> NoopNoti
 def notifier_for_env(env: Mapping[str, Any]) -> NoopNotifier | SnsNotifier:
     """Build the notifier from an environment mapping without importing boto3 early."""
     return build_notifier(str(env.get(SNS_TOPIC_ENV, "") or ""))
+
+
+#: SNS reports a subscription that nobody has confirmed yet as this literal string instead
+#: of an ARN, because a pending subscription has no ARN. It is mapped to a name here so the
+#: rest of the code never compares against a magic string, and so it is never returned to a
+#: client (that would leak whether an address is already pending).
+PENDING_CONFIRMATION_MARKER = "pending confirmation"
+
+#: The two states a successful ``Subscribe`` call can leave an endpoint in, from this side:
+#: waiting for the visitor to click the confirmation link, or already confirmed. The route
+#: answers identically for both; the distinction is only ever used in logs and metrics.
+SUBSCRIPTION_PENDING = "pending_confirmation"
+SUBSCRIPTION_CONFIRMED = "confirmed"
+
+
+def subscription_state_for_arn(value: Any) -> str:
+    """Classify what ``Subscribe`` returned for an email endpoint.
+
+    A real ARN means the endpoint was already confirmed (or was just created and confirmed);
+    SNS's ``"pending confirmation"`` sentinel means AWS has sent the confirmation message
+    and is waiting. Anything else is treated as pending, which is the conservative reading
+    for a system that must never claim delivery it cannot prove.
+    """
+    text = str(value or "").strip()
+    if text.lower() == PENDING_CONFIRMATION_MARKER:
+        return SUBSCRIPTION_PENDING
+    if text.startswith("arn:"):
+        return SUBSCRIPTION_CONFIRMED
+    return SUBSCRIPTION_PENDING
 
 
 def sanitise_subject(text: str) -> str:

@@ -14,7 +14,13 @@ from copy import deepcopy
 from decimal import Decimal
 
 import floodpulse.dynamodb_store as ddb_module
-from floodpulse.config import ALERT_MARKER_SORT_KEY, HISTORY_TTL_SECONDS, METRIC_ORDER, thresholds_for
+from floodpulse.config import (
+    ALERT_MARKER_SORT_KEY,
+    HISTORY_TTL_SECONDS,
+    METRIC_ORDER,
+    SUBSCRIPTION_RATE_PREFIX,
+    thresholds_for,
+)
 from floodpulse.dynamodb_store import (
     DynamoDbStore,
     alert_marker_get_params,
@@ -34,6 +40,7 @@ from floodpulse.dynamodb_store import (
 from floodpulse.incidents import build_alert_marker, build_incident_item
 from floodpulse.risk import apply_hysteresis, score_zone
 from floodpulse.storage import LATEST_SORT_KEY, LocalStore, build_zone_pk
+from floodpulse.subscriptions import rate_limit_key, window_expiry, window_sort_key
 
 ZONE = "zone-riverside-north"
 OTHER_ZONE = "zone-harbor-east"
@@ -99,6 +106,8 @@ class FakeTable:
         "attribute_not_exists(sk) OR ts_epoch <= :ts",
         "attribute_not_exists(pk) OR attribute_not_exists(last_alert_by_severity.#sev)"
         " OR last_alert_by_severity.#sev.#ts <= :cutoff",
+        # the public-subscription throttle counter (M10, part B)
+        "attribute_not_exists(attempts) OR attempts < :limit",
     )
 
     def __init__(self) -> None:
@@ -158,6 +167,47 @@ class FakeTable:
         self.calls.append("get_item")
         item = self.items.get((Key["pk"], Key["sk"]))
         return {"Item": deepcopy(item)} if item else {}
+
+    def update_item(
+        self,
+        Key,
+        UpdateExpression=None,
+        ConditionExpression=None,
+        ExpressionAttributeNames=None,
+        ExpressionAttributeValues=None,
+        ReturnValues=None,
+    ):
+        """The exact ``UpdateItem`` the subscription throttle uses, and nothing else.
+
+        Only the one expression the store sends is understood; a different expression or
+        condition raises, so a change to the throttle cannot slip through this fake
+        unnoticed.
+        """
+        self.calls.append("update_item")
+        if UpdateExpression != "ADD attempts :one SET #ttl = if_not_exists(#ttl, :ttl)":
+            raise AssertionError(f"FakeTable cannot evaluate update: {UpdateExpression!r}")
+        if ConditionExpression not in self.KNOWN_CONDITIONS:
+            raise AssertionError(f"FakeTable cannot evaluate condition: {ConditionExpression!r}")
+        names = ExpressionAttributeNames or {}
+        values = ExpressionAttributeValues or {}
+        if names.get("#ttl") != "ttl":
+            raise AssertionError(f"FakeTable expects #ttl to name 'ttl', got {names.get('#ttl')!r}")
+        reject_floats(Key)
+        reject_floats(values)
+        key = (Key["pk"], Key["sk"])
+        existing = self.items.get(key) or {}
+        attempts = existing.get("attempts")
+        if attempts is not None and Decimal(str(attempts)) >= Decimal(str(values[":limit"])):
+            raise ConditionalCheckFailedException("The conditional request failed")
+        stored = dict(existing)
+        stored["pk"], stored["sk"] = key
+        stored["attempts"] = (Decimal(str(attempts)) if attempts is not None else Decimal(0)) + Decimal(
+            str(values[":one"])
+        )
+        if stored.get("ttl") is None:
+            stored["ttl"] = values[":ttl"]
+        self.items[key] = stored
+        return {"Attributes": {"attempts": stored["attempts"]}}
 
     def query(self, **params):
         self.calls.append("query")
@@ -637,6 +687,71 @@ class LocalVsDynamoEquivalenceTests(unittest.TestCase):
         self.assertFalse(self.local.create_incident(duplicate))
         self.assertFalse(self.remote.create_incident(duplicate))
         self.assertEqual(self.remote.item_count(), self.local.item_count())
+
+
+class SubscribeThrottleTests(unittest.TestCase):
+    """The public subscription counter, on both stores (M10, part B).
+
+    The DynamoDB store must refuse the attempt the moment the window's counter reaches the
+    limit, and it must never hold anything but a digest, a count and a TTL.
+    """
+
+    def setUp(self) -> None:
+        self.table = FakeTable()
+        self.remote = DynamoDbStore(table_name="floodpulse", table=self.table)
+        self.local = LocalStore()
+        self.key = {"pk": rate_limit_key("Visitor@Example.com"), "sk": window_sort_key(BASE_EPOCH, 3600)}
+        self.kwargs = {"limit": 3, "ttl": window_expiry(BASE_EPOCH, 3600, 7200), "now_epoch": BASE_EPOCH}
+
+    def test_each_store_counts_up_to_the_limit_and_then_refuses(self) -> None:
+        for store in (self.remote, self.local):
+            with self.subTest(store=type(store).__name__):
+                store.reset() if isinstance(store, LocalStore) else None
+                self.assertEqual(store.claim_subscribe_attempt(self.key, **self.kwargs), 1)
+                self.assertEqual(store.claim_subscribe_attempt(self.key, **self.kwargs), 2)
+                self.assertEqual(store.claim_subscribe_attempt(self.key, **self.kwargs), 3)
+                self.assertIsNone(store.claim_subscribe_attempt(self.key, **self.kwargs))
+
+    def test_the_stored_counter_holds_no_address(self) -> None:
+        self.remote.claim_subscribe_attempt(self.key, **self.kwargs)
+        (item,) = list(self.table.items.values())
+        self.assertEqual(sorted(item), ["attempts", "pk", "sk", "ttl"])
+        self.assertEqual(item["pk"], self.key["pk"])
+        self.assertIn(SUBSCRIPTION_RATE_PREFIX, item["pk"])
+        self.assertNotIn("visitor", json.dumps(item, default=str).lower())
+        self.assertNotIn("example.com", json.dumps(item, default=str).lower())
+        # the digest is the lowercased address, so two casings share one counter
+        self.assertEqual(
+            self.key["pk"],
+            rate_limit_key("visitor@example.com"),
+        )
+
+    def test_the_ttl_is_written_once_so_a_later_attempt_cannot_extend_it(self) -> None:
+        self.remote.claim_subscribe_attempt(self.key, **self.kwargs)
+        first = dict(list(self.table.items.values())[0])
+        self.remote.claim_subscribe_attempt(
+            self.key,
+            limit=3,
+            ttl=window_expiry(BASE_EPOCH + 600, 3600, 7200),
+            now_epoch=BASE_EPOCH + 600,
+        )
+        second = list(self.table.items.values())[0]
+        self.assertEqual(first["ttl"], second["ttl"])
+        self.assertEqual(int(second["attempts"]), 2)
+
+    def test_a_later_window_starts_a_fresh_counter(self) -> None:
+        later = {
+            "pk": self.key["pk"],
+            "sk": window_sort_key(BASE_EPOCH + 3600, 3600),
+        }
+        self.remote.claim_subscribe_attempt(self.key, **self.kwargs)
+        self.assertNotEqual(later["sk"], self.key["sk"])
+        self.assertEqual(self.remote.claim_subscribe_attempt(later, **self.kwargs), 1)
+
+    def test_a_different_address_has_its_own_counter(self) -> None:
+        other = {"pk": rate_limit_key("someone-else@example.com"), "sk": self.key["sk"]}
+        self.remote.claim_subscribe_attempt(self.key, **self.kwargs)
+        self.assertEqual(self.remote.claim_subscribe_attempt(other, **self.kwargs), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

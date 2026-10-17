@@ -7,11 +7,14 @@ Routes:
 * ``GET  /zones``                   -- latest state per zone + ranking (public)
 * ``GET  /zones/{zone_id}/history`` -- timestamped history for one zone (public)
 * ``GET  /incidents``               -- flood incident log, newest first (public)
+* ``POST /subscriptions``           -- request an email alert subscription (public, throttled)
 
 The read endpoints are deliberately unauthenticated: the dashboard in S3 needs them and
 they expose only simulated data. ``POST /readings`` is protected by the shared secret in
 ``FLOODPULSE_INGEST_KEY`` (see ``auth.py``); the secret is never accepted, required or
-revealed on the read routes. The SNS topic ARN is never returned to any client.
+revealed on the read routes. The SNS topic ARN is never returned to any client, and
+``POST /subscriptions`` accepts no topic, protocol or region from the caller: those come
+from the environment, and the only thing the route stores is a hashed attempt counter.
 
 Still deferred (see ``config.DEFERRED_FEATURES``): time-to-threshold estimation.
 
@@ -58,6 +61,15 @@ from .config import (
     SOURCE_REAL,
     SOURCE_SIMULATED,
     STALE_READING_SECONDS,
+    SUBSCRIPTION_MESSAGE_CONFIRMATION_REQUIRED,
+    SUBSCRIPTION_MESSAGE_RATE_LIMITED,
+    SUBSCRIPTION_MESSAGE_UNAVAILABLE,
+    SUBSCRIPTION_RATE_LIMIT,
+    SUBSCRIPTION_RATE_TTL_SECONDS,
+    SUBSCRIPTION_STATUS_CONFIRMATION_REQUIRED,
+    SUBSCRIPTION_STATUS_RATE_LIMITED,
+    SUBSCRIPTION_STATUS_UNAVAILABLE,
+    SUBSCRIPTION_WINDOW_SECONDS,
     TREND_LOOKBACK_SECONDS,
     TREND_LOOKBACK_TOLERANCE_SECONDS,
     WEATHER_PROVIDER,
@@ -116,6 +128,13 @@ from .storage import (
     READING_STORED,
     LocalStore,
     WriteOutcome,
+)
+from .subscriptions import (
+    parse_subscription_request,
+    rate_limit_key,
+    redact_email,
+    window_expiry,
+    window_sort_key,
 )
 from .validation import ValidationError, validate_body_size, validate_reading
 LOGGER = logging.getLogger("floodpulse.handler")
@@ -1384,6 +1403,131 @@ def _handle_incidents(
 
 
 # --------------------------------------------------------------------------- #
+# Public email subscriptions (M10, part B)
+# --------------------------------------------------------------------------- #
+
+
+def _handle_subscriptions(
+    body: str | None,
+    store: Any,
+    now_epoch: float,
+    notifier: Any,
+) -> tuple[int, dict[str, Any]]:
+    """``POST /subscriptions`` - a visitor asks to be emailed about flood risk.
+
+    The route is public on purpose (the dashboard calls it from the browser), so it is
+    bounded at every step:
+
+    * the body is one small JSON object with one field, ``email``;
+    * the address must pass the syntax check in :mod:`floodpulse.subscriptions`;
+    * the topic and the protocol come from trusted configuration, never from the request -
+      the client cannot name a topic, a protocol, a region or a subscription ARN;
+    * attempts are counted per address in the existing DynamoDB table, so the confirmation
+      messages AWS sends cannot be turned into a way to mail a stranger repeatedly;
+    * the success answer is the same whether the address is new, already pending or already
+      confirmed, so the endpoint cannot be used to test whether somebody is subscribed.
+
+    Nothing is claimed about delivery: AWS sends the confirmation message, and until the
+    visitor follows it the subscription is pending. The response therefore says "check your
+    email", never "you are subscribed".
+    """
+    try:
+        address = parse_subscription_request(body)
+    except ValidationError as exc:
+        if exc.field == "email":
+            # The caller's own input, so naming the problem is safe and useful. The address
+            # itself is never echoed back, and never logged.
+            return 400, {
+                "status": "invalid",
+                "error": "invalid_email",
+                "field": "email",
+                "detail": exc.reason,
+                "message": "Enter a valid email address.",
+            }
+        return 400, {
+            "status": "invalid",
+            "error": "invalid_body",
+            "field": exc.field or "body",
+            "detail": exc.reason,
+            "message": "Send a JSON object with a single 'email' field.",
+        }
+
+    enabled = notifier is not None and bool(getattr(notifier, "enabled", False))
+    if not enabled:
+        # No topic configured (or the notifier is the documented no-op): there is nothing to
+        # subscribe to, and saying so is better than a 202 that leads nowhere.
+        LOGGER.warning("subscribe_unavailable reason=not_configured")
+        return 503, {
+            "status": SUBSCRIPTION_STATUS_UNAVAILABLE,
+            "error": "subscription_unavailable",
+            "message": SUBSCRIPTION_MESSAGE_UNAVAILABLE,
+        }
+
+    identity = redact_email(address)
+    key = {
+        "pk": rate_limit_key(address),
+        "sk": window_sort_key(now_epoch, SUBSCRIPTION_WINDOW_SECONDS),
+    }
+    # The attempt is counted *before* the SNS call, so a caller cannot spend a failing
+    # endpoint's worth of requests: three confirmation requests an hour per address, whether
+    # or not SNS accepted them. The counter holds a digest and a number, never the address.
+    attempts = store.claim_subscribe_attempt(
+        key,
+        limit=SUBSCRIPTION_RATE_LIMIT,
+        ttl=window_expiry(now_epoch, SUBSCRIPTION_WINDOW_SECONDS, SUBSCRIPTION_RATE_TTL_SECONDS),
+        now_epoch=now_epoch,
+    )
+    if attempts is None:
+        LOGGER.warning("subscribe_rate_limited identity=%s", identity)
+        return 429, {
+            "status": SUBSCRIPTION_STATUS_RATE_LIMITED,
+            "error": "rate_limited",
+            "message": SUBSCRIPTION_MESSAGE_RATE_LIMITED,
+        }
+
+    outcome = notifier.subscribe_email(address)
+    if not outcome.get("requested"):
+        # A refused or failed SNS call is reported as a transient problem, never as a stack
+        # trace or an AWS error message: the detail is already ARN-redacted, and is logged
+        # (with the address replaced by its digest) rather than returned.
+        LOGGER.warning(
+            "subscribe_failed identity=%s reason=%s detail=%s",
+            identity,
+            outcome.get("reason"),
+            redact_addresses(str(outcome.get("detail") or ""), address)[:200],
+        )
+        return 503, {
+            "status": SUBSCRIPTION_STATUS_UNAVAILABLE,
+            "error": "subscription_unavailable",
+            "message": SUBSCRIPTION_MESSAGE_UNAVAILABLE,
+        }
+
+    LOGGER.info(
+        "subscribe_requested identity=%s state=%s attempt=%s/%s",
+        identity,
+        outcome.get("state"),
+        attempts,
+        SUBSCRIPTION_RATE_LIMIT,
+    )
+    return 202, {
+        "status": SUBSCRIPTION_STATUS_CONFIRMATION_REQUIRED,
+        "message": SUBSCRIPTION_MESSAGE_CONFIRMATION_REQUIRED,
+    }
+
+
+def redact_addresses(text: str, address: str) -> str:
+    """Replace a submitted address with its digest inside a log line.
+
+    AWS error messages for a bad endpoint quote the endpoint, so the one place a full
+    address could reach the log is an error string. It is replaced here, and the digest
+    keeps the line useful.
+    """
+    if not text:
+        return ""
+    return text.replace(str(address), redact_email(address))
+
+
+# --------------------------------------------------------------------------- #
 # Routing
 # --------------------------------------------------------------------------- #
 
@@ -1476,6 +1620,19 @@ def dispatch(
             zone_ids=active_zone_ids,
             env=environment,
             active_mode=mode,
+        )
+
+    if route == "/subscriptions":
+        if method != "POST":
+            return 405, {"error": "method_not_allowed", "allowed": ["POST"], "path": route}
+        # Deliberately no ingestion key: this route is for anonymous visitors, and its
+        # bounds are the body limit, the address syntax check, the per-address throttle and
+        # the topic that only the environment can name.
+        return _handle_subscriptions(
+            body,
+            store,
+            now_epoch,
+            notifier if notifier is not None else get_notifier(),
         )
 
     if route.startswith("/zones/"):

@@ -516,6 +516,41 @@ class LocalStore:
         self._items[(str(stored["pk"]), str(stored["sk"]))] = stored
         return stored
 
+    # -- public subscription throttle (M10, part B) -------------------------- #
+
+    def claim_subscribe_attempt(
+        self,
+        key: Mapping[str, str],
+        *,
+        limit: int,
+        ttl: int,
+        now_epoch: float,
+    ) -> int | None:
+        """Count one subscription attempt, refusing it once the window's limit is reached.
+
+        Mirrors the conditional ``ADD`` the DynamoDB store performs: the counter for the
+        window is incremented only while it is below ``limit``, so two requests that arrive
+        together cannot both slip past the last slot. Returns the attempt's new count, or
+        ``None`` when the window is already full.
+
+        The item holds ``pk``, ``sk``, ``attempts`` and ``ttl`` - never the address: the
+        digest in ``pk`` is all the identity this needs.
+        """
+        pk = str(key["pk"])
+        sk = str(key["sk"])
+        stored = self._items.get((pk, sk))
+        attempts = int((stored or {}).get("attempts") or 0)
+        if attempts >= int(limit):
+            return None
+        attempts += 1
+        self._items[(pk, sk)] = {
+            "pk": pk,
+            "sk": sk,
+            "attempts": attempts,
+            "ttl": int(ttl),
+        }
+        return attempts
+
     def items(self) -> Iterator[dict[str, Any]]:
         """Iterate over stored items (test/debug helper)."""
         return iter(list(self._items.values()))

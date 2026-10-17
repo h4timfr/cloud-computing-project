@@ -7,7 +7,8 @@
   Creates or updates exactly these resources, and nothing else:
     * DynamoDB table (pk/sk, PAY_PER_REQUEST, TTL on "ttl")
     * Lambda function (python3.13, 256 MB, 10 s, handler floodpulse.handler.lambda_handler)
-    * API Gateway HTTP API with POST /readings, GET /zones, GET /zones/{zone_id}/history + CORS
+    * API Gateway HTTP API with POST /readings, GET /zones, GET /zones/{zone_id}/history,
+      GET /incidents, POST /subscriptions + CORS
     * the API -> Lambda invoke permission, scoped to that API
     * CloudWatch log retention for the function's log group
     * S3 bucket for the static dashboard (website hosting, public read of objects only)
@@ -593,6 +594,20 @@ if (-not $SkipAlerts) {
             Write-Warn2 "  aws iam put-role-policy --role-name $RoleName --policy-name FloodPulseSnsPublish --policy-document file://$snsPolicyPath --profile $Profile --region $Region"
         }
     }
+
+    # NOT APPLIED HERE ON PURPOSE: POST /subscriptions needs the same role to be allowed
+    # sns:Subscribe on the same single topic. That statement is a manual approval, not an
+    # automated step - this script attaches Publish-only and never widens the role beyond it.
+    # An operator who has approved it can put the second action on the same inline policy:
+    #
+    #   aws iam put-role-policy --role-name <role> --policy-name FloodPulseSnsPublish `
+    #     --policy-document file://<file> --profile <profile> --region <region>
+    #
+    # with a document identical to the one above except that Action is the two-element list
+    # ["sns:Publish", "sns:Subscribe"] and Resource is still only
+    # arn:aws:sns:<region>:<account>:floodpulse-alerts. Until that is granted, the route answers
+    # 503 with a friendly message: a missing permission degrades one public form, it never
+    # breaks the dashboard, ingestion or alerts.
 }
 
 # ------------------------------------------------------- M4: zones and live weather ------------------------------------------------------- #
@@ -925,7 +940,22 @@ if (-not $apiId) {
         }
     }
 
-    $routeKeys = @('POST /readings', 'GET /zones', 'GET /zones/{zone_id}/history', 'GET /incidents')
+    $routeKeys = @(
+        'POST /readings'
+        'GET /zones'
+        'GET /zones/{zone_id}/history'
+        'GET /incidents'
+        # Public, anonymous, throttled: a visitor asks to be emailed flood alerts. The route
+        # carries no ingestion key by design (the dashboard calls it from a browser); its
+        # bounds are the 512-byte body limit, the address syntax check, the per-address
+        # counter in the existing table, and the SNS topic that only the environment names.
+        #
+        # It also needs the function role to be allowed sns:Subscribe on the one alert topic.
+        # That permission is NOT applied by this script - see the SNS section above - so the
+        # route answers 503 "we couldn't create the subscription request right now" until an
+        # operator grants it.
+        'POST /subscriptions'
+    )
     if ($null -eq $integration) {
         # -DryRun on an account where the integration does not exist yet: the routes cannot be
         # compared before it exists, so the plan is reported instead.

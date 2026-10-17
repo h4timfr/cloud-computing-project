@@ -377,6 +377,52 @@ SNS_TOPIC_ENV = "FLOODPULSE_SNS_TOPIC_ARN"
 INCIDENT_DEFAULT_LIMIT = 50
 INCIDENT_MAX_LIMIT = 200
 
+# --------------------------------------------------------------------------- #
+# Public email subscriptions (M10, part B)
+# --------------------------------------------------------------------------- #
+# A visitor may ask to be emailed when a city reaches WARNING or CRITICAL. The
+# subscription itself belongs to SNS: FloodPulse calls ``Subscribe`` with
+# ``Protocol="email"`` and AWS sends the confirmation message and owns the
+# endpoint from then on. Nothing about the visitor's address is stored: the only
+# record FloodPulse keeps is a hashed counter used to throttle the route.
+#
+# The topic ARN comes from the environment only (``SNS_TOPIC_ENV`` above). A client
+# can never choose the topic, the protocol or the region.
+
+#: RFC 5321-ish upper bound on an address; longer input is rejected outright.
+SUBSCRIPTION_MAX_EMAIL_LENGTH = 254
+#: Longest local part and domain label accepted by the syntax check.
+SUBSCRIPTION_MAX_LOCAL_LENGTH = 64
+SUBSCRIPTION_MAX_LABEL_LENGTH = 63
+#: The subscribe route takes one short field, so its body limit is far below the
+#: 4 KB ingestion limit: a large body is a probe, not a visitor.
+SUBSCRIPTION_BODY_MAX_BYTES = 512
+#: Attempts per address per window, and the window they are counted in.
+SUBSCRIPTION_RATE_LIMIT = 3
+SUBSCRIPTION_WINDOW_SECONDS = 60 * 60
+#: DynamoDB TTL on the counter: the window plus a little slack, so the item is gone
+#: shortly after the window it counted. TTL deletion is asynchronous and best-effort
+#: (AWS removes items "typically within 48 hours"), which is why the counter is also
+#: keyed by the window: a stale item can never be counted against a later window.
+SUBSCRIPTION_RATE_TTL_SECONDS = SUBSCRIPTION_WINDOW_SECONDS + 60 * 60
+#: Storage prefixes for the counter items. The key is a SHA-256 digest of the
+#: normalised address, never the address itself.
+SUBSCRIPTION_RATE_PREFIX = "SUBRATE#"
+SUBSCRIPTION_RATE_WINDOW_PREFIX = "WINDOW#"
+
+#: The three answers this route can give. They are deliberately indistinguishable
+#: for "first request", "already pending" and "already confirmed": telling a caller
+#: which one it is would turn the endpoint into a way to test whether an arbitrary
+#: address is subscribed to FloodPulse.
+SUBSCRIPTION_STATUS_CONFIRMATION_REQUIRED = "confirmation_required"
+SUBSCRIPTION_MESSAGE_CONFIRMATION_REQUIRED = "Check your email to confirm the subscription."
+SUBSCRIPTION_STATUS_RATE_LIMITED = "rate_limited"
+SUBSCRIPTION_MESSAGE_RATE_LIMITED = "Too many subscription requests. Please try again later."
+SUBSCRIPTION_STATUS_UNAVAILABLE = "subscription_unavailable"
+SUBSCRIPTION_MESSAGE_UNAVAILABLE = (
+    "We couldn't create the subscription request right now. Please try again."
+)
+
 #: Documented in API responses so the dashboard can be honest about what exists.
 DEFERRED_FEATURES: tuple[str, ...] = ("time_to_threshold",)
 

@@ -576,6 +576,47 @@ class DynamoDbStore:
         self._table.put_item(Item=to_storable(deepcopy(dict(item))))
         return dict(item)
 
+    def claim_subscribe_attempt(
+        self,
+        key: Mapping[str, str],
+        *,
+        limit: int,
+        ttl: int,
+        now_epoch: float,
+    ) -> int | None:
+        """Count one subscription attempt, refusing it once the window's limit is reached.
+
+        One conditional ``UpdateItem``: the counter is incremented only while it is below
+        ``limit``, so simultaneous requests cannot both take the last slot - the loser's
+        condition fails on the winner's counter. Returns the new count, or ``None`` when
+        the window is full.
+
+        The item is ``{pk: SUBRATE#<digest>, sk: WINDOW#<bucket>, attempts, ttl}``: no
+        address, no partial address, nothing to read back except a number. ``ttl`` is set
+        once, when the counter is created, so the item disappears after the window it
+        counts.
+        """
+        try:
+            response = self._table.update_item(
+                Key={"pk": str(key["pk"]), "sk": str(key["sk"])},
+                UpdateExpression=(
+                    "ADD attempts :one SET #ttl = if_not_exists(#ttl, :ttl)"
+                ),
+                ConditionExpression="attribute_not_exists(attempts) OR attempts < :limit",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={
+                    ":one": 1,
+                    ":limit": int(limit),
+                    ":ttl": int(ttl),
+                },
+                ReturnValues="UPDATED_NEW",
+            )
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return None
+            raise
+        return int(response.get("Attributes", {}).get("attempts", 0))
+
     def _query(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Run a query, following ``LastEvaluatedKey`` up to ``MAX_QUERY_PAGES``.
 
