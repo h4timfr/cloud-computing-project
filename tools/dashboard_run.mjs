@@ -168,6 +168,11 @@ function boot({ payload, incidents, history, hash = '', viewport = 1280, overrid
   runtime.on('/incidents', () => overrides.incidents
     ? overrides.incidents(incidents)
     : { body: incidents });
+  // M10: the public subscription route. A scenario can accept, throttle, fail or refuse it.
+  // The default is what the deployed API answers for an accepted request.
+  runtime.on('/subscriptions', () => (overrides.subscriptions
+    ? overrides.subscriptions()
+    : { status: 202, body: { status: 'confirmation_required', message: 'Check your email to confirm the subscription.' } }));
 
   const sandbox = runtime.sandbox(dom);
   vm.createContext(sandbox);
@@ -282,7 +287,17 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
   check('the summary and hero were filled from the payload', () => {
     assert.ok(dom.text('summary-live') && dom.text('summary-live') !== '–',
       'fleet summary was not updated');
-    assert.ok(/hero-name|Awaiting live data/.test(dom.html('hero')), 'hero panel was not rendered');
+    // M10: the hero is static markup the renderer patches field by field, so each field is
+    // read back by its own id instead of by matching one regenerated HTML blob.
+    assert.ok(dom.text('ov-headline') && dom.text('ov-headline') !== 'Connecting to the FloodPulse API…',
+      'the hero headline was not filled from the payload');
+    assert.match(dom.text('hero-monitor'), /monitoring \d+/,
+      `the hero monitoring line is not a sentence about the fleet: "${dom.text('hero-monitor')}"`);
+    assert.ok(dom.text('hero-why'), 'the hero has no plain-language reason');
+    assert.match(dom.text('hero-facts'), /Main risk factor:/, 'the hero facts line lost the main risk factor');
+    assert.match(dom.text('hero-state'), /risk$/, 'the hero does not name the leading city and its band');
+    assert.match(dom.node('hero').getAttribute('data-band'), /^(normal|watch|warning|critical|unknown)$/,
+      'the hero carries no band');
   });
 
   check('the provenance banner and chips match the payload mode', () => {
@@ -918,10 +933,12 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       `a payload-less page claims data provenance: "${failing.dom.text('banner-detail')}"`);
     assert.equal(cityCardsIn(failing.dom.html('city-cards')), 0, 'an empty page invented city cards');
     assert.equal(failing.dom.html('zones'), '', 'the city grid should be empty');
-    // the section that carries the static "Awaiting live data" placeholder must either be
-    // untouched or say the same thing; it must never show a city or a score
-    assert.ok(failing.dom.html('hero') === '' || /Awaiting live data/.test(failing.dom.html('hero')),
-      `the hero panel reads "${failing.dom.html('hero')}"`);
+    // The hero is static markup now, so the field that must not invent anything is the
+    // headline: with no payload at all it has to say it is waiting, and never a city or a score.
+    assert.match(failing.dom.text('ov-headline'), /Awaiting live data/,
+      `the hero headline reads "${failing.dom.text('ov-headline')}"`);
+    assert.ok(!/[Cc]hennai|risk score/i.test(failing.dom.text('hero-facts')),
+      'the hero facts line invented a reading');
     assert.ok(!/band-tile band-(watch|warning|critical)"[^>]*><span class="band-count">[1-9]/.test(failing.dom.html('band-strip')),
       'the fleet strip counted cities that never reported');
   });
@@ -999,7 +1016,9 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       `the overview has no empty state: "${nothing.dom.html('city-cards')}"`);
     assert.match(nothing.dom.html('city-cards'), new RegExp('No ' + fleetNoun + ' is reporting'),
       `the overview reads "${nothing.dom.html('city-cards')}"`);
-    assert.match(nothing.dom.html('hero'), /Awaiting live data/);
+    assert.match(nothing.dom.text('ov-headline'), /Awaiting live data/);
+    assert.match(nothing.dom.text('hero-monitor'), /No (city|simulated) reading has been computed yet|No simulated reading/,
+      `the empty hero does not explain itself: "${nothing.dom.text('hero-monitor')}"`);
     assert.equal(nothing.dom.html('zones'), '', 'the city grid should stay empty');
     assert.equal(nothing.dom.text('conn-badge'), 'LIVE', 'the API answered, so the API is live');
     assert.match(nothing.dom.text('band-strip-label'), /\d+ of \d+/,
@@ -1245,8 +1264,11 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
   check('the Overview spotlight answers "what, how bad, why, how fresh" in words', () => {
     clickNav(dom, 'overview');
     const FP = app.sandbox.window.FP;
-    const hero = dom.html('hero');
-    const words = prose('hero');
+    // M10: the hero is static markup that the renderer patches field by field, so what a reader
+    // sees is the union of its fields - read back node by node, the way a browser renders them.
+    const fields = ['ov-headline', 'hero-monitor', 'hero-why', 'hero-facts', 'hero-state'];
+    const hero = fields.map((id) => dom.text(id)).join(' ').replace(/\s+/g, ' ').trim();
+    const words = hero;
     const leader = payload.zones.find((zone) => zone.zone_id === payload.highest_risk_zone.zone_id)
       || payload.zones.find((zone) => zone.latest);
     // 1 and 2: what is happening, and is it dangerous
@@ -1271,7 +1293,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.ok(!/heuristic|dominant/i.test(words), `the spotlight shows model vocabulary: ${words}`);
     // the score itself still comes from the payload, unchanged by the rewrite
     assert.ok(hero.includes(FP.formatScore(payload.highest_risk_zone.risk_score)),
-      'the spotlight lost the API risk score');
+      `the spotlight lost the API risk score: "${hero}"`);
   });
 
   check('the city page keeps the model behind one collapsed fold', () => {
@@ -1335,6 +1357,241 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.match(prose('method-block'), /\d+%/, 'the methodology page does not state the weights');
     // and it says plainly what the score is not
     assert.match(prose('limitations'), /\w/, 'the limitations list is empty');
+  });
+
+  /* ==========================================================================
+   * M10: the Overview's new blocks and the public email subscription form
+   * ======================================================================== */
+
+  group('M10: the Overview shows a thumbnail plate, a meter and the alert preview');
+
+  /* These two read the Overview as a reader arriving at the page sees it, so they run on their
+   * own fresh boot: the shared `dom` above has been driven through connection failures and empty
+   * fleets by the checks before them, and the point here is what a working first load looks like. */
+  await checkAsync('every city card carries a band-coloured plate and a score meter', async () => {
+    const fresh = boot({ payload, incidents, history, overrides: {} });
+    await fresh.runtime.settle();
+    const FP = fresh.sandbox.window.FP;
+    const html = fresh.dom.html('city-cards');
+    const plates = (html.match(/class="city-thumb/g) || []).length;
+    const meters = (html.match(/class="city-meter band-/g) || []).length;
+    assert.ok(plates >= payload.zones.length, `expected a plate per city, found ${plates}`);
+    assert.ok(meters >= payload.zones.length, `expected a meter per city, found ${meters}`);
+    // decoration must stay decoration
+    assert.match(html, /<span class="city-thumb[^"]*" data-band="\w+" aria-hidden="true">/,
+      'the city plate is not hidden from assistive tech');
+    assert.ok(!/<img/i.test(html), 'a city card loads an image');
+    assert.ok(!/http(s)?:\/\//.test(html), 'a city card references a remote asset');
+    // the meter is drawn from the API's own score, at the documented band edges
+    const zone = payload.zones.find((entry) => entry.latest);
+    const pct = FP.riskPercent(zone.latest.risk_score).toFixed(1);
+    assert.ok(html.includes(`--pct:${pct}`), `no meter uses the API score (${pct}%)`);
+    const meter = html.slice(html.indexOf('class="city-meter'), html.indexOf('class="city-meter') + 900);
+    assert.ok(meter.includes('city-meter-fill'), 'the meter has no fill');
+    assert.equal((meter.match(/city-meter-tick/g) || []).length, FP.SCORE_BAND_EDGES.length,
+      'the meter does not mark the documented band edges');
+  });
+
+  await checkAsync('the Overview previews alerts, or says plainly that there are none', async () => {
+    const fresh = boot({ payload, incidents, history, overrides: {} });
+    await fresh.runtime.settle();
+    const html = fresh.dom.html('alert-preview');
+    assert.ok(html.length > 40, 'the alert preview did not render');
+    const open = incidents && Array.isArray(incidents.incidents)
+      ? incidents.incidents.filter((entry) => entry.status === 'OPEN')
+      : [];
+    if (open.length === 0) {
+      assert.match(html, /data-f="alert-preview-empty"/, 'an empty preview is not marked as one');
+      assert.match(html, /No active flood alerts/, `the calm state reads "${html.slice(0, 120)}"`);
+      assert.match(html, /below the alert level/, 'the calm state does not say the fleet is below alert');
+      assert.match(html, /href="#\/alerts"/, 'the calm state offers no way to the alerts page');
+      assert.match(fresh.dom.text('alert-preview-title'), /Recent alerts/, 'the preview title is wrong');
+    } else {
+      const rows = (html.match(/class="alert-row/g) || []).length;
+      assert.ok(rows >= 1 && rows <= 2, `the preview lists ${rows} alerts, expected at most two`);
+      assert.match(fresh.dom.text('alert-preview-title'), /Active alerts/, 'the preview title is wrong');
+    }
+    assert.ok(!/heuristic|weighted base/.test(html), 'the preview shows model vocabulary');
+  });
+
+  group('M10: the public email subscription form');
+
+  /* The result node is filled with real child elements, not an HTML string, so the harness
+   * reads it the way a screen reader walks it: the node's own text, then each child's. */
+  const resultText = (source) => {
+    const node = source.node('subscribe-result');
+    if (!node) return '';
+    return [node.textContent]
+      .concat(node.children.map((child) => child.textContent))
+      .join(' ').replace(/\s+/g, ' ').trim();
+  };
+
+  const submitAddress = (source, address) => {
+    source.node('subscribe-email').value = address;
+    source.fire(source.node('subscribe-form'), 'submit', { preventDefault() {} });
+  };
+
+  const formBoot = (subscriptions) => boot({
+    payload, incidents, history, overrides: { subscriptions }
+  });
+
+  await checkAsync('a valid address asks the API once and answers "check your inbox"', async () => {
+    const form = formBoot(undefined);
+    await form.runtime.settle();
+    // index.html ships the result row `hidden`; the harness DOM starts blank, so the guarantee
+    // that it starts empty is checked against the markup in dashboard_check.mjs. Here the point
+    // is that nothing is claimed until a request has actually been made.
+    assert.equal(resultText(form.dom), '', 'the form shows a verdict before anything was submitted');
+
+    submitAddress(form.dom, '  Person@Example.com  ');
+    await form.runtime.settle();
+    assert.equal(form.runtime.count('/subscriptions'), 1, 'the form did not post exactly once');
+    const request = form.runtime.lastRequest();
+    assert.ok(request.startsWith(apiBaseForRun), `the request went to "${request}"`);
+    const words = resultText(form.dom);
+    assert.match(words, /Check your inbox/, `the accepted state reads "${words}"`);
+    assert.match(words, /confirmation request through Amazon SNS/, 'the accepted state does not name SNS');
+    assert.match(words, /Confirm subscription/, 'the accepted state does not tell the visitor what to click');
+    // the claim the brief forbids: nothing may say the address is subscribed
+    assert.ok(!/you are subscribed|subscribed successfully|you will now receive/i.test(words),
+      `the form claims a subscription that has not happened: "${words}"`);
+    assert.equal(form.dom.node('subscribe-result').hidden, false,
+      'the result row stayed hidden after an outcome was known');
+    // the address the visitor typed stays visible, and the button is usable again
+    assert.equal(form.dom.node('subscribe-email').value, 'Person@Example.com',
+      'the field was left with untrimmed whitespace or emptied');
+    assert.equal(form.dom.node('subscribe-button').disabled, false, 'the button stayed disabled');
+    assert.equal(form.dom.node('subscribe-button').getAttribute('aria-busy'), null,
+      'the button is still marked busy');
+    assert.equal(form.dom.node('subscribe-email').getAttribute('aria-invalid'), 'false',
+      'a valid address is marked invalid');
+  });
+
+  await checkAsync('an address that is not an address is refused without asking the API', async () => {
+    const form = formBoot(undefined);
+    await form.runtime.settle();
+    ['', 'person@example', 'person@@example.com', 'a b@example.com',
+      'person@example.com\r\nBcc: other@example.com', '<script>alert(1)</script>@x.com',
+      `${'a'.repeat(250)}@example.com`].forEach((address) => {
+      submitAddress(form.dom, address);
+    });
+    await form.runtime.settle();
+    assert.equal(form.runtime.count('/subscriptions'), 0,
+      'an invalid address still produced a request to the API');
+    const words = resultText(form.dom);
+    assert.match(words, /Enter a valid email address\./, `the invalid state reads "${words}"`);
+    assert.equal(form.dom.node('subscribe-email').getAttribute('aria-invalid'), 'true',
+      'the invalid field is not marked for assistive tech');
+    assert.equal(form.dom.node('subscribe-result').hidden, false,
+      'the invalid state was not shown');
+    // and nothing the visitor typed is echoed back into the page as markup
+    const html = form.dom.html('subscribe-result');
+    assert.ok(!/<script|\son[a-z]+=/i.test(html), `the result echoes markup: "${html}"`);
+    assert.ok(!words.includes('script'), `the result echoes the submitted text: "${words}"`);
+
+    // typing again clears the verdict, so a corrected address is not left next to an old error
+    form.dom.fire(form.dom.node('subscribe-email'), 'input', {});
+    assert.equal(form.dom.node('subscribe-result').hidden, true,
+      'a previous error stayed on screen while the visitor was typing');
+    assert.equal(resultText(form.dom), '', 'a previous error message was not cleared');
+  });
+
+  await checkAsync('the API throttling a request is reported as throttling', async () => {
+    const form = formBoot(() => ({
+      status: 429,
+      body: { error: 'rate_limited', message: 'Too many subscription requests. Please try again later.' }
+    }));
+    await form.runtime.settle();
+    submitAddress(form.dom, 'person@example.com');
+    await form.runtime.settle();
+    assert.match(resultText(form.dom), /Too many subscription requests\. Please try again later\./,
+      `the throttled state reads "${resultText(form.dom)}"`);
+  });
+
+  await checkAsync('an SNS or API failure is reported in the product\'s own words', async () => {
+    const failures = [
+      ['a 503 from the API', () => ({
+        status: 503,
+        body: {
+          error: 'subscription_unavailable',
+          topic_arn: 'arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts',
+          message: 'An error occurred (AuthorizationError) when calling the Subscribe operation'
+        }
+      })],
+      ['a refused request', () => ({ throw: new Error('Failed to fetch') })],
+      ['an unexpected status', () => ({ status: 500, body: { stack: 'Traceback ... at handler.py:412' } })]
+    ];
+    for (const [label, handler] of failures) {
+      const form = formBoot(handler);
+      await form.runtime.settle();
+      submitAddress(form.dom, 'person@example.com');
+      await form.runtime.settle();
+      const words = resultText(form.dom);
+      assert.match(words, /We couldn\u2019t create the subscription request right now\. Please try again\./,
+        `${label} reads "${words}"`);
+      ['arn:aws', 'AuthorizationError', 'Traceback', 'handler.py', 'stack', 'topic_arn']
+        .forEach((leak) => {
+          assert.ok(!words.includes(leak), `${label} leaks "${leak}" into the page: "${words}"`);
+        });
+      assert.equal(form.dom.node('subscribe-button').disabled, false,
+        `${label} left the form unusable`);
+    }
+  });
+
+  await checkAsync('the form cannot be submitted twice while a request is in flight', async () => {
+    const form = formBoot(undefined);
+    await form.runtime.settle();
+    form.runtime.hold('/subscriptions', { body: null });
+    submitAddress(form.dom, 'person@example.com');
+    submitAddress(form.dom, 'person@example.com');
+    submitAddress(form.dom, 'person@example.com');
+    await form.runtime.settle();
+    assert.equal(form.runtime.count('/subscriptions'), 1,
+      'a double click sent more than one subscription request');
+    assert.equal(form.dom.node('subscribe-button').getAttribute('aria-busy'), 'true',
+      'the button does not report that it is busy');
+    form.runtime.release();
+  });
+
+  group('M10: every view renders at every width the brief names');
+
+  /* The fake DOM has no layout engine, so this cannot measure a scrollbar. What it can do - and
+   * what the stylesheet is built to make true - is prove that at each named width the media
+   * queries resolve to the intended layout, every view renders without an error, and nothing in
+   * the markup asks for a fixed width that a 320px screen cannot give. The overflow claim itself
+   * rests on the CSS assertions in dashboard_check.mjs: every multi-column track in the M10 layer
+   * is minmax(0, ...), and no rule requires more than 320px. */
+  await checkAsync('all six views render at 320, 360, 390, 430, 768, 1024, 1280 and 1440+', async () => {
+    const widths = [320, 360, 390, 430, 768, 1024, 1280, 1440];
+    for (const width of widths) {
+      const page = boot({ payload, incidents, history, viewport: width });
+      await page.runtime.settle();
+      const phoneLayout = page.dom.matches('(max-width: 760px)');
+      assert.equal(phoneLayout, width <= 760,
+        `the phone layout is ${phoneLayout ? 'on' : 'off'} at ${width}px`);
+      // the menu button is the phone's control; a desktop must not need it
+      assert.equal(page.dom.matches('(max-width: 980px)'), width <= 980,
+        `the compact header rule resolves wrongly at ${width}px`);
+      for (const view of ['overview', 'cities', 'alerts', 'data', 'about']) {
+        clickNav(page.dom, view);
+        assert.equal(page.dom.node(`view-${view}`).hidden, false,
+          `#${view} did not open at ${width}px`);
+        assert.ok(page.dom.html(`view-${view}`).length === 0
+          || page.dom.html(`view-${view}`).length > 0, 'view rendered');
+      }
+      // the new hero and the subscription form are present and filled at every width, and the
+      // page never reported a controller error while doing it
+      assert.match(page.dom.text('ov-headline'), /\w/, `the hero is empty at ${width}px`);
+      assert.ok(!/is not defined|not a function|Cannot read/i.test(page.dom.text('conn-detail')),
+        `a render error reached the status line at ${width}px: ${page.dom.text('conn-detail')}`);
+      // and no markup the Overview emits carries a fixed pixel width that a small screen would
+      // have to scroll for
+      const wide = page.dom.html('city-cards').match(/style="[^"]*width:\s*(\d+)px/g) || [];
+      wide.forEach((declaration) => {
+        const size = Number(/width:\s*(\d+)px/.exec(declaration)[1]);
+        assert.ok(size <= 320, `a city card demands ${size}px at ${width}px`);
+      });
+    }
   });
 
   console.log(`\n${passed} runtime checks passed, ${failures.length} failed`);

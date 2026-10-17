@@ -41,6 +41,22 @@ EXPECTED = {
     "the disaster management authority is linked": "ndma.gov.in",
     # M10: the worked example the methodology page fills in at runtime has somewhere to land
     "the methodology page has a slot for the worked example": 'id="score-breakdown"',
+    # M10 (premium pass): the hero, the three-step explanation, the alert preview and the form
+    "the hero is a card that ships with its own answer": 'id="hero" class="card hero hero-live"',
+    "the hero answer is a polite live region": 'id="ov-headline"',
+    "the hero says what the product does": "What FloodPulse does",
+    "the hero links to the method": "Learn how risk is calculated",
+    "the alert preview is on the Overview": 'id="alert-preview-card"',
+    "the three steps are deployed": 'class="works-steps"',
+    "the subscription card is deployed": 'id="subscribe-card"',
+    "the subscription field has a real label": 'for="subscribe-email"',
+    "the subscription form does not navigate": '<form id="subscribe-form" class="subscribe-form" novalidate>',
+    "the subscription outcome is a polite live region": 'id="subscribe-result" class="subscribe-result" role="status" aria-live="polite" hidden',
+    "the confirmation note is deployed": "receive a confirmation email from Amazon Web Services",
+    "the privacy note is deployed": "FloodPulse does not send marketing email",
+    "the unsubscribe instruction is deployed": "Amazon SNS includes its own unsubscribe link",
+    # the model left the header and lives in the folded technical panel instead
+    "the model is in the folded technical panel": '<b id="summary-model">heuristic-v1</b>',
 }
 
 FORBIDDEN = {
@@ -61,6 +77,15 @@ FORBIDDEN = {
     "a claim that an email was sent": "email sent",
     "an icon loaded from a CDN": "cdn.",
     "an icon font": "material-icons",
+    # M10: the model name belongs in the folded panel, not in the primary header, and a public
+    # page never names the notification topic, an ARN or an account
+    "the model name is back in the primary header": 'meta-item">model <b id="summary-model"',
+    "an AWS resource name is on the page": "arn:aws",
+    "the notification topic is named": "floodpulse-alerts",
+    "the account id is on the page": "725934295966",
+    # and no view ever claims a subscription that SNS has not confirmed
+    "a subscription claim SNS has not confirmed": "You are subscribed",
+    "a subscription claim SNS has not confirmed (2)": "subscribed successfully",
 }
 
 html = urllib.request.urlopen(SITE + "/index.html", timeout=20).read().decode("utf-8")
@@ -99,6 +124,14 @@ NEEDLES = {
         "the fold quotes the API's own output line": "Raw model output, as returned by the API",
         "the city page keeps the driver's human name": "is the main contributor",
         "the spotlight names the main risk factor": "Main risk factor",
+        # M10: the subscription vocabulary exists once, in this module
+        "the shared subscription copy is deployed": "function subscriptionResult",
+        "the accepted state describes a confirmation request": "We sent a subscription confirmation request through Amazon SNS",
+        "the outcome of a status code is mapped in one place": "function subscriptionKindForStatus",
+        "the calm alert state is composed, not static": "No active flood alerts",
+        "the city plate is decorative": 'class="city-thumb band-',
+        "the meter marks the documented band edges": "SCORE_BAND_EDGES",
+        "the mail icon is deployed": "mail:",
     },
     "app.js": {
         "the chart answers the arrow keys": "handleHistoryKey",
@@ -114,6 +147,11 @@ NEEDLES = {
         # M10: the methodology page publishes a worked example, folded, from the live reading
         "the worked example is built from the payload": "score-breakdown",
         "the spotlight reuses the shared plain sentence": "FP.plainRiskSummary",
+        # M10: one write to one public route, and the hero is patched rather than rebuilt
+        "the form posts to the subscription route": "API_BASE + '/subscriptions'",
+        "the hero is patched field by field": "setText('hero-monitor'",
+        "the band edges have one definition": "FP.SCORE_BAND_EDGES",
+        "the alert preview reads the same incidents as the alerts page": "renderAlertPreview",
     },
     "styles.css": {
         "change note": "change-note",
@@ -128,6 +166,14 @@ NEEDLES = {
         "the spotlight sentence is styled": ".hero-reason",
         "the raw model line is styled": ".raw-model",
         "the worked example is styled": ".breakdown-list",
+        # M10: the premium layer, the form and the two new decorations
+        "the premium layer is deployed": "M10 - premium pass",
+        "the backdrop is centred and scrimmed": ".bg-layer::after",
+        "the subscription card is styled": ".subscribe-result",
+        "the city meter is styled": ".city-meter-fill",
+        "the header counters are chips": ".meta-item",
+        "the three steps are styled": ".works-step",
+        "the subscriber's field is styled": ".subscribe-input",
     },
 }
 for asset, wanted in NEEDLES.items():
@@ -161,6 +207,10 @@ FORBIDDEN_ASSETS = {
         "a driver is labelled with its variable name": "metricMeta(driver).label",
         "a city card carries an unexplained weighted contribution": "metric-weight",
         "the score caption is model vocabulary": "heuristic score 0-1",
+        # M10: the page never renders what AWS said, only what it means
+        "the page renders an AWS error class": "AuthorizationError",
+        "the page renders a subscription ARN": "SubscriptionArn",
+        "the page claims the address is subscribed": "You are subscribed",
     },
 }
 for asset, forbidden in FORBIDDEN_ASSETS.items():

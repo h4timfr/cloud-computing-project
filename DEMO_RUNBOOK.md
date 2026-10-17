@@ -284,6 +284,59 @@ demo, with F12 open.
 | 9 | **Empty and error states** | stop the API (`?api=` pointing at a dead host) and reload: every section says what is wrong and offers "Check again now" — never a blank panel, never a raw error. |
 | 10 | **Trust wording** | on Alerts, the delivery panel must never read as "email sent". If a sentence implies a subscriber received something, that sentence is a defect. |
 
+## 4c. The M10 look, and the subscription form you can show (five more minutes)
+
+### What changed on screen
+
+| Where | What to look at |
+|---|---|
+| Backdrop | the rainy city is *atmosphere*: a strong navy scrim sits between the image and the text, so no paragraph is ever read against bright detail. If a heading competes with the photograph, that is a defect worth reporting |
+| Header | three groups — brand, the five sections (centred, current one in a pill), and the system state on the right ("System healthy", "Live data", "Last updated") as chips. **The model name is not here any more**; it is in the Overview's folded "Snapshot and technical summary" and on Methodology |
+| Hero | the question, then the answer in words ("No city is at flood risk right now."), the monitor line ("We are monitoring 5 Indian cities. All are currently below the alert level."), the plain reason sentence, one facts line, and the leading city. Beside it: a short explanation and one button, **Learn how risk is calculated**. No formula |
+| Summary cards | four cards with an icon each; the highest-risk one reads `Highest risk city / <city> / <BAND> / score … · updated … ago` |
+| City cards | a gradient city plate (an abstract city-water mark — there is no licensed city photograph in this project, and none is fetched from anywhere), the band, the score, a short meter whose fill is the score and whose ticks are the three documented band edges, rainfall, freshness, and a click affordance |
+| Recent alerts | on the Overview: the two newest active incidents, or the calm state — "✓ No active flood alerts / All monitored cities are currently below the alert level." with a *View alerts* button |
+| How FloodPulse works | three steps: Collect · Analyse · Alert |
+
+### The subscription form — rehearse this once, exactly
+
+The card is on the **Alerts** page, between the resolved incidents and the system status. Local part
+only: **use an address you actually own and can open**, because the whole point is that AWS emails it.
+
+1. Open Alerts. The card reads "Get flood alerts by email" / "Receive an email when FloodPulse
+   detects WARNING or CRITICAL flood risk." — and the three short notes: the confirmation sentence,
+   the privacy sentence, and the SNS unsubscribe explanation.
+2. Type `not-an-address` and submit → **"Enter a valid email address."**, field marked invalid, focus
+   stays in the field. Say the words: *the browser and the API both refuse it; nothing is sent.*
+3. Type your own address and submit → **"Check your inbox"** / "We sent a subscription confirmation
+   request through Amazon SNS. Click 'Confirm subscription' in that email to activate FloodPulse
+   alerts." It never says "You are subscribed", because the page cannot know that yet — that is the
+   honest state, and it is the sentence to dwell on if anyone asks about delivery.
+4. Open the mailbox: the message is from *Amazon Web Services*, and the link is Amazon's own. Click
+   **Confirm subscription** → SNS now holds a confirmed subscription. *Nothing in FloodPulse stores
+   the address*: SNS owns the endpoint, and the DynamoDB rate-limit item holds a SHA-256 digest, a
+   count and a TTL, never the address.
+5. Submit the same address three more times within the hour → **"Too many subscription requests.
+   Please try again later."** Show the item that is doing it (`build/` script or the console):
+   `pk = SUBRATE#<sha256>`, `sk = WINDOW#<hour bucket>`, `count`, `ttl`. Note for the audience that it
+   contains no email address.
+6. If the permission has not been approved yet, step 3 answers **"We couldn't create the subscription
+   request right now. Please try again."** — and that is the honest, correct behaviour of an
+   undeployed backend, not a bug to hide. Say so, and say why: the Lambda is not allowed to call
+   `sns:Subscribe`, and that permission is a deliberate manual approval.
+
+**Do not demo the confirmation step with somebody else's address**, and never read a real address
+aloud. If you cannot open a mailbox during the demo, show steps 1–3 and the rate-limit item instead:
+the flow is provable end to end without a mailbox, and the last step is Amazon's, not ours.
+
+### Two commands that make the above fail loudly if it breaks
+
+```powershell
+python tools/verify_deployed_page.py   # all deployed page contracts hold (14 M10 needles, 7 forbidden strings)
+node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com \
+  --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com   # 66 runtime checks against the live API
+```
+
 ## 5. What not to claim
 
 * Do not say the cities are "at risk" as a forecast — the bands are illustrative.
@@ -304,6 +357,12 @@ it from memory.
   be from a `<meta>` policy: `frame-ancestors` is ignored there, and S3 website hosting cannot send
   the HTTP response header that would work. The security section of `README.md` records the gap and
   why it is acceptable for a page with no login, no session and no form.
+* **Do not say a visitor "is subscribed" after they submit the form.** Until they follow the link in
+  Amazon's confirmation email, the subscription is pending, and the page says exactly that: "Check
+  your inbox … Click 'Confirm subscription' in that email". Saying more would be a claim this system
+  cannot verify. (Same rule for the delivery panel, above.)
+* Do not promise a rate limit as a security boundary: the per-address window is three confirmation
+  requests an hour, and the outer bound is still API Gateway's stage throttle, which is unset.
 * Do not mix the two fleets in one sentence: `FLOODPULSE_ZONE_MODE` selects exactly one fleet, and the
   demo story is rehearsed on the demo fleet only.
 * Do not read a city that stopped reporting as a calm city: its score is an old one, and the board

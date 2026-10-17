@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FloodPulseSnsPublish",
+      "Effect": "Allow",
+      "Action": [
+        "sns:Publish",
+        "sns:Subscribe"
+      ],
+      "Resource": "arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts"
+    }
+  ]
+}

@@ -1243,6 +1243,7 @@
     bell: 'M6.5 17.5V11a5.5 5.5 0 0 1 11 0v6.5|M4.5 17.5h15|M10 20.4a2.2 2.2 0 0 0 4 0',
     shield: 'M12 3.5 5 6v5.5c0 4.2 2.8 7.4 7 8.9 4.2-1.5 7-4.7 7-8.9V6l-7-2.5Z|M9 12l2.2 2.2L15.4 10',
     heart: 'M12 20s-7-4.4-7-9.4A4.1 4.1 0 0 1 12 7.6a4.1 4.1 0 0 1 7 3c0 5-7 9.4-7 9.4Z',
+    mail: 'M3.5 6.5h17v11h-17z|M3.5 7 12 13l8.5-6',
     // movement and layout
     up: 'M12 19V5|M6.5 10.5 12 5l5.5 5.5',
     down: 'M12 5v14|M6.5 13.5 12 19l5.5-5.5',
@@ -1539,18 +1540,24 @@
   }
 
   /* One sentence for the top of the page, written for a non-technical reader. The noun comes
-   * from the fleet's own mode, so demo zones are never described as cities. */
+   * from the fleet's own mode, so demo zones are never described as cities.
+   *
+   * The verb follows the count, not the fleet: "1 of 5 cities **is** worth watching" is the
+   * sentence, because the subject is the "1". It read "are" until M10, which is the kind of
+   * detail that makes a monitoring product look translated. */
   function fleetHeadline(worst, counts, zoneCount, plural) {
     var noun = plural || 'cities';
     var singular = noun === 'cities' ? 'city' : 'zone';
+    var verb = function (count) { return count === 1 ? ' is' : ' are'; };
     if (worst === 'CRITICAL') {
-      return counts.CRITICAL + ' of ' + zoneCount + ' ' + noun + ' are at a critical flood risk right now.';
+      return counts.CRITICAL + ' of ' + zoneCount + ' ' + noun + verb(counts.CRITICAL) +
+        ' at a critical flood risk right now.';
     }
     if (worst === 'WARNING') {
       return 'Flooding is possible in ' + counts.WARNING + ' of ' + zoneCount + ' ' + noun + '.';
     }
     if (worst === 'WATCH') {
-      return counts.WATCH + ' of ' + zoneCount + ' ' + noun + ' are worth watching.';
+      return counts.WATCH + ' of ' + zoneCount + ' ' + noun + verb(counts.WATCH) + ' worth watching.';
     }
     if (worst === 'UNKNOWN') return 'Waiting for the first readings.';
     return 'No ' + singular + ' is at flood risk right now.';
@@ -1606,6 +1613,7 @@
         '" href="' + escapeHtml(hashFor('city', zone.zone_id)) + '" aria-label="' + escapeHtml(zone.name) + ' ' +
         escapeHtml(noun) + ' detail">' +
         '<header class="city-head">' +
+        cityThumb(zone) +
         '<h3 data-f="zone_name">' + escapeHtml(zone.name) + '</h3>' +
         bandPill(latest ? latest.risk_class : null) +
         '</header>' +
@@ -1615,6 +1623,7 @@
         '<span class="city-score-unit">risk score</span>' +
         (latest ? trendIcon(latest.trend, 'city-trend') : '') +
         '</div>' +
+        cityMeter(zone) +
         '<div class="city-measures">' +
         metricFigure(zone, 'rainfall_mm_per_hr', 'figure-rainfall') +
         metricFigure(zone, 'soil_saturation_pct', 'figure-soil') +
@@ -2416,6 +2425,189 @@
     };
   }
 
+  /* ================================================================== M10 ===
+   *
+   * Presentation pieces for the premium pass, plus the wording of the public email
+   * subscription form.
+   *
+   * Nothing here invents a number: the meter's fill is the score the API reported, the
+   * monitoring sentence counts the bands the payload reported, and the alert preview shows
+   * the incidents the incidents route returned. The subscription wording is deliberately
+   * unable to promise delivery - AWS sends the confirmation email, and until the visitor
+   * follows it the subscription is pending, so no state on this page may say "subscribed".
+   */
+
+  /* The band boundaries, as numbers, in one place: the history chart shades them, the city
+   * meter ticks them, and both must agree with the documented heuristic-v1 boundaries. */
+  var SCORE_BAND_EDGES = [0.35, 0.6, 0.8];
+
+  /* What the fleet actually is, for copy: the live India fleet or the simulated board. */
+  function regionNoun(payload) {
+    return (payload && payload.zone_mode === 'live_weather') ? 'Indian cities' : 'simulated zones';
+  }
+
+  /* The monitoring sentence under the hero headline. Every clause follows a count from the
+   * payload, and the calm branch is only used when the payload really has nothing above
+   * NORMAL - the same rule the headline follows. */
+  function monitorLine(payload, overview) {
+    var ov = overview || {};
+    var counts = ov.counts || bandCounts(payload || {});
+    var total = toNumber(ov.total);
+    var region = regionNoun(payload);
+    if (total === null) total = ((payload && payload.zones) || []).length;
+    var fleet = 'We are monitoring ' + total + ' ' + region + '.';
+    if (!total) {
+      return 'FloodPulse monitors rainfall, soil moisture and drainage across ' + region + '.';
+    }
+    if (counts.CRITICAL) {
+      return fleet + ' ' + counts.CRITICAL + ' of them ' +
+        (counts.CRITICAL === 1 ? 'is' : 'are') + ' at critical risk right now.';
+    }
+    if (counts.WARNING) {
+      return fleet + ' Flooding is possible in ' + counts.WARNING + ' of them.';
+    }
+    if (counts.WATCH) {
+      return fleet + ' ' + counts.WATCH + ' of them ' + (counts.WATCH === 1 ? 'is' : 'are') +
+        ' at watch level, worth keeping an eye on.';
+    }
+    if (toNumber(ov.reporting) === 0) return fleet + ' No scored reading has arrived yet.';
+    return fleet + ' All are currently below the alert level.';
+  }
+
+  /* An abstract thumbnail for a city card. There is no licensed photograph of these cities in
+   * the repository and none may be fetched, so the card carries a drawn plate: a gradient whose
+   * hue follows the city's band, with the local skyline-and-water glyph on top. Decorative. */
+  function cityThumb(zone, size) {
+    var latest = zone && zone.latest;
+    var band = bandKey(latest ? latest.risk_class : null);
+    return '<span class="city-thumb band-' + band + '" data-band="' + escapeHtml(band) +
+      '" aria-hidden="true">' + icon('city', size || 24) + '</span>';
+  }
+
+  /* A short progress meter for the risk score: the fill is the score, the ticks are the
+   * documented band boundaries. Decorative - the score is written next to it in figures, and
+   * the band in words - so a reader who cannot see the bar loses nothing. */
+  function cityMeter(zone) {
+    var latest = zone && zone.latest;
+    var band = bandKey(latest ? latest.risk_class : null);
+    var pct = latest ? riskPercent(latest.risk_score) : null;
+    var ticks = SCORE_BAND_EDGES.map(function (edge) {
+      return '<i class="city-meter-tick" style="--pct:' + (edge * 100).toFixed(0) + '"></i>';
+    }).join('');
+    if (pct === null) {
+      return '<span class="city-meter is-empty band-unknown" data-band="unknown" aria-hidden="true">' +
+        '<i class="city-meter-fill" style="--pct:0"></i>' + ticks + '</span>';
+    }
+    return '<span class="city-meter band-' + band + '" data-band="' + escapeHtml(band) + '" aria-hidden="true">' +
+      '<i class="city-meter-fill" data-f="risk-meter" style="--pct:' + pct.toFixed(1) + '"></i>' +
+      ticks +
+      '</span>';
+  }
+
+  /* The compact alert preview on the Overview: the two newest active alerts, or the calm
+   * empty state. It reuses the real alert row, so the preview and the Alerts page can never
+   * disagree about what an incident says. */
+  function alertPreview(payload, options) {
+    var opts = options || {};
+    var plural = opts.plural || 'cities';
+    var noun = opts.noun || 'city';
+    var button = '<p class="preview-actions"><a class="btn btn-quiet" href="#/alerts">View alerts' +
+      CITY_ARROW + '</a></p>';
+    if (!payload) {
+      return '<p class="muted" data-f="loading">checking current alerts…</p>';
+    }
+    var split = alertsSplit(payload);
+    if (!split.active.length) {
+      return '<div class="preview-empty" data-f="alert-preview-empty">' +
+        '<span class="preview-check" aria-hidden="true">' + icon('check', 24) + '</span>' +
+        '<div>' +
+        '<p class="preview-title">No active flood alerts</p>' +
+        '<p class="muted small">All monitored ' + escapeHtml(plural) +
+        ' are currently below the alert level.</p>' +
+        '</div></div>' + button;
+    }
+    var rows = split.active.slice(0, 2).map(function (incident) {
+      return alertRow(incident, opts.nowMs, {
+        silentZoneIds: opts.silentZoneIds || [],
+        alerting: payload.alerting
+      });
+    }).join('');
+    var more = split.active.length > 2
+      ? '<p class="muted small">' + (split.active.length - 2) + ' more active ' +
+        (split.active.length - 2 === 1 ? 'alert is' : 'alerts are') + ' listed on the alerts page.</p>'
+      : '';
+    return '<ul class="alert-list preview-list">' + rows + '</ul>' + more + button;
+  }
+
+  /* ------------------------------------------------- email alert subscriptions ---
+   *
+   * A visitor's browser calls POST /subscriptions, which asks SNS to subscribe the address.
+   * AWS sends the confirmation message; the browser never sees the topic, the subscription
+   * ARN or any AWS error text. These are the only four things the form may say, and none of
+   * them claims that anybody is subscribed.
+   */
+
+  var SUBSCRIBE_MAX_LENGTH = 254;
+  var SUBSCRIBE_ADDRESS = /^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+
+  /* The same shape the server enforces, so the common mistake never leaves the browser. The
+   * server still decides: this is a convenience, not a control. */
+  function looksLikeEmail(value) {
+    var address = String(value === null || value === undefined ? '' : value).trim();
+    if (!address || address.length > SUBSCRIBE_MAX_LENGTH) return false;
+    if (/[\s\x00-\x1f\x7f]/.test(address)) return false;
+    if (address.indexOf('..') >= 0) return false;
+    if (!SUBSCRIBE_ADDRESS.test(address)) return false;
+    return /[a-z]{2,}$/i.test(address.split('@')[1] || '');
+  }
+
+  /* The four outcomes, in the words the form shows. ``pending`` is the success state and it
+   * still refuses to claim a subscription: only AWS's confirmation link does that. */
+  function subscriptionResult(kind) {
+    var copies = {
+      idle: { tone: 'quiet', title: '', body: '' },
+      pending: {
+        tone: 'good',
+        title: 'Check your inbox',
+        body: 'We sent a subscription confirmation request through Amazon SNS. Click ' +
+          '\u201cConfirm subscription\u201d in that email to activate FloodPulse alerts.'
+      },
+      invalid: {
+        tone: 'warn',
+        title: 'Enter a valid email address.',
+        body: 'Use one address, like you@example.com. Nothing has been sent.'
+      },
+      rate_limited: {
+        tone: 'warn',
+        title: 'Too many subscription requests. Please try again later.',
+        body: 'This address has asked more than three times in the last hour, so FloodPulse ' +
+          'has not asked Amazon SNS again. Nothing new has been sent.'
+      },
+      unavailable: {
+        tone: 'warn',
+        title: "We couldn\u2019t create the subscription request right now. Please try again.",
+        body: 'FloodPulse could not reach its notification service, so nothing was subscribed ' +
+          'and no address was stored.'
+      },
+      offline: {
+        tone: 'warn',
+        title: "We couldn\u2019t create the subscription request right now. Please try again.",
+        body: 'The request did not reach FloodPulse. Check your connection and try again.'
+      }
+    };
+    return copies[kind] || copies.unavailable;
+  }
+
+  /* Map one HTTP outcome to one of those four states. Nothing else may be shown: an AWS error
+   * body, a stack trace or a topic ARN must never reach the page. */
+  function subscriptionKindForStatus(status) {
+    var code = toNumber(status);
+    if (code === 202) return 'pending';
+    if (code === 429) return 'rate_limited';
+    if (code === 400 || code === 422) return 'invalid';
+    return 'unavailable';
+  }
+
   var api = {
     BANDS: BANDS,
     METRIC_ORDER: METRIC_ORDER,
@@ -2544,7 +2736,18 @@
     alertDelivery: alertDelivery,
     deliveryPanel: deliveryPanel,
     systemHealth: systemHealth,
-    alertReason: alertReason
+    alertReason: alertReason,
+    // M10: the premium pieces and the email subscription form's vocabulary
+    SCORE_BAND_EDGES: SCORE_BAND_EDGES,
+    regionNoun: regionNoun,
+    monitorLine: monitorLine,
+    cityThumb: cityThumb,
+    cityMeter: cityMeter,
+    alertPreview: alertPreview,
+    SUBSCRIBE_MAX_LENGTH: SUBSCRIBE_MAX_LENGTH,
+    looksLikeEmail: looksLikeEmail,
+    subscriptionResult: subscriptionResult,
+    subscriptionKindForStatus: subscriptionKindForStatus
   };
 
   root.FP = api;

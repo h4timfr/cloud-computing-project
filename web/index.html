@@ -90,8 +90,7 @@
       <span id="conn-announce" class="sr-only" role="status" aria-live="polite"></span>
     </div>
     <div class="topbar-meta">
-      <span class="meta-item">updated <b id="last-update">–</b></span>
-      <span class="meta-item">model <b id="summary-model">heuristic-v1</b></span>
+      <span class="meta-item" title="when this page last received a snapshot from the API">updated <b id="last-update">–</b></span>
     </div>
   </div>
 </header>
@@ -105,23 +104,41 @@
 
   <!-- ============================================================= Overview -->
   <section id="view-overview" class="view" tabindex="-1" data-view="overview" aria-labelledby="ov-title">
-    <header class="view-head hero-head">
-      <p class="hero-kicker">FloodPulse India · flash-flood risk</p>
-      <h2 class="view-title hero-title" id="ov-title">Is any city at risk of flooding right now?</h2>
-      <p class="view-lede hero-status" id="ov-headline" role="status" aria-live="polite">Connecting to the FloodPulse API…</p>
-      <p class="view-intro" id="ov-intro">FloodPulse watches rainfall, soil saturation and drainage across major Indian cities, and shows how close each one is to flooding.</p>
-      <p class="view-sub muted" id="ov-subline"></p>
-    </header>
-
-    <div id="ov-stats" class="stat-row" aria-label="Fleet summary"></div>
-
-    <div id="hero" class="hero-slot">
-      <div class="card hero hero-empty">
-        <p class="hero-kicker">Highest risk</p>
-        <h2>Waiting for the first reading</h2>
-        <p class="muted">The city with the highest risk score appears here as soon as the API answers.</p>
+    <!-- The hero answers the first question on the page. It is complete in the HTML, not built by
+         script: a reader who arrives before the first poll, or with scripting blocked, still gets
+         the icon, the headline, the monitoring sentence and the way to the method. renderHero()
+         only rewrites the text inside it and swaps one band class. -->
+    <div id="hero" class="card hero hero-live" data-band="unknown">
+      <div class="hero-main">
+        <p class="hero-kicker">
+          <span class="hero-glyph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M7 15a4.2 4.2 0 0 1 .5-8.3 5.6 5.6 0 0 1 10.6 1.4A3.6 3.6 0 0 1 17.4 15Z"/>
+              <path d="M8.5 18.4l-1 2.2"/><path d="M12 18.4l-1 2.2"/><path d="M15.5 18.4l-1 2.2"/>
+            </svg>
+          </span>
+          Live flood risk monitoring
+        </p>
+        <h2 class="view-title hero-title" id="ov-title">Is any city at risk of flooding right now?</h2>
+        <p class="hero-headline" id="ov-headline" role="status" aria-live="polite">Connecting to the FloodPulse API…</p>
+        <p class="hero-monitor" id="hero-monitor">Reading the monitored cities from the API…</p>
+        <p class="hero-reason" id="hero-why"></p>
+        <p class="hero-facts" id="hero-facts"></p>
+        <p class="hero-state muted small" id="hero-state"></p>
       </div>
+      <aside class="hero-aside">
+        <p class="hero-aside-title">What FloodPulse does</p>
+        <p id="ov-intro">FloodPulse watches rainfall, soil saturation and drainage across major Indian cities, and shows how close each one is to flooding.</p>
+        <p class="muted small" id="ov-subline"></p>
+        <a class="btn btn-primary hero-cta" href="#/data">Learn how risk is calculated
+          <svg class="arrow" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8h9"/><path d="M8.5 4.5 12 8l-3.5 3.5"/></svg>
+        </a>
+        <p class="muted small">No formulas here — the full calculation and the raw model output are on the Data &amp; Methodology page.</p>
+      </aside>
     </div>
+
+    <h3 class="sr-only">Fleet summary</h3>
+    <div id="ov-stats" class="stat-row" aria-label="Fleet summary"></div>
 
     <section class="band-strip-bar card" aria-label="Fleet risk distribution">
       <h3 class="block-title" id="band-strip-title">Cities by risk level</h3>
@@ -136,9 +153,43 @@
       <p id="change-note" class="change-note" role="status" aria-live="polite" hidden></p>
     </section>
 
-    <h3 class="block-title" id="city-cards-title">City by city</h3>
+    <h3 class="block-title" id="city-cards-title">City flood risk</h3>
     <section id="city-cards" class="city-cards" aria-labelledby="city-cards-title">
       <p class="muted" data-f="loading">waiting for data…</p>
+    </section>
+
+    <section id="alert-preview-card" class="alert-preview card" aria-labelledby="alert-preview-title">
+      <h3 class="block-title" id="alert-preview-title">Recent alerts</h3>
+      <div id="alert-preview">
+        <p class="muted" data-f="loading">checking current alerts…</p>
+      </div>
+    </section>
+
+    <section class="works" aria-labelledby="works-title">
+      <h3 class="block-title" id="works-title">How FloodPulse works</h3>
+      <ol class="works-steps">
+        <li class="works-step">
+          <span class="works-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 15a4.2 4.2 0 0 1 .5-8.3 5.6 5.6 0 0 1 10.6 1.4A3.6 3.6 0 0 1 17.4 15Z"/><path d="M8.5 18.4l-1 2.2"/><path d="M12 18.4l-1 2.2"/><path d="M15.5 18.4l-1 2.2"/></svg>
+          </span>
+          <h4>Collect</h4>
+          <p>Live rainfall and weather information for every monitored city.</p>
+        </li>
+        <li class="works-step">
+          <span class="works-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3.5 3 8l9 4.5L21 8l-9-4.5Z"/><path d="M3 12.5 12 17l9-4.5"/><path d="M3 17 12 21.5 21 17"/></svg>
+          </span>
+          <h4>Analyse</h4>
+          <p>Combine weather and drainage indicators into one risk score.</p>
+        </li>
+        <li class="works-step">
+          <span class="works-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6.5 17.5V11a5.5 5.5 0 0 1 11 0v6.5"/><path d="M4.5 17.5h15"/><path d="M10 20.4a2.2 2.2 0 0 0 4 0"/></svg>
+          </span>
+          <h4>Alert</h4>
+          <p>Create an alert when risk reaches warning levels, and email anyone who asked to be told.</p>
+        </li>
+      </ol>
     </section>
 
     <section id="recent-activity" class="activity-slot" aria-label="Recent activity">
@@ -153,6 +204,7 @@
           <div><dt>Data type</dt><dd id="summary-mode">–</dd></div>
           <div><dt>Freshness</dt><dd id="summary-freshness">–</dd></div>
           <div><dt>Weather source</dt><dd id="summary-weather">–</dd></div>
+          <div><dt>Model</dt><dd><b id="summary-model">heuristic-v1</b> (deterministic, hand-tuned)</dd></div>
         </dl>
         <p class="muted small">FloodPulse reads the API every few seconds while this page is open. The full explanation of
           the model, the data sources and the limitations is on the
@@ -235,6 +287,48 @@
         <li class="muted">waiting for data…</li>
       </ul>
       <p class="muted small" id="incidents-meta">loading incidents…</p>
+    </section>
+
+    <!-- The public subscription form. It belongs to SNS, not to FloodPulse: the page asks the
+         API to subscribe the address, AWS sends the confirmation message, and nothing is stored
+         here but a hashed counter. The copy therefore never says an address is subscribed - only
+         that a confirmation request was sent. -->
+    <section class="alert-section" aria-labelledby="subscribe-title">
+      <div class="card subscribe" id="subscribe-card">
+        <div class="subscribe-lead">
+          <span class="subscribe-glyph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M3.5 6.5h17v11h-17z"/><path d="M3.5 7 12 13l8.5-6"/>
+            </svg>
+          </span>
+          <div>
+            <h3 class="block-title" id="subscribe-title">Get flood alerts by email</h3>
+            <p>Receive an email when FloodPulse detects WARNING or CRITICAL flood risk.</p>
+          </div>
+        </div>
+
+        <form id="subscribe-form" class="subscribe-form" novalidate>
+          <div class="subscribe-row">
+            <label class="subscribe-label" for="subscribe-email">Email address</label>
+            <input id="subscribe-email" class="subscribe-input" type="email" name="email"
+              inputmode="email" autocomplete="email" spellcheck="false"
+              maxlength="254" placeholder="you@example.com"
+              aria-describedby="subscribe-note">
+            <button id="subscribe-button" class="btn btn-primary" type="submit">Subscribe to alerts</button>
+          </div>
+          <p id="subscribe-result" class="subscribe-result" role="status" aria-live="polite" hidden></p>
+        </form>
+
+        <div class="subscribe-notes">
+          <p id="subscribe-note" class="muted small">You’ll receive a confirmation email from Amazon Web Services.
+            Your subscription becomes active only after you confirm it.</p>
+          <p class="muted small">FloodPulse does not send marketing email. Email addresses are used only for this SNS
+            notification subscription: Amazon SNS holds the address, and FloodPulse itself keeps no address at all —
+            just a count that limits how often one address can ask.</p>
+          <p class="muted small">Amazon SNS includes its own unsubscribe link in the alert emails it sends for this
+            topic, so you can stop them from the email itself. FloodPulse has no unsubscribe page of its own.</p>
+        </div>
+      </div>
     </section>
 
     <section class="alert-section" aria-labelledby="alerts-status-title">

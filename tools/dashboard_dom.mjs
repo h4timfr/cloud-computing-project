@@ -68,7 +68,9 @@ export function createFakeDom() {
         }
       },
       get innerHTML() { return this._html || ''; },
-      set innerHTML(value) { this._html = String(value); },
+      // Assigning innerHTML replaces the element's children in a browser, so the stub drops
+      // them too: a harness that reads `children` after a re-render must not see the old ones.
+      set innerHTML(value) { this._html = String(value); this.children.length = 0; },
       setAttribute(name, value) { attrsOf(node).set(name, String(value)); },
       getAttribute(name) { return attrsOf(node).has(name) ? attrsOf(node).get(name) : null; },
       removeAttribute(name) { attrsOf(node).delete(name); },
@@ -261,18 +263,28 @@ export function createRuntime() {
     if (answer && answer.throw) throw answer.throw;
     const status = answer && answer.status !== undefined ? answer.status : 200;
     const body = answer ? answer.body : null;
+    // `text()` exists on every real Response, and the subscription form drains the body with it
+    // so that a server error message is never rendered; a stub without it would make the page
+    // look like it had failed while the network was fine.
+    const asText = () => Promise.resolve(body === null ? '' : JSON.stringify(body));
     if (status < 200 || status >= 300) {
       return {
         ok: false,
         status,
+        text: asText,
         json: () => Promise.resolve(body === null ? {} : body)
       };
     }
     if (answer && answer.raw !== undefined) {
       // a 200 with a body that is not JSON: response.json() rejects
-      return { ok: true, status, json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON')) };
+      return {
+        ok: true,
+        status,
+        text: () => Promise.resolve('<html>not json</html>'),
+        json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON'))
+      };
     }
-    return { ok: true, status, json: () => Promise.resolve(body) };
+    return { ok: true, status, text: asText, json: () => Promise.resolve(body) };
   }
 
   const settle = async () => {

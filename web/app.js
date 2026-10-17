@@ -45,7 +45,7 @@
   var INCIDENTS_LIMIT = 20;
   var FETCH_TIMEOUT_MS = 9000;
   var SESSION_POINTS = 60;
-  var BAND_EDGES = [0.35, 0.60, 0.80]; // heuristic-v1 band boundaries (see README)
+  var BAND_EDGES = FP.SCORE_BAND_EDGES; // heuristic-v1 band boundaries, defined once in lib.js
   var BAND_FILL = {
     NORMAL: 'rgba(34, 211, 238, 0.16)',
     WATCH: 'rgba(251, 191, 36, 0.16)',
@@ -123,6 +123,11 @@
     aboutSignature: null,
     healthSignature: null,
     cityIncidentsSignature: null,
+    // M10: the alert preview on the Overview, and the state of the subscription form
+    // ('idle' before anything is attempted, then one of the four outcomes)
+    alertPreviewSignature: null,
+    subscribe: 'idle',
+    subscribeInFlight: false,
     // risk-class transitions this page watched happen while it was open, newest first
     changes: [],
     menuOpen: false
@@ -169,7 +174,11 @@
       // M9: system health, recent activity, alert delivery, per-city alert history and About
       'health', 'health-pill', 'health-dot', 'health-word', 'health-detail', 'health-list',
       'recent-activity', 'alerts-status', 'alerts-delivery', 'city-incidents',
-      'about-cities', 'about-limitations', 'history-summary'
+      'about-cities', 'about-limitations', 'history-summary',
+      // M10: the hero's own fields, the alert preview on the Overview, and the subscription form
+      'hero-monitor', 'hero-why', 'hero-facts', 'hero-state',
+      'alert-preview', 'alert-preview-title',
+      'subscribe-form', 'subscribe-email', 'subscribe-button', 'subscribe-result', 'subscribe-note'
     ];
     ids.forEach(function (id) { el[id] = $(id); });
     // A page and a controller from different revisions (a half-finished deploy, a hand-edited
@@ -285,7 +294,7 @@
     var Singular = singular.charAt(0).toUpperCase() + singular.slice(1);
     setText('ov-intro', FP.productIntro(payload));
     setText('band-strip-title', Plural + ' by risk level');
-    setText('city-cards-title', Singular + ' status');
+    setText('city-cards-title', Singular + ' flood risk');
     setText('cities-lede', 'Every monitored ' + singular + ' with its current risk level. ' +
       'Open one for the full picture.');
     setText('incidents-zone-header', Singular);
@@ -521,6 +530,18 @@
     }
     // the feed countdown ticks here, once per second, on the panel row only
     if (state.payload) renderFreshness(state.payload);
+    // Before the first successful poll the hero holds the copy index.html ships with. Once the
+    // page knows a request failed it must not keep promising a connection: the headline says
+    // what is actually true, and the sentence under it says what happens next. Both are written
+    // only from the failure branch, so a still-connecting page keeps its static wording.
+    if (!state.payload && state.lastError) {
+      setText('ov-headline', 'Awaiting live data');
+      setText('hero-monitor', 'The FloodPulse API has not answered this page yet, so no reading ' +
+        'is shown. The board fills in by itself as soon as a request succeeds — nothing to reload.');
+      setText('hero-why', '');
+      setText('hero-facts', '');
+      setText('hero-state', '');
+    }
     if (state.route.view === 'city') tickDetailFreshness();
     // The health pill and the chrome around the connection badge change with the connection
     // state, so they are refreshed on the same one-second tick (and are signature-guarded).
@@ -529,61 +550,75 @@
 
   /* ------------------------------------------------------------------- hero --- */
 
+  /* The hero: the fleet's answer, then the reason behind the highest-risk city.
+   *
+   * It patches the card that is already in index.html instead of rebuilding it, so the
+   * structure (icon, kicker, question, headline, monitoring line, reason, facts, and the way to
+   * the method) is on the page before the first poll answers: what a reader sees with scripting
+   * off is the same product, just without numbers. Each field is reached by its own id through
+   * the same `setText` helper the rest of the page uses, so there is exactly one writer per node
+   * and the harness can read each field back the way a browser would read it.
+   *
+   * Nothing technical goes in here: no formula, no variable name, no model id. The band, the
+   * main risk factor, how old the reading is and which way it is going are the whole story,
+   * and the calculation is one click away on the city page and Data & Methodology.
+   */
   function renderHero(payload) {
     var highest = payload.highest_risk_zone;
-    var container = el.hero;
     var feed = FP.feedStatus(payload, Date.now());
     var noun = FP.zoneNoun(payload);
+    var card = el.hero;
+    if (!card) return;
+
+    var emptyHint = feed.live
+      ? 'No city reading has been computed yet. The live fleet fetches rainfall and soil ' +
+        'moisture from ' + (feed.provider || 'the weather provider') +
+        (feed.refreshMinutes ? ' every ' + feed.refreshMinutes + ' minutes' : '') +
+        ' and this panel fills in as soon as the first refresh is ingested.'
+      : 'No simulated reading has been ingested yet. Start the simulator and this panel ' +
+        'populates automatically.';
     if (!highest) {
-      // An empty board has to say why it is empty, and the reason differs per mode: in
-      // live mode nothing is started by hand, the fleet waits for the provider.
-      var hint = feed.live
-        ? 'No city reading has been computed yet. The live fleet fetches rainfall and soil ' +
-          'moisture from ' + FP.escapeHtml(feed.provider || 'the weather provider') +
-          (feed.refreshMinutes ? ' every ' + FP.escapeHtml(feed.refreshMinutes) + ' minutes' : '') +
-          ' and this panel fills in as soon as the first refresh is ingested.'
-        : 'No simulated reading has been ingested yet. Start the simulator ' +
-          '(<code>python tools\\live_simulator.py</code>) and this panel populates automatically.';
-      container.innerHTML =
-        '<div class="card hero hero-empty">' +
-        '<p class="hero-kicker">Highest risk ' + noun + '</p>' +
-        '<h2>Awaiting live data</h2>' +
-        '<p class="muted">' + hint + '</p>' +
-        '</div>';
+      card.setAttribute('data-band', 'unknown');
+      setText('ov-headline', 'Awaiting live data');
+      setText('hero-monitor', emptyHint);
+      setText('hero-why', '');
+      setText('hero-facts', '');
+      setText('hero-state', '');
       return;
     }
+
     var zone = findZone(highest.zone_id);
     var latest = zone && zone.latest ? zone.latest : null;
     var band = FP.bandKey(highest.risk_class);
     var summary = zone ? FP.plainRiskSummary(zone) : null;
-    // The spotlight answers "why this city?" in a sentence, and keeps everything else about the
-    // reading short: the band, the score, the main factor, how old it is and which way it is
-    // going. The model's own output line, the weights and the variable names are deliberately not
-    // here - they belong to the city page's technical section and to Data & Methodology.
-    var trendWords = { up: 'getting worse', down: 'easing', flat: 'holding steady' };
+    var headed = FP.fleetHeadline(FP.classLabel(highest.risk_class),
+      FP.bandCounts(payload), (payload.zones || []).length, FP.zoneNounPlural(payload));
+    card.setAttribute('data-band', band);
+    FP.BANDS.forEach(function (name) {
+      card.classList.remove('band-' + name.toLowerCase());
+    });
+    card.classList.add('band-' + band);
+    setText('ov-headline', headed);
+    setText('hero-monitor', FP.monitorLine(payload, FP.fleetOverview(payload, state.incidents, Date.now())));
+    setText('hero-why', summary && summary.why ? summary.why : '');
+    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
+    // the same information as the cards below, in the order a reader asks for it. The score and
+    // the age are the API's own answer for the leading city (`highest_risk_zone`), not a second
+    // reading taken out of the zone table, so this sentence can never disagree with the band the
+    // page just announced.
     var direction = latest ? FP.trendDirection(latest.trend) : 'flat';
+    var trendWords = { up: 'getting worse', down: 'easing', flat: 'holding steady' };
+    var score = highest.risk_score !== undefined && highest.risk_score !== null
+      ? highest.risk_score : (latest ? latest.risk_score : null);
+    var age = highest.age_seconds !== undefined && highest.age_seconds !== null
+      ? highest.age_seconds : (latest ? latest.age_seconds : null);
     var facts = [];
     if (summary && summary.driverLabel) facts.push('Main risk factor: ' + summary.driverLabel);
-    if (latest) facts.push('Updated ' + FP.ageLabel(latest.age_seconds));
+    if (score !== null) facts.push('Risk score ' + FP.formatScore(score));
+    if (age !== null) facts.push('Updated ' + FP.ageLabel(age));
     if (latest) facts.push('Trend: ' + (trendWords[direction] || 'holding steady'));
-    container.innerHTML =
-      '<div class="card hero band-' + band + '">' +
-      '<div class="hero-main">' +
-      '<p class="hero-kicker">Highest risk ' + noun + '</p>' +
-      '<h2 class="hero-name">' + FP.escapeHtml(highest.name) + '</h2>' +
-      '<p class="hero-reason" data-f="hero-why">' +
-      FP.escapeHtml(summary && summary.why ? summary.why : 'No scored reading has been computed for this ' + noun + ' yet.') +
-      '</p>' +
-      (facts.length ? '<p class="hero-facts">' + FP.escapeHtml(facts.join(' · ')) + '</p>' : '') +
-      '</div>' +
-      '<div class="hero-gauge">' +
-      '<div class="ring ring-lg band-' + band + '" style="--pct:' + FP.riskPercent(highest.risk_score).toFixed(1) + '">' +
-      '<span class="ring-value">' + FP.escapeHtml(FP.formatScore(highest.risk_score)) + '</span>' +
-      '<span class="ring-caption">risk score</span>' +
-      '</div>' +
-      '<span class="pill band-' + band + '">' + FP.escapeHtml(FP.classLabel(highest.risk_class)) + '</span>' +
-      '</div>' +
-      '</div>';
+    setText('hero-facts', facts.join(' · '));
+    setText('hero-state', highest.name + ' · ' + FP.classLabel(highest.risk_class) + ' ' + noun + ' risk');
   }
 
   /* ------------------------------------------------------------------ cards --- */
@@ -1178,9 +1213,13 @@
   /* ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an inline
    * <code>). Every caller must therefore pass markup it built itself or escaped - never a
    * payload string. Anything from the API goes through ``label`` or ``value``, which are
-   * escaped here. */
-  function statCard(label, value, metaHtml, tone) {
+   * escaped here.
+   *
+   * Each card carries one local SVG icon, its label, the value, and one supporting sentence.
+   * The icon is decorative: the label and the sentence are the meaning. */
+  function statCard(label, value, metaHtml, tone, iconName) {
     return '<article class="stat' + (tone ? ' band-' + tone : '') + '">' +
+      (iconName ? '<span class="stat-icon" aria-hidden="true">' + FP.icon(iconName, 20) + '</span>' : '') +
       '<p class="stat-label">' + FP.escapeHtml(label) + '</p>' +
       '<p class="stat-value">' + FP.escapeHtml(value) + '</p>' +
       '<p class="stat-meta">' + metaHtml + '</p>' +
@@ -1195,7 +1234,8 @@
     // so the copy never calls a demo zone a city (renderFleetLabels writes the page labels)
     var noun = FP.zoneNoun(payload);
     var plural = FP.zoneNounPlural(payload);
-    setText('ov-headline', ov.headline);
+    // The headline sentence belongs to the hero, which writes it from the leader's band; this
+    // renderer keeps to the line under it so the two never race for the same node.
     setText('ov-subline', ov.reporting + ' of ' + ov.total + ' ' + plural + ' are reporting a scored reading · updated ' +
       ov.updated + ' · ' + ov.subline);
 
@@ -1205,19 +1245,20 @@
         ? '<span class="pill band-' + FP.bandKey(ov.worst) + '">' + FP.escapeHtml(ov.worst) + '</span>' +
           ' score ' + FP.escapeHtml(ov.leaderScore) +
           // the score is only meaningful with the age of the reading behind it
-          (ov.leaderAge === null ? '' : ' · reading ' + FP.escapeHtml(FP.ageLabel(ov.leaderAge))) +
+          (ov.leaderAge === null ? '' : ' · updated ' + FP.escapeHtml(FP.ageLabel(ov.leaderAge))) +
           (ov.leaderStale ? ' <span class="muted">· not reporting recently</span>' : '')
         : 'The first reading will appear here';
       var alertMeta = ov.activeAlerts
         ? 'highest severity ' + FP.escapeHtml(state.incidents && state.incidents.incidents ? (FP.alertsSplit(state.incidents).active[0] || {}).severity || '–' : '–')
-        : 'nothing needs attention right now';
+        : 'every ' + noun + ' is below the alert level';
       var reportingTone = ov.reporting === 0 ? '' : 'normal';
-      var html = statCard('Highest risk ' + noun, leaderValue, leaderMeta, FP.bandKey(ov.worst)) +
-        statCard('Active alerts', String(ov.activeAlerts), FP.escapeHtml(alertMeta), ov.activeAlerts ? 'warning' : '') +
+      var html = statCard('Highest risk ' + noun, leaderValue, leaderMeta, FP.bandKey(ov.worst), 'chart') +
+        statCard('Active alerts', String(ov.activeAlerts), FP.escapeHtml(alertMeta),
+          ov.activeAlerts ? 'warning' : '', ov.activeAlerts ? 'warning' : 'check') +
         statCard(plural.charAt(0).toUpperCase() + plural.slice(1) + ' reporting', ov.reporting + ' / ' + ov.total,
-          'newest stored reading per ' + noun, reportingTone) +
+          'newest stored reading per ' + noun, reportingTone, 'city') +
         statCard('Weather freshness', ov.feedValue,
-        FP.escapeHtml(ov.freshness || 'waiting for the first provider check'));
+          FP.escapeHtml(ov.freshness || 'waiting for the first provider check'), '', 'refresh');
       if (el['ov-stats'].getAttribute('data-rendered') !== html) {
         el['ov-stats'].innerHTML = html;
         el['ov-stats'].setAttribute('data-rendered', html);
@@ -1225,7 +1266,31 @@
     }
 
     renderCityCards(state.zones);
+    renderAlertPreview(state.incidents);
     renderRecentActivity();
+  }
+
+  /* "Is anything actually alerting?" in one compact block: the two newest active alerts, or a
+   * calm state that says so plainly and points at the alerts page. It reads the same incidents
+   * payload as the Alerts page, so the two can never disagree. */
+  function renderAlertPreview(payload) {
+    var host = el['alert-preview'];
+    if (!host) return;
+    var signature = (payload ? FP.incidentsSignature(payload) : 'loading') + '|' +
+      (state.incidentsError || '') + '|' + FP.zoneNounPlural(state.payload);
+    if (signature === state.alertPreviewSignature) return;
+    state.alertPreviewSignature = signature;
+    host.innerHTML = FP.alertPreview(state.incidentsError ? null : payload, {
+      noun: FP.zoneNoun(state.payload),
+      plural: FP.zoneNounPlural(state.payload),
+      nowMs: Date.now(),
+      silentZoneIds: FP.staleZoneIds(state.payload)
+    });
+    if (el['alert-preview-title']) {
+      el['alert-preview-title'].textContent = payload && FP.alertsSplit(payload).active.length
+        ? 'Active alerts'
+        : 'Recent alerts';
+    }
   }
 
   /* "What should I pay attention to?" - the changes the page has actually observed since it was
@@ -1474,6 +1539,96 @@
       if (!incident) return;
       var node = row.querySelector('[data-f="duration"]');
       if (node) node.textContent = FP.formatDuration(FP.incidentDurationSeconds(incident, nowMs)) + ' so far';
+    });
+  }
+
+  /* ------------------------------------------------- email alert subscriptions --- */
+
+  /* One public form: an address, a button, and a result that never claims more than AWS has
+   * done. The browser posts the address to POST /subscriptions; the API asks SNS to subscribe
+   * it, and AWS sends the confirmation message. The visitor is only "subscribed" once they
+   * follow that link, so the success state says "check your inbox" and nothing else.
+   *
+   * What the page must never show: the topic ARN, a subscription ARN, an AWS error body, a
+   * stack trace, or any HTTP detail. The four states below are the whole vocabulary, and the
+   * only thing the form reveals about an address is what the visitor typed themselves. */
+  function setSubscriptionState(kind, address) {
+    var copy = FP.subscriptionResult(kind);
+    var node = el['subscribe-result'];
+    var input = el['subscribe-email'];
+    state.subscribe = kind;
+    if (node) {
+      node.className = 'subscribe-result is-' + copy.tone;
+      node.innerHTML = '';
+      var title = document.createElement('p');
+      title.className = 'subscribe-result-title';
+      title.textContent = copy.title;
+      var body = document.createElement('p');
+      body.className = 'subscribe-result-body';
+      body.textContent = copy.body;
+      node.appendChild(title);
+      node.appendChild(body);
+      // the empty state is not an outcome: before the first attempt nothing is announced
+      node.hidden = kind === 'idle';
+    }
+    if (input) {
+      var invalid = kind === 'invalid';
+      input.setAttribute('aria-invalid', invalid ? 'true' : 'false');
+      if (invalid) input.setAttribute('aria-describedby', 'subscribe-result subscribe-note');
+      else input.removeAttribute('aria-describedby');
+      if (kind === 'pending' && address) {
+        // the address stays in the field so the visitor can see what was sent, and can still
+        // copy it - the form never says an address is subscribed, so this is not a claim either
+        input.value = address;
+      }
+    }
+    var button = el['subscribe-button'];
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Subscribe to alerts';
+      button.removeAttribute('aria-busy');
+    }
+  }
+
+  function submitSubscription() {
+    var input = el['subscribe-email'];
+    var button = el['subscribe-button'];
+    if (!input || state.subscribeInFlight) return;
+    var address = String(input.value === null || input.value === undefined ? '' : input.value).trim();
+    // The same shape the server enforces: a typo is caught here rather than costing one of the
+    // three attempts an address is allowed per hour. The server still decides.
+    if (!FP.looksLikeEmail(address)) {
+      setSubscriptionState('invalid', null);
+      if (typeof input.focus === 'function') input.focus();
+      return;
+    }
+
+    state.subscribeInFlight = true;
+    if (button) {
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = 'Sending…';
+    }
+    var done = function (kind) {
+      state.subscribeInFlight = false;
+      setSubscriptionState(kind, kind === 'pending' ? address : null);
+    };
+    fetch(API_BASE + '/subscriptions', {
+      method: 'POST',
+      mode: 'cors',
+      cache: 'no-store',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: address })
+    }).then(function (response) {
+      // Only the status code is used. The body is drained (so the connection is reusable) and
+      // never displayed: an AWS error message is not something a visitor should ever read.
+      return response.text().then(function () {
+        return response.status;
+      });
+    }).then(function (status) {
+      done(FP.subscriptionKindForStatus(status));
+    }).catch(function () {
+      done('offline');
     });
   }
 
@@ -1730,6 +1885,8 @@
     }
     // the alerts view reads the same payload, split into active and resolved
     renderAlerts();
+    // and the Overview's compact preview reads it too, so the two agree
+    renderAlertPreview(state.incidents);
     // the system status includes the active-alert count, so it moves with the incidents
     renderSystemHealth();
   }
@@ -1818,9 +1975,26 @@
       state.healthSignature = null;
       state.breakdownSignature = null;
       state.detailSignature = null;
+      state.alertPreviewSignature = null;
       renderCityCards(state.zones);
+      renderAlertPreview(state.incidents);
       renderSystemHealth();
       setTimeout(function () { button.disabled = false; }, 1200);
+    });
+
+    // The public subscription form. Submitting is intercepted: the page posts to the API with
+    // fetch and renders the outcome itself, so the browser never navigates and CSP's
+    // `form-action 'none'` is never even asked to allow a submission.
+    if (el['subscribe-form']) {
+      el['subscribe-form'].addEventListener('submit', function (event) {
+        event.preventDefault();
+        submitSubscription();
+      });
+    }
+    bindTo('subscribe-email', 'input', function () {
+      // typing clears a previous verdict: an old "enter a valid address" must not sit next to a
+      // field the visitor has since corrected
+      if (state.subscribe === 'invalid') setSubscriptionState('idle', null);
     });
 
     bindTo('history-zone', 'click', function (event) {

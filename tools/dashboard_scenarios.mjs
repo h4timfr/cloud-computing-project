@@ -194,7 +194,7 @@ async function main() {
 
     await check('an empty payload renders empty states instead of throwing', () => {
       assert.equal(dom.text('conn-badge'), 'LIVE', 'the API answered, so the API is live');
-      assert.match(dom.html('hero'), /Awaiting live data/);
+      assert.match(dom.text('ov-headline'), /Awaiting live data/);
       assert.match(dom.html('ranking'), /waiting for data/);
       assert.match(dom.text('brand-subtitle'), /Simulated sensor fleet|demo mode/,
         'an unknown fleet must not be captioned as the live India fleet');
@@ -208,7 +208,7 @@ async function main() {
     await runtime.settle();
 
     await check('an empty zone list keeps the empty states and adds no fake card', () => {
-      assert.match(dom.html('hero'), /Awaiting live data/);
+      assert.match(dom.text('ov-headline'), /Awaiting live data/);
       assert.equal(dom.html('zones'), '', 'the zone grid should be empty');
     });
 
@@ -471,14 +471,19 @@ async function main() {
     const dom = boot(hostile);
     await hostile.settle();
 
-    await check('an injection attempt in a payload string is escaped, not executed', () => {
-      const hero = dom.html('hero');
-      assert.ok(hero.length > 0, 'the hero rendered nothing');
-      // The payload text must be present as *text*: an escaped '<img' is the fix, a live
-      // '<img src=x' would be markup the browser is free to run.
-      assert.match(hero, /&lt;img src=x onerror=/, 'the provider name was not escaped');
-      assert.ok(!/<img\b/i.test(hero), `the hero rendered a live tag: ${hero.slice(0, 200)}`);
-      assert.ok(!/<[a-z]+[^>]*\son[a-z]+=/i.test(hero), 'an event handler attribute survived into the DOM');
+    await check('an injection attempt in a payload string stays text, and never becomes a tag', () => {
+      // M10: the hero is patched through setText(), which assigns textContent, so a payload
+      // string is never interpolated into markup at all. The assertion is therefore stronger
+      // than "it was escaped": the words are present as text, and no hero field contains a tag.
+      const heroFields = ['ov-headline', 'hero-monitor', 'hero-why', 'hero-facts', 'hero-state'];
+      const words = heroFields.map((id) => dom.text(id)).join(' ');
+      assert.ok(words.length > 0, 'the hero rendered nothing');
+      assert.match(words, /<img src=x onerror=/, 'the provider name is not present as text');
+      heroFields.forEach((id) => {
+        const markup = dom.html(id);
+        assert.ok(!/<img\b/i.test(markup), `#${id} rendered a live tag: ${markup.slice(0, 200)}`);
+        assert.ok(!/<[a-z]+[^>]*\son[a-z]+=/i.test(markup), `#${id} kept an event handler attribute`);
+      });
       assert.equal(dom.window.__xss, undefined, 'the injected handler ran');
     });
 
@@ -776,7 +781,7 @@ async function main() {
       assert.ok(!/Open-Meteo|\blive rainfall\b/.test(surfaces.intro),
         'a simulated fleet must not name a live weather provider');
       assert.equal(surfaces.stripTitle, 'Zones by risk level');
-      assert.equal(surfaces.cardsTitle, 'Zone status');
+      assert.equal(surfaces.cardsTitle, 'Zone flood risk');
       assert.equal(surfaces.incidentHeader, 'Zone');
       assert.match(surfaces.citiesLede, /^Every monitored zone /);
       assert.match(surfaces.stats, /Zones reporting/);
@@ -884,7 +889,7 @@ async function main() {
     await check('the highest-risk card carries the age of the reading, and flags it', () => {
       const stats = dom.html('ov-stats');
       assert.match(stats, /Highest risk/);
-      assert.match(stats, /reading 60 min ago/,
+      assert.match(stats, /updated 60 min ago/,
         `the leading score has no age next to it: ${stats.slice(0, 400)}`);
       assert.match(stats, /not reporting recently/,
         'a reading an hour old is presented without any hint that the zone is silent');

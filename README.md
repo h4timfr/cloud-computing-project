@@ -1356,6 +1356,259 @@ the same needles plus a forbidden list for the copy that leaked.
 * The two adversarial `ModeIsolationTest` tests can still fail for one run when Open-Meteo answers
   `http_503` or times out (recorded in M9; unchanged).
 
+## M10 premium UI polish and public email alert subscriptions (frontend deployed, backend held at an IAM gate)
+
+*A note on the label: an earlier follow-up pass in this file is also headed "M10" (the plain-language
+pass directly above). With this brief, **M10 means this milestone** — the visual redesign and the
+subscription flow — and the roadmap row that used to be numbered M10 (time-to-threshold, alarm,
+scheduled refresh) becomes **M11**.*
+
+Two goals, one delivery: make the front end look like a product rather than a console, and let an
+ordinary visitor ask for flood alerts by email without inventing a second notification path.
+
+Constraints honoured: no architecture rebuild, no framework, no build step, no npm, no paid service,
+no new AWS resource, **no IAM change made by the agent**, and no touch to the risk algorithm,
+thresholds, hysteresis, the weather provider, provenance logic, incident semantics, ingestion auth,
+the existing `sns:Publish` permission or the database design. The content-security policy is
+byte-identical to before this pass.
+
+### Part A — the visual redesign
+
+The palette, the type scale and the components were already defined in M9; M10 is the pass that makes
+them *feel* like one product: a backdrop with a scrim, a header that says what the system's state is
+rather than what the model is, a hero that answers the visitor's question before it shows any figure,
+and four summary cards that carry the same shapes everywhere.
+
+| Element | Before | After |
+| --- | --- | --- |
+| Backdrop | `bg-storm.webp` at `opacity: .42`, flat page background behind the cards | the same local WebP, centred, held still under a strong navy radial+linear scrim (`.bg-layer::after`) and an inset black vignette. **No new image was needed**: the shipped WebP is a dark rainy-city frame, is already local, already compressed (13,652 B, well inside the 250 KB target / 400 KB hard cap) and has no third-party licensing question |
+| Blur | none | slight blur-like softness comes from the scrim gradients *behind* the content, never from `backdrop-filter` or a `filter` on the panels: the brief's "no blur on the actual content" is a rule, not a preference, and CSS text filtering is the single most common cause of smeared paragraphs |
+| Bright image detail | visible under text where the page met the raw image | the scrim's darkest band sits exactly where the hero paragraph is, and the hero itself is a panel, so no paragraph is ever read against raw image detail |
+| Header | logo, subtitle, model name (`heuristic-v1` in a meta chip), nav, counters as loose text | three groups: brand on the left, the five sections centred on a desktop (a pill for the current one) and, on the right, the system state — "System healthy", "Live data", "Last updated" — as chips. **The model name is gone from the header** (it lives in the Overview's folded technical panel and on the Methodology page, where a reader goes asking for it). The provider countdown moved to the secondary line |
+| Hero | a card rebuilt by `innerHTML` around a large ring gauge, a mono line of the API's own output, driver chips, then the fleet sentence | a static panel in `index.html` that `renderHero()` patches field by field: a weather glyph, the kicker `LIVE FLOOD RISK MONITORING`, the answer ("No city is at flood risk right now."), the monitor line ("We are monitoring 5 Indian cities. All are currently below the alert level."), the plain reason sentence, a facts line and the leading city. A short "What FloodPulse does" explanation and one button — **Learn how risk is calculated** — sit beside it. No formula, no model name, no `latest.explanation` |
+| Summary cards | four stat tiles, no icons, mixed wording | four cards with a local inline SVG icon each (`highest risk city` / `active alerts` / `cities reporting` / `weather freshness`), a label, a large value, one supporting sentence and a subtle state accent that follows the risk band. The highest-risk card reads exactly like the brief's example: `Highest risk city / Chennai / NORMAL / score 0.35 · updated 5 min ago` |
+| City cards | plain text list | a gradient city plate (an abstract city-water glyph, no photograph — the brief forbids stock imagery and there is no locally licensed city photo), the name, the risk band, the score, a short progress meter whose fill is the score and whose ticks are the three documented band edges, rainfall, update freshness and a click affordance |
+| Alert preview | absent on the Overview | a "Recent alerts" panel: the two newest active incidents, or the calm state — `✓ No active flood alerts` / "All monitored cities are currently below the alert level." and a `View alerts` button. It reuses the real alert row, so the preview and the Alerts page can never disagree |
+| "How FloodPulse works" | absent | three steps with local icons — Collect ("Live rainfall and weather information."), Analyse ("Combine weather and drainage indicators."), Alert ("Create an alert when risk reaches warning levels.") |
+| Technical clutter | the model's formula in the spotlight, the model name in the header, dead hero CSS from the previous design | the formula is folded, the header is clean, and the rules for the hero markup that no longer exists (`.hero-gauge`, `.hero-name`, `.hero-meta`, `.hero-slot`, `.hero-empty`, `.hero .pill`, `.ring-lg`) were deleted — 629 bytes of stylesheet that styled nothing |
+
+Everything the M9 pass deliberately kept is still kept: the provenance chips (`REAL` / `MODEL` /
+`SIM`, `LIVE WEATHER`) with their legend, the provider observation clock inside the mode badge, the
+"Provenance per metric" footnote, the Methodology page naming `heuristic-v1` with the five weights,
+and the model in the Overview's folded "Snapshot and technical summary".
+
+One copy defect found and fixed on the way: the hero's fleet sentence read "1 of 5 cities **are** worth
+watching" — the subject is the "1", so the verb now follows the count ("1 of 5 cities is", "2 of 5
+cities are"). `tools/dashboard_check.mjs` pins both forms.
+
+### Assets changed
+
+| Asset | Change | Size | Notes |
+| --- | --- | --- | --- |
+| `bg-storm.webp` | **none** | 13,652 B | the existing local WebP was already the right image: dark, rainy, city, local, licensed-by-omission (generated for this project), far under the 250 KB target and the 400 KB cap |
+| `index.html` | rewritten hero, header, summary cards, alert preview, three-step block, subscription card; +6,448 B | 33,339 B | no new script, no inline script, policy unchanged |
+| `styles.css` | new M10 layer appended (backdrop scrim, header chips, hero grid, stat icons, city plate and meter, alert preview, three steps, subscription form) minus the dead hero rules; +16,104 B | 97,248 B | |
+| `lib.js` | `ICON_PATHS.mail`, `SCORE_BAND_EDGES`, `regionNoun`, `monitorLine`, `cityThumb`, `cityMeter`, `alertPreview`, `subscriptionResult`, `subscriptionKindForStatus`; +9,845 B | 135,254 B | no dependency added |
+| `app.js` | `renderHero` rewritten to patch the static panel by id, `statCard` grew an icon, `renderAlertPreview`, `setSubscriptionState`, `submitSubscription`; +8,513 B | 100,424 B | |
+
+**Total front end: 379,917 B (≈371 KB) of source across five files, zero dependencies, zero external
+requests other than the project's own API.** No CDN, no webfont, no icon font, no image host.
+
+### Responsiveness
+
+The redesign was built phone-first and then given room, and the width sweep is now a harness check of
+its own: every one of the six views is booted and rendered at **320, 360, 390, 430, 768, 1024, 1280
+and 1440 px**, and at each width the harness asserts that the phone layout and the compact-header
+breakpoint resolve to the intended side, that every view opens and fills, that no controller error
+reaches the status line and that no city card asks for a fixed width a 320 px screen cannot give.
+
+* No horizontal overflow by construction: every multi-column track added in the M10 layer is
+  `minmax(0, …)` or `auto`-bounded, the hero is a two-column grid above 900 px and one column below
+  it, the three steps are a row above 900 px and a column below it, the summary cards use
+  `auto-fit` down to one column, the subscription row collapses to a stacked field and a full-width
+  button under 560 px, and one check refuses any `min-width` declaration above 360 px in the layer.
+* The backdrop stays attached to the fixed `.bg-layer`, not to the body with
+  `background-attachment: fixed` — same visual result (cover, centred, held still) without the
+  full-page repaint that mobile Safari does on every scroll. The reasoning is in the stylesheet
+  comment, and the check reads rules rather than that comment.
+* The touch targets added here (the subscribe button, the preview button) inherit the existing
+  44 px minimum.
+
+### Part B — the public email subscription flow
+
+A visitor anywhere can enter an address on the Alerts page. **AWS SNS does the whole confirmation
+flow.** No custom verification token, no second email, no "verify your address" endpoint:
+
+* **`POST /subscriptions`** takes `{"email": "person@example.com"}`, needs no ingestion key, and
+  answers **202** with `{"status":"confirmation_required","message":"Check your email to confirm the
+  subscription."}`. Nothing else is exposed: not whether the address was already subscribed, not
+  whether a confirmation is still pending, not an ARN, not a subscription ARN.
+* The handler then calls **`sns.subscribe(TopicArn=…, Protocol="email", Endpoint=<validated
+  address>, ReturnSubscriptionArn=True)`** with the ARN read **only** from the Lambda's own
+  environment (`FLOODPULSE_SNS_TOPIC_ARN`). A visitor cannot name a topic or a protocol: the request
+  body accepts one key, `email`, and any other key is a 400.
+* The visitor must click **Confirm subscription** in the mail *Amazon Web Services* sends. Until they
+  do, the subscription is `PendingConfirmation` and no alert can reach them.
+
+### What the visitor sees
+
+The card sits between the resolved incidents and the system status, styled as a utility panel with a
+mail glyph rather than an advertisement: one sentence of lead copy, the heading "Get flood alerts by
+email", the invitation ("Receive an email when FloodPulse detects WARNING or CRITICAL flood risk."),
+a labelled field, the button, and three short notes — the SNS confirmation sentence, the privacy
+sentence, and the unsubscribe explanation.
+
+| State | What is shown |
+| --- | --- |
+| idle | the field, the button, nothing else (`#subscribe-result` ships `hidden`) |
+| accepted (202) | **"Check your inbox"** + "We sent a subscription confirmation request through Amazon SNS. Click 'Confirm subscription' in that email to activate FloodPulse alerts." |
+| invalid address | "Enter a valid email address.", the field marked `aria-invalid="true"`, focus kept in the field |
+| rate limited (429) | "Too many subscription requests. Please try again later." |
+| SNS failure / offline | "We couldn't create the subscription request right now. Please try again." |
+| in flight | the button is `aria-busy="true"` and a second submit is ignored |
+
+**The page never says "You are subscribed."** It cannot know: only SNS knows, and only after the
+visitor clicks the link. `tools/verify_deployed_page.py` and `tools/dashboard_check.mjs` both refuse
+that string on the deployed page, and the runtime harness asserts the accepted state names a
+*confirmation request*.
+
+### Validation, abuse protection and privacy
+
+* **Validation** (in `src/floodpulse/subscriptions.py`, pure and unit-tested): JSON object only —
+  an array, a string or a scalar body is rejected; exactly one allowed key; whitespace stripped;
+  case-folded for the dedupe and rate-limit identity *while the original spelling is sent to SNS*;
+  254-character maximum; CR, LF, NUL and other control characters rejected (so no
+  multiple-address or header-injection trick); a shape check on `local@domain.tld`; empty string
+  rejected; the body read from a bounded length so a huge payload is refused before parsing; and no
+  client-supplied protocol, topic or endpoint.
+* **Abuse protection lives in the existing DynamoDB table** — no new resource, no new table, no
+  new index: `PK = SUBRATE#<sha256(normalized email)>`, `SK = WINDOW#<hour bucket>`, attribute
+  `count`, attribute `ttl`. Three attempts per address per hour, and the attempt is counted *before*
+  the SNS call, so a failure storm cannot be used to hammer SNS. The item holds a **hash**, never the
+  address: the rate limit works and the table still contains no one's email.
+* **Privacy**: FloodPulse stores no visitor email address anywhere. SNS owns the endpoint and the
+  confirmation state; the address exists in this system only inside the `subscribe` call. There is no
+  marketing list, no analytics, no third-party processor, and the page says so in one sentence.
+* **Logging**: the handler never logs the submitted address in full. A rejected address is logged
+  truncated through `redact_addresses`, and authorization headers and the ingest key are never logged
+  at all.
+* The **outer bound** remains the API Gateway stage throttle (still unset, so account defaults apply)
+  plus API Gateway's own request-size limit; the per-address window is the application-level bound on
+  top of it.
+
+### Test results after this pass
+
+| Check | Result |
+| --- | --- |
+| `node tools/dashboard_check.mjs --payload build/zones-live-weather.json …` | **118 checks passed, 0 failed** (was 108; both payload modes) |
+| `node tools/dashboard_run.mjs --payload build/zones-live-weather.json …` | **66 runtime checks passed, 0 failed** — 64 against the demo fleet (was 58 / 56) |
+| `node tools/dashboard_run.mjs --site http://floodpulse-dashboard-…amazonaws.com --api …` | **66 runtime checks passed, 0 failed** against the *deployed* assets and the live API |
+| `node tools/dashboard_scenarios.mjs` | **49 scenario checks passed, 0 failed** |
+| `node tools/story_check.mjs --dir build/story` | **29 story checks passed, 0 failed** |
+| `python -m unittest discover -s tests -t .` | **550 tests, OK** (includes the 33 subscription unit tests and the DynamoDB throttle tests committed in `b5814f1`) |
+| `python tools/verify_deployed_page.py` | **all deployed page contracts hold** — plus 14 new M10 needles and 7 new forbidden strings (the model back in the header, an ARN, the topic name, the account id, any unconfirmed "You are subscribed" claim) |
+| `python tools/live_acceptance.py` | **35 checks passed, 0 failed**; five polls 956 / 990 / 996 / 1005 ms |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File tools\deploy_logic_check.ps1` | **all assertions passed** |
+| `python build/deployed_asset_diff.py` | **0 differences** for all five objects (the four re-uploaded ones match the working tree byte for byte; `bg-storm.webp` was not re-uploaded) |
+
+The subscription tests mock SNS locally and assert that the call receives **exactly**
+`Protocol="email"`, the validated endpoint and the configured topic ARN — and that a client-supplied
+topic or protocol cannot reach the call at all. A separate test reads the rate-limit item back out of
+the store and asserts no plaintext address is in it.
+
+### Deployed state after this pass
+
+| Object | Size | MD5 |
+| --- | --- | --- |
+| `index.html` | 33,339 B | `592bd6a6d2724e99d3b0e78d2a148d6c` |
+| `styles.css` | 97,248 B | `a3c6121e0ac841a71781a41443108cbd` |
+| `lib.js` | 135,254 B | `3413f80d93f3e7b4157f50b82a21f966` |
+| `app.js` | 100,424 B | `8c54b3d5bf2fc72f0dde23587e6dc497` |
+| `bg-storm.webp` | 13,652 B | `2fab1efe47404581b86ab917956f625e` (unchanged, not re-uploaded) |
+
+Content types and cache policy are the ones the deploy script has always used (`text/html; charset=utf-8`,
+`text/css; charset=utf-8`, `application/javascript; charset=utf-8` with `no-cache`; `image/webp` with
+`public, max-age=86400`). Only those four objects were written; the Lambda, the API, the routes, the
+table, the topic, the CORS list and every IAM entity were left exactly as they were.
+
+### Backend deployment status: blocked, awaiting one manual IAM permission
+
+The subscription code, its tests and the `POST /subscriptions` route are implemented, tested and
+committed (`b5814f1`), but they are **not deployed**. The deployed execution role carries exactly two
+inline policies:
+
+| Policy | Action | Resource |
+| --- | --- | --- |
+| `FloodPulseDynamoDBAccess` | `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query` | `arn:aws:dynamodb:eu-north-1:725934295966:table/floodpulse` |
+| `FloodPulseSnsPublish` | `sns:Publish` | `arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts` |
+
+`sns:Subscribe` is **absent**, so a deployed `POST /subscriptions` would answer 500. The brief's rule
+is explicit — do not apply IAM changes automatically — so the deploy stopped here, as designed.
+`infra/deploy.ps1` documents the one manual step in a comment and deliberately does **not** apply it
+(a test fails if a later edit widens the automated policy document beyond `sns:Publish`).
+
+> **Manual approval required: allow sns:Subscribe only on floodpulse-alerts.**
+
+The exact minimal change, for the project owner to apply (not by this agent):
+
+The exact command and the exact document are tracked in
+[`infra/iam/`](infra/iam/README.md) — a reference for the operator, applied by nothing in this
+repository:
+
+```powershell
+aws iam put-role-policy --role-name floodpulse-lambda-role `
+  --policy-name FloodPulseSnsPublish `
+  --policy-document file://infra/iam/floodpulse-sns-publish-and-subscribe.json `
+  --profile cloud-project --region eu-north-1
+```
+
+The document is the *existing* statement with one action added — same single ARN, no wildcard, no
+other topic, no `sns:*`, no managed policy, no trust-policy change:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FloodPulseSnsPublish",
+      "Effect": "Allow",
+      "Action": ["sns:Publish", "sns:Subscribe"],
+      "Resource": "arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts"
+    }
+  ]
+}
+```
+
+`python tools/verify_deployed_code.py` reports the difference honestly in the meantime:
+
+```
+only_in_repo: ["floodpulse/subscriptions.py"]
+content_differs: ["floodpulse/config.py", "floodpulse/dynamodb_store.py",
+                   "floodpulse/handler.py", "floodpulse/notify.py", "floodpulse/storage.py"]
+RESULT: deployed code DIFFERS from the repository
+```
+
+Nothing else is waiting on that permission: the front-end deploy, the live verification and the whole
+test suite are already done. Once the permission is granted, the backend deploy is one command
+(`infra/deploy.ps1` — no new resource, no route change beyond the one already in the script) and the
+acceptance run gains a malformed-address probe against the live route.
+
+### Known residual gaps from this pass (recorded rather than hidden)
+
+* **No browser and no image viewer exist on this machine.** "The page looks cinematic" is therefore
+  verified as DOM structure, computed CSS and rendered prose — the harness prints what a reader would
+  read, and the stylesheet is asserted rule by rule. Whether the backdrop reads as *atmospheric* is a
+  judgement call made from the source, the file sizes and the fact that the image was already in use.
+* The live fleet currently has **0 confirmed SNS subscriptions**, so an end-to-end "a real person got
+  a real alert" demonstration still cannot be shown. The subscription flow is the first step toward
+  that, and it stops exactly where it must: at the confirmation mail.
+* The dashboard still cannot prevent being framed: S3 static website hosting sends no response
+  headers, and CloudFront would be a new AWS resource, deliberately not created.
+* API Gateway's stage throttle is still unset, so the account defaults remain the outer bound for
+  abuse protection (recorded in M8; unchanged).
+* One adversarial test (`ModeIsolationTest`) makes real Open-Meteo calls and can fail for a single
+  run when the provider answers `http_503`.
+
 ## Repository layout
 
 ```
@@ -1572,7 +1825,8 @@ constant so tests never depend on the wall clock.
 | M7 | Final hardening and product quality pass: full-system audit, per-defect fixes with tests, accessibility and mobile work, cost and security review. No new AWS resources, no architecture change | ✅ **done, verified against the deployed stack** |
 | M8 | Production hardening / adversarial reliability pass: API abuse and cost protection, replay and reordering under test, provider-failure behaviour, one freshness contract, observability and deployment tooling | ✅ **done, verified against the deployed stack** |
 | M9 | Product experience, information design and responsive polish: the Overview answers in one sentence, five routed sections with an About page and flood-safety guidance, a local icon set, designed empty/loading/error states, honest alert-delivery wording, phone-first layout. Front end only: no backend, IAM, threshold or CSP change | ✅ **done, verified live** |
-| M10 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ planned |
+| M10 | Premium UI polish and public email alert subscriptions: a cinematic dark weather-monitoring front end (scrimmed backdrop, state-carrying header, answering hero, icon summary cards, city plates with a risk meter, recent-alert preview, three-step explainer) and a self-service SNS-confirmed email subscription route with validation, hashed-address rate limiting and no stored visitor email. Front end deployed; **backend blocked at the IAM gate pending `sns:Subscribe` on the one topic** | ✅ done (front end live, backend awaiting one approved permission) |
+| M11 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ planned |
 
 ## AWS state (verified)
 

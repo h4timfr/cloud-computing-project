@@ -601,7 +601,11 @@ if (-not $SkipAlerts) {
     # An operator who has approved it can put the second action on the same inline policy:
     #
     #   aws iam put-role-policy --role-name <role> --policy-name FloodPulseSnsPublish `
-    #     --policy-document file://<file> --profile <profile> --region <region>
+    #     --policy-document file://infra/iam/floodpulse-sns-publish-and-subscribe.json `
+    #     --profile <profile> --region <region>
+    #
+    # That document is tracked in infra/iam/ (see infra/iam/README.md) so the operator does not
+    # have to reconstruct it, and it is applied by nothing in this repository.
     #
     # with a document identical to the one above except that Action is the two-element list
     # ["sns:Publish", "sns:Subscribe"] and Resource is still only

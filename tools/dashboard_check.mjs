@@ -5,7 +5,7 @@
  * The dashboard deliberately has no build step, so this checks it directly:
  *   - loads web/lib.js in a VM and exercises every pure helper
  *   - renders zone cards / ranking from a real API payload (--payload) and asserts the HTML
- *   - asserts the site can only read: no POST, no /readings, no secret anywhere in web/
+*   - asserts the site writes nothing but the one public subscription request, and never a secret
  *   - asserts every local asset referenced by the HTML/CSS exists and the page stays small
  *   - asserts the product information architecture: four navigable views, a total hash
  *     router, a phone menu, plain language before model detail, and methodology copy that
@@ -861,12 +861,31 @@ const libSource = fs.readFileSync(path.join(webDir, 'lib.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(webDir, 'index.html'), 'utf8');
 const cssSource = fs.readFileSync(path.join(webDir, 'styles.css'), 'utf8');
 
-check('dashboard never writes: no POST, no /readings, no key handling', () => {
+check('the dashboard writes nothing except the one public subscription request', () => {
   [appSource, libSource].forEach((source) => {
     assert.ok(!source.includes('/readings'), 'dashboard references the ingestion route');
-    assert.ok(!/method:\s*['"]POST['"]/i.test(source), 'dashboard performs a POST');
     assert.ok(!source.toLowerCase().includes('x-fp-key'), 'dashboard references the ingestion header');
     assert.ok(!source.includes('FLOODPULSE_INGEST_KEY'), 'dashboard references the secret env var');
+  });
+  // One write is legitimate now: the visitor's own email subscription. It must stay the only
+  // one, on one route, with no credential of any kind attached - the route is public and needs
+  // none - and it must go to the API origin the page is configured with, not anywhere else.
+  const posts = appSource.match(/method:\s*['"]POST['"]/gi) || [];
+  assert.equal(posts.length, 1, `the dashboard makes ${posts.length} POSTs; exactly one is expected`);
+  const write = appSource.slice(appSource.indexOf('function submitSubscription'),
+    appSource.indexOf('function renderDataPage'));
+  assert.ok(write.length > 200, 'submitSubscription was not found where this check expects it');
+  assert.ok(write.includes("API_BASE + '/subscriptions'"), 'the one POST does not target POST /subscriptions');
+  assert.ok(!/authorization/i.test(write), 'the subscription request attaches an authorization header');
+  assert.ok(!/credentials\s*:\s*['"]include/i.test(write), 'the subscription request sends credentials');
+  assert.ok(!/['"](?:GET|PUT|DELETE|PATCH)['"]/.test(write), 'the subscription form performs another kind of call');
+  // Nothing anywhere in the client may build a header bag with a secret in it.
+  [appSource, libSource].forEach((source) => {
+    const headers = source.match(/headers:\s*\{[^}]*\}/gi) || [];
+    headers.forEach((bag) => {
+      assert.ok(!/(key|token|secret|auth)/i.test(bag),
+        'a request header bag carries something that looks like a credential');
+    });
   });
 });
 
@@ -1159,9 +1178,12 @@ check('the introduction survives a missing fleet or zone count', () => {
 check('the headline never calls a simulated zone a city', () => {
   const critical = { CRITICAL: 1, WARNING: 0, WATCH: 0, UNSET: 0 };
   const watch = { CRITICAL: 0, WARNING: 0, WATCH: 2, UNSET: 0 };
-  assert.match(FP.fleetHeadline('CRITICAL', critical, 3, 'zones'), /1 of 3 zones are at a critical/);
-  assert.match(FP.fleetHeadline('CRITICAL', critical, 5, 'cities'), /1 of 5 cities are at a critical/);
+  const watchOne = { CRITICAL: 0, WARNING: 0, WATCH: 1, UNSET: 0 };
+  // The verb agrees with the count, not with the fleet noun: "1 of 3 zones is", "2 of 3 zones are"
+  assert.match(FP.fleetHeadline('CRITICAL', critical, 3, 'zones'), /1 of 3 zones is at a critical/);
+  assert.match(FP.fleetHeadline('CRITICAL', critical, 5, 'cities'), /1 of 5 cities is at a critical/);
   assert.match(FP.fleetHeadline('WATCH', watch, 3, 'zones'), /2 of 3 zones are worth watching/);
+  assert.match(FP.fleetHeadline('WATCH', watchOne, 3, 'zones'), /1 of 3 zones is worth watching/);
   assert.equal(FP.fleetHeadline('NORMAL', critical, 3, 'zones'), 'No zone is at flood risk right now.');
   assert.equal(FP.fleetHeadline('NORMAL', critical, 5, 'cities'), 'No city is at flood risk right now.');
   assert.equal(FP.fleetHeadline('UNKNOWN', critical, 0, 'cities'), 'Waiting for the first readings.');
@@ -2167,8 +2189,9 @@ check('M9: icons are local, consistent and hidden from assistive tech', () => {
   assert.ok(iconBlock, 'the icon table is missing');
   const names = [...iconBlock[1].matchAll(/^\s{4}([a-z]+):/gm)].map((match) => match[1]);
   assert.ok(names.length >= 15, `only ${names.length} icons are defined`);
+  // M10 adds the mail mark the subscription card wears
   ['rain', 'droplet', 'soil', 'drain', 'water', 'flow', 'clock', 'warning', 'check', 'info', 'bell',
-    'shield', 'up', 'down', 'flat', 'external', 'city', 'layers', 'refresh', 'chart'].forEach((name) => {
+    'shield', 'up', 'down', 'flat', 'external', 'city', 'layers', 'refresh', 'chart', 'mail'].forEach((name) => {
     assert.ok(names.includes(name), `the icon set is missing "${name}"`);
   });
   // every icon is drawn through one builder, so stroke width and viewBox cannot drift
@@ -2295,8 +2318,11 @@ check('M9: the contribution map reads the field the API actually sends', () => {
 });
 
 check('M9: the headline question is answered in the first screen', () => {
-  // the reading order the brief asks for: the answer, then the four numbers, then the detail
-  const order = ['ov-title', 'ov-headline', 'ov-stats', 'hero', 'band-strip', 'city-cards', 'recent-activity']
+  // The reading order the brief asks for: the question, the plain answer inside the hero card,
+  // then the four numbers, the distribution, the city cards, the alert preview, the three-step
+  // explainer, and last the "what changed" panel.
+  const order = ['hero', 'ov-title', 'ov-headline', 'ov-stats', 'band-strip', 'city-cards',
+    'alert-preview', 'works-title', 'recent-activity']
     .map((id) => htmlSource.indexOf(`id="${id}"`));
   order.forEach((index, position) => {
     assert.ok(index > 0, `the Overview is missing element ${position}`);
@@ -2308,12 +2334,28 @@ check('M9: the headline question is answered in the first screen', () => {
   assert.match(htmlSource, /<h2[^>]*id="ov-title"[^>]*>[^<]*\?/, 'the Overview heading is not a question');
   assert.match(htmlSource, /id="ov-headline"[^>]*role="status"[^>]*aria-live="polite"/,
     'the one-sentence answer is not announced politely');
-  // the question is answered before any number: only the Overview's own content is scanned, since
-  // the header carries the model tag on every page and that is a provenance marker, not a formula
+  // The question is answered before any number. M10 moved the model name out of the primary
+  // header and into the folded "Snapshot and technical summary" of this page, which is the
+  // "technical details panel" the brief names as an acceptable home for it - so the rule is now
+  // stronger and narrower at once: the model name and the weights may appear on the Overview
+  // only behind a fold, and never in the header or the hero.
   const overviewBody = htmlSource.slice(htmlSource.indexOf('<section id="view-overview"'),
     htmlSource.indexOf('id="view-cities"'));
-  assert.ok(!/heuristic-v1/.test(overviewBody), 'the Overview shows the model name');
-  assert.ok(!/weight|coefficient|0\.30/.test(overviewBody), 'the Overview shows scoring weights');
+  const visibleOverview = overviewBody.replace(/<details[\s\S]*?<\/details>/g, '');
+  assert.ok(!/heuristic-v1/.test(visibleOverview), 'the Overview shows the model name outside a fold');
+  assert.ok(!/weight|coefficient|0\.30/.test(visibleOverview), 'the Overview shows scoring weights');
+  assert.match(overviewBody, /<details[\s\S]*heuristic-v1[\s\S]*<\/details>/,
+    'the model name is not in a folded technical panel on the Overview');
+  const headerMarkup = htmlSource.slice(htmlSource.indexOf('<header'), htmlSource.indexOf('</header>'));
+  assert.ok(headerMarkup.length > 100, 'the topbar was not found where this check expects it');
+  ['heuristic-v1', 'model', 'weight'].forEach((term) => {
+    assert.ok(!headerMarkup.includes(term), `the primary header still names the ${term}`);
+  });
+  // the three things the right-hand group answers, in slots the runtime fills: is the system
+  // healthy, which feed is this, and how old is what we are showing
+  ['health-word', 'conn-badge', 'last-update'].forEach((id) => {
+    assert.ok(headerMarkup.includes(`id="${id}"`), `the header's status group lost ${id}`);
+  });
   // The spotlight is rendered at runtime, so this is a source-level guard for the renderer that
   // produced the leak browser QA found on the deployed page: it printed the model's own output
   // string ("risk_score 0.3973 = weighted base ...") and the raw driver variables under the
@@ -2328,7 +2370,12 @@ check('M9: the headline question is answered in the first screen', () => {
   // the internal id and the raw clock used to be printed on the line under the city name:
   // "city-chennai · reading 03:28:53Z · 2 min ago" is a developer's line, not a visitor's
   assert.ok(!/escapeHtml\(highest\.zone_id\)/.test(hero), 'the spotlight prints the internal zone id');
-  assert.match(hero, /hero-reason/, 'the spotlight has no plain-language sentence');
+  // M10 moved the hero's markup into index.html, so the sentence now lives in a static element
+  // that the renderer only writes text into: the element must exist, be styled as the reason
+  // line, and be the node this renderer targets.
+  assert.match(htmlSource, /class="hero-reason"[^>]*id="hero-why"/,
+    'the hero has no plain-language sentence element');
+  assert.match(hero, /setText\('hero-why'/, 'the spotlight never fills the plain-language sentence');
   assert.match(hero, /Main risk factor/, 'the spotlight does not name the main risk factor');
   assert.match(hero, /'Updated ' \+ FP\.ageLabel/, 'the spotlight does not say how old the reading is');
   // and the arrow in the other direction: the plain sentence the spotlight prints must be the
@@ -2447,6 +2494,263 @@ check('M9: the reskin did not delete the band accent stripes', () => {
     });
   assert.match(cssSource, /\.city-card\.band-warning\s*\{\s*border-left-color/,
     'a band changes the stripe colour no more');
+});
+
+/* -------------------------------------------------- M10 - premium UI pass --- */
+
+group('M10: the shell, the header and the hero');
+
+/* The M10 layer is the last section of the stylesheet; every check below reads its rules rather
+ * than the whole file, so an M6-M9 rule can never be mistaken for a new decision. */
+const m10Block = () => {
+  const block = cssSource.slice(cssSource.indexOf('M10 - premium pass'));
+  assert.ok(block.length > 1000, 'the M10 stylesheet section is missing');
+  // Comments explain the decisions and quote the alternatives ("not `background-attachment:
+  // fixed`"), so they must never be read as rules.
+  return block.replace(/\/\*[\s\S]*?\*\//g, ' ');
+};
+
+check('M10: the backdrop is a local image, held still, with a navy scrim over it', () => {
+  // The brief asks for a dark rainy-city photograph: cover, centred, and fixed *if the page stays
+  // fast*. It is rendered on the existing fixed `.bg-layer` rather than as a body background,
+  // because `background-attachment: fixed` on the body repaints the whole page on every scroll on
+  // mobile Safari, while an element fixed behind the content is composited once. The visual result
+  // is the same, and this check pins all four of those choices.
+  const layer = /\.bg-layer\s*\{([^}]*)\}/.exec(cssSource);
+  assert.ok(layer, 'the backdrop layer is gone');
+  assert.match(layer[1], /background-image:\s*url\("bg-storm\.webp"\)/, 'the backdrop is not the local asset');
+  assert.match(layer[1], /background-size:\s*cover/, 'the backdrop is not scaled to cover');
+  const m10 = m10Block();
+  assert.match(m10, /\.bg-layer\s*\{[^}]*background-position:\s*center/, 'the backdrop is not centred');
+  assert.match(m10, /\.bg-layer\s*\{[^}]*box-shadow:\s*inset/, 'the backdrop has no vignette');
+  assert.match(m10, /\.bg-layer::after\s*\{[^}]*radial-gradient[\s\S]*?linear-gradient/,
+    'the backdrop has no navy ramp between the photograph and the text');
+  // fixed, and the layer is decorative
+  assert.match(cssSource, /\.bg-layer\s*\{[^}]*position:\s*fixed/, 'the backdrop is not held still');
+  assert.ok(!/background-attachment:\s*fixed/.test(m10), 'the M10 layer reintroduced a fixed body background');
+  // no remote asset anywhere near it
+  assert.ok(!/url\(\s*["']?https?:/i.test(m10), 'the M10 layer fetches something remote');
+});
+
+check('M10: the header is three groups, and the model name left it', () => {
+  const header = htmlSource.slice(htmlSource.indexOf('<header'), htmlSource.indexOf('</header>'));
+  const order = ['brand', 'nav-list', 'topbar-status'].map((token) => header.indexOf(token));
+  order.forEach((index, position) => {
+    assert.ok(index > 0, `the header has no ${['brand', 'navigation', 'status group'][position]}`);
+    if (position > 0) assert.ok(index > order[position - 1], 'the header groups are in the wrong order');
+  });
+  // the right-hand group states the three things a reader checks, each in its own slot
+  ['health-word', 'conn-badge', 'last-update'].forEach((id) => {
+    assert.ok(header.includes(`id="${id}"`), `the status group lost #${id}`);
+  });
+  // the model is a method detail: it lives in the folded technical summary, Data & Methodology,
+  // and the footer - never in the header
+  assert.ok(!/heuristic-v1|model/i.test(header), 'the primary header still names the model');
+  assert.match(htmlSource, /<dd><b id="summary-model">heuristic-v1<\/b>/, 'the model left the technical fold too');
+  // the chip/pill styling the brief asks for, and the centre group centred on a desktop
+  assert.match(m10Block(), /\.meta-item\s*\{[^}]*border-radius:\s*999px/, 'the header counters are not chips');
+  assert.match(m10Block(), /\.nav\s*\{\s*justify-self:\s*center/, 'the navigation is not the centre group');
+});
+
+check('M10: the hero answers the question in the first screen, with no formula in it', () => {
+  const hero = htmlSource.slice(htmlSource.indexOf('id="hero"'), htmlSource.indexOf('id="ov-stats"'));
+  assert.ok(hero.length > 400, 'the hero is missing');
+  assert.match(hero, /class="card hero hero-live"/, 'the hero is no longer a card');
+  assert.match(hero, /data-band="unknown"/, 'the hero ships without a neutral band');
+  // icon (decorative), kicker, the visitor's question, the answer, then the reasoning
+  assert.match(hero, /class="hero-glyph" aria-hidden="true"/, 'the hero icon is not decorative');
+  assert.match(hero, /Live flood risk monitoring/, 'the hero has no kicker');
+  assert.match(hero, /<h2[^>]*id="ov-title"[^>]*>[^<]*\?/, 'the hero does not ask the visitor\'s question');
+  assert.match(hero, /id="ov-headline"[^>]*role="status"[^>]*aria-live="polite"/,
+    'the hero answer is not announced politely');
+  ['hero-monitor', 'hero-why', 'hero-facts'].forEach((id) => {
+    assert.ok(hero.includes(`id="${id}"`), `the hero has no #${id}`);
+  });
+  // the aside says what the product is and offers the one way into the method
+  assert.match(hero, /class="hero-aside"[\s\S]*href="#\/data"[\s\S]*Learn how risk is calculated/,
+    'the hero does not link to the methodology');
+  // "Do NOT show formulas here": no formula, no variable name, no model id in the hero markup
+  ['risk_score', 'weight', 'coefficient', 'heuristic-v1', '<code'].forEach((term) => {
+    assert.ok(!hero.includes(term), `the hero shows ${term}`);
+  });
+  assert.ok(!/=\s*0\.\d/.test(hero), 'the hero markup contains an arithmetic expression');
+});
+
+check('M10: the Overview explains the product in three steps', () => {
+  const works = htmlSource.slice(htmlSource.indexOf('class="works"'), htmlSource.indexOf('id="recent-activity"'));
+  assert.ok(works.length > 300, 'the "how it works" block is missing');
+  assert.match(works, /<ol class="works-steps"/, 'the three steps are not an ordered list');
+  const steps = works.match(/class="works-step"/g) || [];
+  assert.equal(steps.length, 3, `expected three steps, found ${steps.length}`);
+  [['Collect', 'Live rainfall and weather information'],
+    ['Analyse', 'Combine weather and drainage indicators'],
+    ['Alert', 'Create an alert when risk reaches warning levels']].forEach(([name, sentence]) => {
+    assert.ok(works.includes(name), `the ${name} step is missing`);
+    assert.ok(works.includes(sentence), `the ${name} step lost its sentence`);
+  });
+  ['works', 'works-steps', 'works-step', 'works-icon'].forEach((cls) => {
+    assert.ok(cssSource.includes('.' + cls), `.${cls} is not styled`);
+  });
+});
+
+/* ------------------------------------------------- M10 - public subscriptions --- */
+
+group('M10: the public email subscription flow');
+
+const subscriptionCard = () => {
+  const start = htmlSource.indexOf('id="subscribe-card"');
+  const end = htmlSource.indexOf('id="alerts-status"');
+  assert.ok(start > 0, 'the subscription card is missing from the Alerts page');
+  assert.ok(end > start, 'the subscription card is not above the system-status section');
+  return htmlSource.slice(start, end);
+};
+
+check('M10: the subscription card sits after the alerts and before the system status', () => {
+  const alertsView = htmlSource.slice(htmlSource.indexOf('id="view-alerts"'),
+    htmlSource.indexOf('id="view-data"'));
+  const order = ['alerts-active', 'alerts-closed', 'subscribe-card', 'alerts-status']
+    .map((id) => alertsView.indexOf(`id="${id}"`));
+  order.forEach((index, position) => {
+    assert.ok(index > 0, `the Alerts page has no ${['active alerts', 'resolved incidents',
+      'subscription card', 'system status'][position]} section`);
+    if (position > 0) {
+      assert.ok(index > order[position - 1], 'the Alerts page sections are in the wrong order');
+    }
+  });
+  // it stands out without reading as an advertisement: a mail icon, a heading, one sentence
+  const card = subscriptionCard();
+  assert.match(card, /class="subscribe-glyph" aria-hidden="true"/, 'the card has no icon');
+  assert.match(card, /<h3 class="block-title" id="subscribe-title">Get flood alerts by email<\/h3>/,
+    'the card heading is not the one the brief asks for');
+  assert.match(card, /Receive an email when FloodPulse detects WARNING or CRITICAL flood risk\./,
+    'the card does not say what the alerts are');
+  assert.ok(!/buy|free trial|upgrade|subscribe now|newsletter/i.test(card),
+    'the card reads like marketing');
+});
+
+check('M10: the subscription form is labelled, bounded and honest', () => {
+  const card = subscriptionCard();
+  // a real form, intercepted by script: the policy forbids form submission, so `novalidate`
+  // keeps the browser from blocking a submit the page wants to handle itself
+  assert.match(card, /<form id="subscribe-form" class="subscribe-form" novalidate>/,
+    'the form is not the scripted, non-navigating form the policy requires');
+  assert.match(card, /<label[^>]*for="subscribe-email"[^>]*>Email address<\/label>/,
+    'the field has no associated label');
+  const input = /<input id="subscribe-email"[^>]*>/i.exec(card);
+  assert.ok(input, 'the field is missing');
+  [['type="email"', 'not an email input'], ['maxlength="254"', 'no length bound'],
+    ['autocomplete="email"', 'no autocomplete hint'], ['aria-describedby="subscribe-note"', 'no description']]
+    .forEach(([token, why]) => {
+      assert.ok(input[0].includes(token), `the field has ${why}`);
+    });
+  assert.match(card, /<button id="subscribe-button" class="btn btn-primary" type="submit">Subscribe to alerts<\/button>/,
+    'the submit button is not the plain-language button the brief asks for');
+  assert.match(card, /<p id="subscribe-result" class="subscribe-result" role="status" aria-live="polite" hidden>/,
+    'the outcome is not announced politely, or is not hidden until there is one');
+  // the three sentences the brief requires, verbatim
+  assert.match(card, /You[’']ll receive a confirmation email from Amazon Web Services\.\s*Your subscription becomes active only after you confirm it\./,
+    'the confirmation note is missing or reworded');
+  assert.match(card, /FloodPulse does not send marketing email\. Email addresses are used only for this SNS\s*notification subscription/,
+    'the privacy note is missing or reworded');
+  assert.match(card, /Amazon SNS includes its own unsubscribe link/, 'there is no unsubscribe instruction');
+  // and it must not promise something AWS has not done yet
+  assert.ok(!/you are subscribed|subscribed successfully|you will now receive/i.test(card),
+    'the card claims a subscription before SNS has confirmed anything');
+  // No infrastructure detail on a public page. The API's own region and host are necessarily
+  // present (the `data-api` attribute and the policy's connect-src), so they are allowed as
+  // origins and nothing more: no ARN, no account id, no topic name, no SDK field name.
+  ['arn:aws', '725934295966', 'TopicArn', 'ReturnSubscriptionArn', 'floodpulse-alerts'].forEach((secret) => {
+    assert.ok(!htmlSource.includes(secret) && !appSource.includes(secret) && !libSource.includes(secret),
+      `the front end exposes ${secret}`);
+  });
+  [...htmlSource.matchAll(/eu-north-1/g)].forEach((match) => {
+    const context = htmlSource.slice(Math.max(0, match.index - 120), match.index + 20);
+    assert.ok(/data-api="https:\/\/|execute-api\.|connect-src 'self' https:\/\//.test(context),
+      `the front end names the region outside an API origin: ...${context.slice(-80)}`);
+  });
+});
+
+check('M10: the four outcome messages exist once, in one place', () => {
+  // The apostrophe in the unavailable copy is written as an escape in the source, so each
+  // message is matched with either spelling.
+  const messages = ['Check your inbox',
+    'Enter a valid email address.',
+    'Too many subscription requests. Please try again later.',
+    'We couldn\u2019t create the subscription request right now. Please try again.'];
+  messages.forEach((message) => {
+    const inLib = libSource.includes(message)
+      || libSource.includes(message.replace(/\u2019/g, '\\u2019'));
+    assert.ok(inLib, `the front end has no "${message}" message`);
+    // one definition, and it is the module the runtime harness exercises
+    const inApp = appSource.includes(message)
+      || appSource.includes(message.replace(/\u2019/g, '\\u2019'));
+    assert.ok(!inApp, `"${message}" is duplicated in app.js`);
+  });
+  assert.match(libSource, /We sent a subscription confirmation request through Amazon SNS\. Click/,
+    'the accepted state does not explain the confirmation email');
+  assert.match(libSource, /function subscriptionKindForStatus\(status\)/,
+    'there is no single mapping from an HTTP outcome to a message');
+  assert.ok(appSource.includes('FP.subscriptionResult(kind)'),
+    'the page builds its own copy instead of using the shared one');
+});
+
+check('M10: the page never claims a subscription the API did not confirm', () => {
+  // Because the page only ever shows "check your inbox", the forbidden claim must not exist
+  // anywhere in the front end - not in markup, not in a string, not in a comment.
+  [['index.html', htmlSource], ['app.js', appSource], ['lib.js', libSource]].forEach(([name, source]) => {
+    assert.ok(!/you are subscribed|subscribed successfully|your subscription is active/i.test(source),
+      `${name} claims a subscription that SNS has not confirmed`);
+  });
+  // and the one accepted wording is the confirmation request, not the subscription
+  assert.ok(libSource.includes('We sent a subscription confirmation request through Amazon SNS'),
+    'the accepted state no longer describes a confirmation request');
+});
+
+check('M10: the new layouts collapse on a phone, with no horizontal overflow', () => {
+  const m10 = m10Block();
+  // every multi-column track the M10 layer introduces is minmax(0, ...) so a long address or a
+  // narrow screen cannot push the page sideways
+  const grids = m10.match(/grid-template-columns:\s*[^;]+;/g) || [];
+  assert.ok(grids.length >= 4, 'the M10 layer introduces no grids');
+  grids.forEach((rule) => {
+    assert.ok(!/\d+px\)/.test(rule.replace(/minmax\(\s*0/g, '')) || /repeat/.test(rule),
+      `a fixed-width track can overflow: ${rule}`);
+    assert.ok(!/grid-template-columns:\s*\d+px/.test(rule), `a fixed column can overflow: ${rule}`);
+  });
+  // the hero's aside moves under the answer, the steps stack, and the form's button goes full width
+  assert.match(m10, /@media \(max-width: 900px\)\s*\{[\s\S]*?\.hero\.hero-live\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/,
+    'the hero does not collapse to one column');
+  assert.match(m10, /@media \(max-width: 900px\)\s*\{[\s\S]*?\.works-steps\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/,
+    'the three steps do not stack on a phone');
+  assert.match(m10, /@media \(max-width: 560px\)[\s\S]*?\.subscribe-row\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/,
+    'the subscription field and button do not stack');
+  assert.match(m10, /@media \(max-width: 560px\)[\s\S]*?\.subscribe-input\s*\{\s*width:\s*100%/,
+    'the subscription field is not full width on a phone');
+  // the smallest phone the brief names still has room: nothing in the new layer asks for more
+  // A breakpoint prelude is not a width requirement, so only the declarations are measured.
+  const declarations = m10.replace(/@media[^{]*\{/g, '{');
+  const wide = declarations.match(/min-width:\s*(\d+)px/g) || [];
+  wide.forEach((rule) => {
+    const size = Number(/(\d+)/.exec(rule)[1]);
+    assert.ok(size <= 360, `the M10 layer needs ${size}px, more than a 320px phone has`);
+  });
+});
+
+check('M10: the new decoration cannot become the only carrier of meaning', () => {
+  const m10 = m10Block();
+  // the plate, the meter and the hero icon are all decorative and hidden from assistive tech
+  assert.match(libSource, /class="city-thumb band-' \+ band \+ '" data-band="' \+ escapeHtml\(band\) \+\s*'" aria-hidden="true"/,
+    'the city plate is exposed to assistive tech');
+  assert.match(libSource, /class="city-meter band-' \+ band \+ '" data-band="' \+ escapeHtml\(band\) \+\s*'" aria-hidden="true"/,
+    'the meter is exposed to assistive tech');
+  // the meter marks the documented band edges, and reads its position from the API score
+  assert.match(libSource, /SCORE_BAND_EDGES = \[0\.35, 0\.6, 0\.8\]/, 'the band edges were redefined');
+  assert.match(appSource, /var BAND_EDGES = FP\.SCORE_BAND_EDGES/, 'app.js has its own copy of the edges');
+  // the plate is a vector and a gradient: no city photograph, no remote asset
+  assert.ok(!/<img/i.test(htmlSource), 'the page loads a raster image it did not ship');
+  // and the meter's own colours come from the band tokens, never from a literal hex
+  assert.ok(!/#[0-9a-f]{6}/i.test(m10.match(/\.city-meter[\s\S]{0,600}/)[0]),
+    'the meter hard-codes a colour instead of using a band token');
 });
 
 /* ------------------------------------------------------------------ report --- */
