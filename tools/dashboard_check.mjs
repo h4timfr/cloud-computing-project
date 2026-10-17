@@ -2234,6 +2234,33 @@ check('M9: the heading outline has no skipped level', () => {
   assert.equal(tags.filter((level) => level === 1).length, 1, 'the page has more than one h1');
 });
 
+check('M9: the reskin did not delete the band accent stripes', () => {
+  // A city card, a stat and an alert row carry their band in a left accent stripe, which is the
+  // one cue that is a *shape* rather than a colour (so it survives greyscale). The M9 surface
+  // rules sit later in the file at equal specificity, and a `border` shorthand there would
+  // silently flatten 4px to 1px. This asserts the shorthand is not used on those three.
+  const m9Block = cssSource.slice(cssSource.indexOf('M9 - product experience'));
+  assert.ok(m9Block.length > 0, 'the M9 stylesheet section is missing');
+  ['.card {', '.stat {', '.alert-row {', '.city-card {'].forEach((selector) => {
+    let index = m9Block.indexOf(selector);
+    assert.ok(index >= 0 || selector === '.alert-row {', `${selector} is not defined in the M9 section`);
+    while (index >= 0) {
+      const rule = m9Block.slice(index, m9Block.indexOf('}', index) + 1);
+      assert.ok(!/(^|\s)border\s*:/.test(rule),
+        `${selector.trim()} in the M9 section uses the border shorthand, which flattens the band stripe`);
+      index = m9Block.indexOf(selector, index + selector.length);
+    }
+  });
+  // and the stripes themselves are still defined, in every band the page can show
+  ['.city-card.band-warning', '.city-card.band-critical', '.stat.band-warning', '.hero.band-critical']
+    .forEach((selector) => {
+      assert.ok(cssSource.includes(selector) || cssSource.includes(selector.replace('.city-card', '.city-card.band')),
+        `the band accent for ${selector} is gone`);
+    });
+  assert.match(cssSource, /\.city-card\.band-warning\s*\{\s*border-left-color/,
+    'a band changes the stripe colour no more');
+});
+
 /* ------------------------------------------------------------------ report --- */
 
 console.log(`\n${passed} checks passed, ${failures.length} failed`);

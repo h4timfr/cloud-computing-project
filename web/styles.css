@@ -1643,11 +1643,20 @@ body {
 
 /* --------------------------------------------------------------- surfaces --- */
 
+/* Calmer surfaces than the M6 glass: a deep gradient card reads as a document rather than a
+ * panel of frosted glass, which is what a public page wants. The `border` shorthand is
+ * deliberately NOT used here - the band colour lives in the left accent stripe of a city card,
+ * a stat and an alert row, and a shorthand would flatten 4px to 1px and quietly delete the
+ * strongest non-colour-band cue on the page. */
 .card {
   background: var(--surface);
-  border: 1px solid var(--stroke);
+  border-color: var(--stroke);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-soft);
+  /* The M6 cards were frosted glass over a photo. On a public page the content should win, so the
+   * surface is now a deep gradient and the blur is halved: enough to keep the header readable
+   * while scrolling, not enough to make a reader work at a paragraph. */
+  backdrop-filter: blur(6px);
 }
 
 @media (hover: hover) {
@@ -1793,7 +1802,7 @@ body {
 
 .stat {
   background: var(--surface);
-  border: 1px solid var(--stroke);
+  border-color: var(--stroke);
   border-radius: var(--radius);
   padding: 16px 18px;
 }
