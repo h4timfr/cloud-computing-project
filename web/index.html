@@ -50,11 +50,25 @@
       <li><a id="nav-overview" class="nav-link" data-nav="overview" href="#/overview">Overview</a></li>
       <li><a id="nav-cities" class="nav-link" data-nav="cities" href="#/cities">Cities</a></li>
       <li><a id="nav-alerts" class="nav-link" data-nav="alerts" href="#/alerts">Alerts</a></li>
-      <li><a id="nav-data" class="nav-link" data-nav="data" href="#/data">Data &amp; Methodology</a></li>
+      <li><a id="nav-data" class="nav-link" data-nav="data" href="#/data">Data</a></li>
+      <li><a id="nav-about" class="nav-link" data-nav="about" href="#/about">About</a></li>
     </ul>
   </nav>
 
   <div class="topbar-status">
+    <!-- One plain sentence about the system, for a reader who will never open a menu: "is it
+         working, and is anything wrong right now?" The detail lives behind the summary. -->
+    <details class="health" id="health">
+      <summary class="health-summary" id="health-pill">
+        <span class="health-dot" id="health-dot" aria-hidden="true"></span>
+        <span class="health-word" id="health-word">Connecting</span>
+        <span class="health-detail" id="health-detail">waiting for the first response</span>
+      </summary>
+      <div class="health-panel" id="health-panel">
+        <p class="health-title">System status</p>
+        <ul class="health-list" id="health-list"></ul>
+      </div>
+    </details>
     <div class="conn">
       <span id="conn-badge" class="conn-badge conn-connecting">CONNECTING</span>
       <span id="conn-detail" class="conn-detail">waiting for the first successful poll</span>
@@ -81,19 +95,21 @@
 
   <!-- ============================================================= Overview -->
   <section id="view-overview" class="view" tabindex="-1" data-view="overview" aria-labelledby="ov-title">
-    <header class="view-head">
-      <h2 class="view-title" id="ov-title">Flood risk right now</h2>
-      <p class="view-intro" id="ov-intro">FloodPulse watches rainfall, soil saturation and drainage, and shows how close each monitored zone is to flooding.</p>
-      <p class="view-lede" id="ov-headline" role="status" aria-live="polite">Connecting to the FloodPulse API…</p>
+    <header class="view-head hero-head">
+      <p class="hero-kicker">FloodPulse India · flash-flood risk</p>
+      <h2 class="view-title hero-title" id="ov-title">Is any city at risk of flooding right now?</h2>
+      <p class="view-lede hero-status" id="ov-headline" role="status" aria-live="polite">Connecting to the FloodPulse API…</p>
+      <p class="view-intro" id="ov-intro">FloodPulse watches rainfall, soil saturation and drainage across major Indian cities, and shows how close each one is to flooding.</p>
       <p class="view-sub muted" id="ov-subline"></p>
     </header>
 
-    <div id="ov-stats" class="stat-row"></div>
+    <div id="ov-stats" class="stat-row" aria-label="Fleet summary"></div>
 
     <div id="hero" class="hero-slot">
       <div class="card hero hero-empty">
         <p class="hero-kicker">Highest risk</p>
-        <h2>Awaiting live data</h2>
+        <h2>Waiting for the first reading</h2>
+        <p class="muted">The city with the highest risk score appears here as soon as the API answers.</p>
       </div>
     </div>
 
@@ -110,22 +126,29 @@
       <p id="change-note" class="change-note" role="status" aria-live="polite" hidden></p>
     </section>
 
-    <h3 class="block-title" id="city-cards-title">City status</h3>
+    <h3 class="block-title" id="city-cards-title">City by city</h3>
     <section id="city-cards" class="city-cards" aria-labelledby="city-cards-title">
       <p class="muted" data-f="loading">waiting for data…</p>
     </section>
 
-    <section class="card snapshot-panel">
-      <h3 class="block-title">Snapshot</h3>
-      <dl class="summary-list">
-        <div><dt>System</dt><dd id="summary-live">–</dd></div>
-        <div><dt>Data type</dt><dd id="summary-mode">–</dd></div>
-        <div><dt>Freshness</dt><dd id="summary-freshness">–</dd></div>
-        <div><dt>Weather source</dt><dd id="summary-weather">–</dd></div>
-      </dl>
-      <p class="muted small">FloodPulse checks the API every few seconds while this page is open. Full technical detail is on the
-        <a href="#/data">Data &amp; Methodology</a> page.</p>
+    <section id="recent-activity" class="activity-slot" aria-label="Recent activity">
+      <p class="muted" data-f="loading">recent activity will appear after the first response…</p>
     </section>
+
+    <details class="tech">
+      <summary>Snapshot and technical summary</summary>
+      <div class="card snapshot-panel">
+        <dl class="summary-list">
+          <div><dt>System</dt><dd id="summary-live">–</dd></div>
+          <div><dt>Data type</dt><dd id="summary-mode">–</dd></div>
+          <div><dt>Freshness</dt><dd id="summary-freshness">–</dd></div>
+          <div><dt>Weather source</dt><dd id="summary-weather">–</dd></div>
+        </dl>
+        <p class="muted small">FloodPulse reads the API every few seconds while this page is open. The full explanation of
+          the model, the data sources and the limitations is on the
+          <a href="#/data">Data &amp; Methodology</a> page.</p>
+      </div>
+    </details>
   </section>
 
   <!-- =============================================================== Cities -->
@@ -149,12 +172,13 @@
     </nav>
     <div id="city-detail" class="city-detail-slot"></div>
 
-    <section class="card history-panel">
+    <section class="card history-panel" aria-labelledby="history-title">
       <header class="panel-head">
         <div>
-          <h3 class="panel-title">Risk history</h3>
+          <h3 class="panel-title" id="history-title">Risk history</h3>
           <p class="muted" id="history-meta">loading history…</p>
         </div>
+
         <div class="panel-controls">
           <div id="history-zone" class="button-group" role="group" aria-label="City"></div>
           <div id="history-range" class="button-group" role="group" aria-label="Time range"></div>
@@ -164,6 +188,7 @@
         <canvas id="history-canvas" height="220" role="img" tabindex="0" aria-label="Risk score history chart"></canvas>
         <div id="history-tooltip" class="chart-tooltip" hidden></div>
       </div>
+      <p class="chart-summary" id="history-summary"></p>
       <p class="muted small">
         Source: <code>GET /zones/{zone_id}/history</code>. The shaded bands are the documented
         <code>heuristic-v1</code> class boundaries (NORMAL &lt; 0.35 · WATCH 0.35–0.60 ·
@@ -171,29 +196,53 @@
         each point.
       </p>
     </section>
+
+    <div id="city-incidents" class="city-incidents-slot">
+      <p class="muted" data-f="loading">alert history for this city will appear here…</p>
+    </div>
   </section>
 
   <!-- =============================================================== Alerts -->
   <section id="view-alerts" class="view" tabindex="-1" data-view="alerts" aria-labelledby="alerts-title" hidden>
-    <header class="view-head">
-      <h2 class="view-title" id="alerts-title">Alerts</h2>
-      <p class="view-lede" id="alerts-lede" role="status" aria-live="polite">Loading alerts…</p>
-      <p class="view-sub muted"><span id="incidents-alerting" class="alert-chip">SNS alerts: unknown</span></p>
+    <header class="view-head hero-head">
+      <p class="hero-kicker">Alert centre</p>
+      <h2 class="view-title" id="alerts-title">Flood alerts</h2>
+      <p class="view-lede hero-status" id="alerts-lede" role="status" aria-live="polite">Loading alerts…</p>
     </header>
 
     <div id="alerts-summary" class="stat-row"></div>
 
-    <h3 class="block-title" id="alerts-active-title">Active alerts</h3>
-    <ul id="alerts-active" class="alert-list" aria-labelledby="alerts-active-title">
-      <li class="muted">waiting for data…</li>
-    </ul>
+    <section class="alert-section" aria-labelledby="alerts-active-title">
+      <h3 class="block-title" id="alerts-active-title">Active alerts</h3>
+      <ul id="alerts-active" class="alert-list" aria-labelledby="alerts-active-title">
+        <li class="muted">waiting for data…</li>
+      </ul>
+    </section>
 
-    <h3 class="block-title" id="alerts-closed-title">Recently resolved</h3>
-    <ul id="alerts-closed" class="alert-list" aria-labelledby="alerts-closed-title">
-      <li class="muted">waiting for data…</li>
-    </ul>
+    <section class="alert-section" aria-labelledby="alerts-closed-title">
+      <h3 class="block-title" id="alerts-closed-title">Resolved alerts</h3>
+      <ul id="alerts-closed" class="alert-list" aria-labelledby="alerts-closed-title">
+        <li class="muted">waiting for data…</li>
+      </ul>
+      <p class="muted small" id="incidents-meta">loading incidents…</p>
+    </section>
 
-    <p class="muted small" id="incidents-meta">loading incidents…</p>
+    <section class="alert-section" aria-labelledby="alerts-status-title">
+      <h3 class="block-title" id="alerts-status-title">System status</h3>
+      <div id="alerts-status" class="status-grid">
+        <p class="muted" data-f="loading">waiting for the first response…</p>
+      </div>
+      <p class="status-note"><span id="incidents-alerting" class="alert-chip">Alert publishing: unknown</span></p>
+      <div id="alerts-delivery" class="delivery-slot">
+        <p class="muted" data-f="loading">alert delivery details will appear here…</p>
+      </div>
+      <div class="card guidance-teaser">
+        <h4 class="block-title">If an alert is issued for your area</h4>
+        <p>FloodPulse tells you where risk is rising. It does not issue official warnings and it cannot tell you what to do —
+          your local authorities can. The short version is on the <a href="#/about">About</a> page.</p>
+        <p class="muted small"><a href="#/about">Flood safety guidance and official sources →</a></p>
+      </div>
+    </section>
 
     <details class="tech">
       <summary>Full incident record (technical table)</summary>
@@ -216,20 +265,21 @@
         Source: <code>GET /incidents?limit=20</code>. A city opens exactly one incident when its
         hysteresis-filtered class reaches WARNING or CRITICAL, escalates in place if it later reaches
         CRITICAL, and closes once the city is back to NORMAL — the record is kept as history either way.
-        Alerts are published to one SNS topic, rate-limited per city and severity; the topic itself is
-        never exposed to this page.
+        Alerts are published to one notification topic, rate-limited per city and severity; the topic
+        itself is never exposed to this page.
       </p>
     </details>
   </section>
 
   <!-- ================================================== Data & Methodology -->
   <section id="view-data" class="view" tabindex="-1" data-view="data" aria-labelledby="data-title" hidden>
-    <header class="view-head">
-      <h2 class="view-title" id="data-title">Data &amp; Methodology</h2>
-      <p class="view-lede">What is measured, what is derived, what is simulated — and what this score is not.</p>
+    <header class="view-head hero-head">
+      <p class="hero-kicker">Data &amp; Methodology</p>
+      <h2 class="view-title" id="data-title">Where the numbers come from</h2>
+      <p class="view-lede">What is measured, what is estimated, what is simulated — and what this score is not.</p>
     </header>
 
-    <h3 class="block-title">What each label means</h3>
+    <h3 class="block-title">Three kinds of number</h3>
     <div id="provenance-legend" class="legend-grid"></div>
 
     <h3 class="block-title">Where the live data comes from</h3>
@@ -241,8 +291,8 @@
         <a data-f="attribution-docs" href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">open-meteo.com</a></p>
     </div>
 
-    <h3 class="block-title">How the risk score works</h3>
-    <div class="card" id="method-block"></div>
+    <h3 class="block-title">How the risk score is built</h3>
+    <div id="method-block"></div>
 
     <h3 class="block-title">Why some values are simulated</h3>
     <p id="why-simulated"></p>
@@ -250,19 +300,105 @@
     <h3 class="block-title">What FloodPulse is not</h3>
     <ul id="limitations" class="limitations"></ul>
 
-    <h3 class="block-title">Architecture and endpoints</h3>
-    <div class="card">
-      <dl class="summary-list">
-        <div><dt>Pipeline</dt><dd>weather provider + simulator → API Gateway → AWS Lambda → DynamoDB → this static page on S3</dd></div>
-        <div><dt>Model</dt><dd><b id="summary-model-data">heuristic-v1</b> (deterministic, hand-tuned)</dd></div>
-        <div><dt>Snapshot generated</dt><dd id="summary-generated">–</dd></div>
-        <div><dt>Buffered samples</dt><dd id="poll-count">0</dd></div>
-        <div><dt>Data source</dt><dd><a id="api-base" href="#" target="_blank" rel="noopener noreferrer">–</a></dd></div>
-      </dl>
-      <p class="muted small">Read routes used by this page: <code>GET /zones</code>, <code>GET /zones/{zone_id}/history</code>,
-        <code>GET /incidents</code>. Ingestion (<code>POST /readings</code>) requires a shared secret and is never called from the
-        browser.</p>
+    <details class="tech">
+      <summary>Architecture and endpoints (technical)</summary>
+      <div class="card">
+        <dl class="summary-list">
+          <div><dt>Pipeline</dt><dd>weather provider + simulator → API Gateway → AWS Lambda → DynamoDB → this static page on S3</dd></div>
+          <div><dt>Model</dt><dd><b id="summary-model-data">heuristic-v1</b> (deterministic, hand-tuned)</dd></div>
+          <div><dt>Snapshot generated</dt><dd id="summary-generated">–</dd></div>
+          <div><dt>Buffered samples</dt><dd id="poll-count">0</dd></div>
+          <div><dt>Data source</dt><dd><a id="api-base" href="#" target="_blank" rel="noopener noreferrer">–</a></dd></div>
+        </dl>
+        <p class="muted small">Read routes used by this page: <code>GET /zones</code>, <code>GET /zones/{zone_id}/history</code>,
+          <code>GET /incidents</code>. Ingestion (<code>POST /readings</code>) requires a shared secret and is never called from the
+          browser.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- =============================================================== About -->
+  <section id="view-about" class="view" tabindex="-1" data-view="about" aria-labelledby="about-title" hidden>
+    <header class="view-head hero-head">
+      <p class="hero-kicker">About</p>
+      <h2 class="view-title" id="about-title">What FloodPulse is</h2>
+      <p class="view-lede">A university cloud-computing project that watches rainfall and ground conditions across Indian
+        cities and shows how close each one is to flooding.</p>
+    </header>
+
+    <div class="about-grid">
+      <section class="card about-card">
+        <h3>Why it exists</h3>
+        <p>Urban flash flooding is decided by small things adding up: how hard it is raining, how wet the ground already is,
+          and whether the drains have any room left. Those signals exist, but they are scattered across different systems.
+          FloodPulse puts them on one page, in plain words, and keeps the reasoning visible.</p>
+      </section>
+
+      <section class="card about-card">
+        <h3>Cities monitored</h3>
+        <p id="about-cities">Connecting to the API to read the monitored list…</p>
+        <p class="muted small">Each city is scored independently from its own coordinates and its own thresholds.</p>
+      </section>
+
+      <section class="card about-card">
+        <h3>How it works</h3>
+        <ol class="about-steps">
+          <li><b>Collect.</b> Rainfall and soil moisture are fetched from Open-Meteo for each city; drainage, water level and
+            flow are produced by a simulator, because this project has no physical sensors.</li>
+          <li><b>Score.</b> The five values are combined into one risk score between 0 and 1 by the deterministic
+            <b>heuristic-v1</b> formula, then filtered so a single noisy reading cannot move a city's risk band on its own.</li>
+          <li><b>Decide.</b> A city at WARNING or CRITICAL opens an alert record, which closes again once the city is back to
+            NORMAL. Repeats are rate-limited per city.</li>
+          <li><b>Show.</b> This page reads the API every few seconds and labels every number with where it came from.</li>
+        </ol>
+      </section>
+
+      <section class="card about-card">
+        <h3>Built on</h3>
+        <ul class="about-stack">
+          <li><b>AWS Lambda</b> — one function that ingests readings, scores them and answers the API</li>
+          <li><b>API Gateway</b> — the public HTTP endpoint this page reads</li>
+          <li><b>DynamoDB</b> — one table holding current values, history, incidents and the weather cache</li>
+          <li><b>S3</b> — this static dashboard</li>
+          <li><b>SNS</b> — the notification topic alerts are published to</li>
+          <li><b>Open-Meteo</b> — the public weather provider behind the real measurements</li>
+        </ul>
+        <p class="muted small">Everything runs on managed services with no servers to keep alive, which is also why the whole
+          project fits inside a student budget.</p>
+      </section>
     </div>
+
+    <section class="card guidance" id="guidance" aria-labelledby="guidance-title">
+      <h3 id="guidance-title">Flood safety guidance</h3>
+      <p class="guidance-lede">FloodPulse tells you where flood risk is rising. It does <b>not</b> issue official warnings and it
+        is not an authority. If a flood is happening or forecast, follow your local government and disaster-management
+        authorities — they know your street, your drains and your evacuation routes.</p>
+      <ul class="guidance-list">
+        <li><b>Do not walk or drive through floodwater.</b> Moving water is stronger than it looks and the road surface may be gone.</li>
+        <li><b>Move to higher ground</b> when told to, and stay there until officials say it is safe to return.</li>
+        <li><b>Keep away from drains, canals and fast-moving water,</b> including water you can see the bottom of.</li>
+        <li><b>Follow instructions from local authorities</b> over anything this page says.</li>
+        <li><b>Watch official weather and disaster-management channels</b> for warnings and evacuation orders.</li>
+        <li><b>Never enter a flooded building or basement</b> until it has been declared safe — water and electricity do not mix.</li>
+        <li><b>Check on neighbours</b> who may need help getting out, once you are safe yourself.</li>
+      </ul>
+      <h4 class="block-title">Official sources</h4>
+      <ul class="official-list">
+        <li><a href="https://mausam.imd.gov.in/" target="_blank" rel="noopener noreferrer">India Meteorological Department
+          <span class="sr-only">(opens in a new tab)</span></a> — official weather forecasts and warnings</li>
+        <li><a href="https://ndma.gov.in/" target="_blank" rel="noopener noreferrer">National Disaster Management Authority
+          <span class="sr-only">(opens in a new tab)</span></a> — national disaster guidance and helplines</li>
+        <li><a href="https://ndma.gov.in/Natural-Hazards/Floods" target="_blank" rel="noopener noreferrer">NDMA flood guidance
+          <span class="sr-only">(opens in a new tab)</span></a> — what to do before, during and after a flood</li>
+      </ul>
+      <p class="muted small">These links go to the authorities' own websites. FloodPulse does not copy, mirror or reinterpret
+        their content, and it does not connect to their systems.</p>
+    </section>
+
+    <section class="card about-card" aria-labelledby="about-limits-title">
+      <h3 id="about-limits-title">Limitations, stated plainly</h3>
+      <ul class="limitations" id="about-limitations"></ul>
+    </section>
   </section>
 
   <noscript>
@@ -273,6 +409,13 @@
 </main>
 
 <footer class="footer">
+  <nav class="footer-nav" aria-label="Footer">
+    <a href="#/overview">Overview</a>
+    <a href="#/cities">Cities</a>
+    <a href="#/alerts">Alerts</a>
+    <a href="#/data">Data &amp; Methodology</a>
+    <a href="#/about">About &amp; safety guidance</a>
+  </nav>
   <p id="notice-text">
     FloodPulse is a university cloud-computing project. Risk scores are deterministic
     <code>heuristic-v1</code> values, clearly labelled as such and never presented as a prediction.
@@ -284,11 +427,13 @@
   <p id="footer-disclaimer" class="muted small">
     heuristic-v1 is a hand-tuned deterministic scoring heuristic over sensor values. It is not a
     calibrated hydrological model, not a statistical forecast and not a machine-learning prediction,
-    and it is not an official flood warning.
+    and it is not an official flood warning. For official emergency guidance, follow local government
+    and disaster-management authorities.
   </p>
   <p id="attribution" class="muted small"></p>
   <p class="muted small">
     <a href="#/data">Data &amp; Methodology</a> explains the provenance tags, the model and its limitations.
+    <a href="#/about">About</a> explains what FloodPulse is and links to official sources.
   </p>
 </footer>
 

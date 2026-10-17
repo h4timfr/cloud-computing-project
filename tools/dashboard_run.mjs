@@ -964,9 +964,11 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     await quiet.runtime.settle();
     clickNav(quiet.dom, 'alerts');
     assert.match(quiet.dom.html('alerts-active'), /data-empty="active"/, 'no empty state for active alerts');
-    assert.match(quiet.dom.html('alerts-active'), /No active alerts/);
+    // M9 copy: the empty state says "flood alerts" out loud, so the wording is a shade more
+    // specific than before while still being an explicit sentence rather than a blank panel
+    assert.match(quiet.dom.html('alerts-active'), /No active flood alerts/);
     assert.match(quiet.dom.html('alerts-closed'), /data-empty="closed"/, 'no empty state for resolved incidents');
-    assert.match(quiet.dom.html('alerts-closed'), /Nothing resolved yet/);
+    assert.match(quiet.dom.html('alerts-closed'), /No resolved alerts yet/);
     assert.match(quiet.dom.text('alerts-lede'), /WARNING or CRITICAL/,
       'the alerts page does not say when an alert would appear');
   });
@@ -982,7 +984,11 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     };
     const nothing = boot({ payload: emptyFleet, incidents: null, history: null, overrides: {} });
     await nothing.runtime.settle();
-    assert.match(nothing.dom.html('city-cards'), new RegExp('No ' + fleetNoun + ' has reported', 'i'),
+    // M9: an empty fleet now renders a designed empty state (icon, sentence, a retry) instead of
+    // a bare paragraph, so this checks the state itself rather than one phrasing of it
+    assert.match(nothing.dom.html('city-cards'), /data-empty="no-cities"/,
+      `the overview has no empty state: "${nothing.dom.html('city-cards')}"`);
+    assert.match(nothing.dom.html('city-cards'), new RegExp('No ' + fleetNoun + ' is reporting'),
       `the overview reads "${nothing.dom.html('city-cards')}"`);
     assert.match(nothing.dom.html('hero'), /Awaiting live data/);
     assert.equal(nothing.dom.html('zones'), '', 'the city grid should stay empty');

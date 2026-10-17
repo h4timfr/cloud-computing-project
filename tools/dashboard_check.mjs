@@ -840,9 +840,18 @@ check('dashboard has no remote dependencies or CDN assets', () => {
   // scanned for named origins separately, so those two names cannot become a loophole.
   const allowedRemoteHosts = ['2rg2u8quzd.execute-api.eu-north-1.amazonaws.com', 'open-meteo.com',
     'localhost', '127.0.0.1'];
+  // M9 adds links to the official Indian weather and disaster-management sites. A link the
+  // reader chooses to follow is a documentation destination, not a dependency: nothing in this
+  // project fetches those hosts, and they must never be loaded as an asset. They are listed
+  // explicitly (and only as destinations) so a stray asset URL to them still fails below.
+  const allowedOfficialHosts = ['mausam.imd.gov.in', 'ndma.gov.in'];
   [['index.html', htmlSource], ['styles.css', cssSource], ['lib.js', libSource], ['app.js', appSource]]
     .forEach(([name, source]) => {
-      const found = [...withoutDataUris(source).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((match) => match[1]);
+      // Everything except <a href="..."> is an asset/endpoint/dependency reference and must be
+      // one of the project's own hosts. `<a href>` destinations are checked separately, with
+      // their rel/target/https attributes, so this cannot become a way to load a CDN.
+      const withoutLinks = withoutDataUris(source).replace(/<a\b[^>]*href="https?:[^"]*"[^>]*>/gi, '<a>');
+      const found = [...withoutLinks.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((match) => match[1]);
       const stray = [...new Set(found)].filter((host) => !allowedRemoteHosts.includes(host));
       assert.deepEqual(stray, [], `${name} references an unexpected remote host: ${stray.join(', ')}`);
     });
@@ -866,7 +875,13 @@ check('dashboard has no remote dependencies or CDN assets', () => {
     assert.match(match[0], /target="_blank"/, `external link ${match[1]} does not open in a new tab`);
     assert.ok(/^https:\/\//.test(match[1]), `external link ${match[1]} is not https`);
   });
-  assert.ok(docLinks.length <= 1, 'the page links to more than one external site');
+  // Every external destination is either the project's own endpoint/provider documentation or an
+  // explicitly listed official source. The list is short on purpose: this is a documentation
+  // page linking to authorities, not a portal.
+  const docHosts = [...new Set(docLinks.map((match) => new URL(match[1]).host))];
+  const unexpectedDocs = docHosts.filter((host) => !allowedRemoteHosts.includes(host) && !allowedOfficialHosts.includes(host));
+  assert.deepEqual(unexpectedDocs, [], `the page links to an unlisted external host: ${unexpectedDocs.join(', ')}`);
+  assert.ok(docHosts.length <= 3, `the page links out to ${docHosts.length} different external sites`);
 });
 
 check('site contains no credentials, keys or tokens', () => {
@@ -1321,7 +1336,7 @@ check('the stylesheet styles every class the page emits', () => {
   // Prefix families are emitted by concatenation: base names are listed here instead.
   // `view-` is the router's runtime body class (body.view-cities …), which the runtime
   // harness asserts per view; no stylesheet rule depends on it.
-  const prefixes = ['band-', 'conn-', 'mode-', 'src-', 'status-', 'is-', 'view-'];
+  const prefixes = ['band-', 'conn-', 'mode-', 'src-', 'status-', 'is-', 'view-', 'trend-'];
   const missing = [...emitted].filter((name) => {
     if (prefixes.some((prefix) => name.endsWith(prefix))) return false;
     return !new RegExp(`\\.${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(cssSource);
@@ -1371,7 +1386,7 @@ check('the page pins the fleet strip and headings to the payload', () => {
 
 group('Information architecture: four pages instead of one long scroll');
 
-const VIEW_IDS = ['view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data'];
+const VIEW_IDS = ['view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data', 'view-about'];
 
 check('every section is a real view, and only the first one is shown at load', () => {
   VIEW_IDS.forEach((id) => {
@@ -1394,31 +1409,35 @@ check('every section is a real view, and only the first one is shown at load', (
 
 check('the navigation offers exactly the sections the router knows', () => {
   const links = [...htmlSource.matchAll(/<a id="nav-([a-z-]+)"[^>]*data-nav="([a-z-]+)"[^>]*href="([^"]+)"/g)];
-  assert.equal(links.length, 4, `the navigation has ${links.length} section links, expected 4`);
+  assert.equal(links.length, FP.NAV_ITEMS.length,
+    `the navigation has ${links.length} section links, expected ${FP.NAV_ITEMS.length}`);
   const offered = links.map((match) => ({ view: match[2], hash: match[3] }));
   // compared as JSON: these objects come out of the VM realm, where deepEqual is unreliable
   assert.equal(JSON.stringify(offered), JSON.stringify(FP.NAV_ITEMS.map((item) => ({ view: item.view, hash: item.hash }))),
     'the navigation and the router disagree about the sections');
   assert.match(htmlSource, /<nav class="nav" aria-label="[^"]+">/, 'the sections are not inside a labelled nav');
   assert.match(htmlSource, /<ul id="nav-list"/, 'the section links are not a list');
-  assert.equal(FP.NAV_ITEMS.length, 4, 'the router should know four top-level sections');
+  assert.equal(FP.NAV_ITEMS.length, 5, 'the router should know five top-level sections');
   assert.match(htmlSource, /id="nav-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="nav-list"/,
     'the mobile menu button is not wired to the list it opens');
   assert.match(htmlSource, /<button id="nav-toggle"[^>]*type="button"/, 'the menu control is not a real button');
 });
 
 check('each section is titled for people and for the window', () => {
-  const titles = ['overview', 'cities', 'alerts', 'data'].map((view) => FP.viewTitle({ view, zoneId: null }, null));
-  assert.equal(new Set(titles).size, 4, 'two sections share a document title');
+  const views = FP.NAV_ITEMS.map((item) => item.view);
+  const titles = views.map((view) => FP.viewTitle({ view, zoneId: null }, null));
+  assert.equal(new Set(titles).size, views.length, 'two sections share a document title');
   titles.forEach((title) => assert.match(title, /FloodPulse/, `a section title does not name the product: ${title}`));
   assert.match(FP.viewTitle({ view: 'city', zoneId: 'city-kochi' }, { zones: [{ zone_id: 'city-kochi', name: 'Kochi' }] }), /Kochi/,
     'a city page does not name the city in the window title');
   // a heading per view, so the page has one outline instead of one long document
-  ['ov-title', 'cities-title', 'alerts-title', 'data-title'].forEach((id) => {
+  ['ov-title', 'cities-title', 'alerts-title', 'data-title', 'about-title'].forEach((id) => {
     assert.match(htmlSource, new RegExp(`<h2[^>]*id="${id}"`), `no section heading with id ${id}`);
   });
-  const named = [...htmlSource.matchAll(/<h2[^>]*class="view-title"[^>]*id="([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(named.length, 4, `expected four visible section headings, found ${named.length}`);
+  // the class list may carry extra modifiers (the Overview heading is also the hero title), so
+  // this matches `view-title` anywhere in the list rather than only on its own
+  const named = [...htmlSource.matchAll(/<h2[^>]*class="[^"]*\bview-title\b[^"]*"[^>]*id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(named.length, 5, `expected five visible section headings, found ${named.length}`);
 });
 
 check('nothing was added to satisfy the routing: no framework, no new request', () => {

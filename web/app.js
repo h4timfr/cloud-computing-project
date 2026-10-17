@@ -114,6 +114,14 @@
     detailSignature: null,
     alertsSignature: null,
     dataSignature: null,
+    // M9: the activity panel, the About page and the system-health pill each render from a
+    // signature so a poll that changed nothing does not rewrite the DOM
+    activitySignature: null,
+    aboutSignature: null,
+    healthSignature: null,
+    cityIncidentsSignature: null,
+    // risk-class transitions this page watched happen while it was open, newest first
+    changes: [],
     menuOpen: false
   };
 
@@ -147,14 +155,18 @@
       // these two entries, so leaving them out of this list silently froze the strip at
       // its static placeholders (found by the runtime harness, not by the static checks)
       'band-strip', 'band-strip-label',
-      // navigation and the four views (M6 information architecture)
-      'nav-toggle', 'nav-list', 'nav-overview', 'nav-cities', 'nav-alerts', 'nav-data',
-      'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data',
+      // navigation and the views (M6 information architecture, extended with About in M9)
+      'nav-toggle', 'nav-list', 'nav-overview', 'nav-cities', 'nav-alerts', 'nav-data', 'nav-about',
+      'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data', 'view-about',
       'ov-headline', 'ov-subline', 'ov-intro', 'ov-stats', 'band-strip-title',
       'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
       'alerts-lede', 'alerts-summary', 'alerts-active', 'alerts-closed',
       'provenance-legend', 'attribution-block', 'attribution-detail', 'summary-weather-provider',
-      'method-block', 'why-simulated', 'limitations', 'summary-model-data'
+      'method-block', 'why-simulated', 'limitations', 'summary-model-data',
+      // M9: system health, recent activity, alert delivery, per-city alert history and About
+      'health', 'health-pill', 'health-dot', 'health-word', 'health-detail', 'health-list',
+      'recent-activity', 'alerts-status', 'alerts-delivery', 'city-incidents',
+      'about-cities', 'about-limitations', 'history-summary'
     ];
     ids.forEach(function (id) { el[id] = $(id); });
     // A page and a controller from different revisions (a half-finished deploy, a hand-edited
@@ -312,6 +324,8 @@
     renderOverview(payload);
     renderDataPage(payload);
     renderAlerts();
+    renderAbout(payload);
+    renderSystemHealth();
     if (state.route.view === 'city') renderCityDetail();
     refreshConnection();
 
@@ -357,6 +371,12 @@
     var note = el['change-note'];
     var change = FP.fleetChange(state.previousClasses, payload);
     state.previousClasses = FP.fleetClasses(payload);
+    // Keep the last few observed changes, newest first, for the Overview activity panel. These
+    // are transitions this page watched happen - not a history, and not a claim about anything
+    // that happened while nobody was looking at the page.
+    if (change.text) {
+      state.changes = [change.text].concat(state.changes || []).slice(0, 4);
+    }
     if (!note) return;
     var classes = 'change-note' + (change.tone ? ' ' + change.tone : '');
     note.className = classes;
@@ -499,6 +519,9 @@
     // the feed countdown ticks here, once per second, on the panel row only
     if (state.payload) renderFreshness(state.payload);
     if (state.route.view === 'city') tickDetailFreshness();
+    // The health pill and the chrome around the connection badge change with the connection
+    // state, so they are refreshed on the same one-second tick (and are signature-guarded).
+    renderSystemHealth();
   }
 
   /* ------------------------------------------------------------------- hero --- */
@@ -914,7 +937,11 @@
     var points = data && data.points ? data.points : [];
     // The chart is the only place the per-point values live, so its label must describe the
     // series it is actually showing instead of a fixed sentence.
-    canvas.setAttribute('aria-label', historyAriaLabel(points));
+    var seriesLabel = historyAriaLabel(points);
+    canvas.setAttribute('aria-label', seriesLabel);
+    // ...and the same sentence is on the page itself, because a sighted reader on a small screen
+    // cannot hover a phone-sized canvas, and a canvas is invisible to a screen reader.
+    setText('history-summary', points.length || state.historyError ? seriesLabel : '');
     if (points.length === 0) {
       ctx.fillStyle = 'rgba(226, 232, 240, 0.7)';
       ctx.font = '13px system-ui, sans-serif';
@@ -1038,13 +1065,15 @@
     event.preventDefault();
     showPoint(index);
     var canvas = el['history-canvas'];
+    var pointLabel = ' Showing point ' + (index + 1) + ' of ' + data.points.length + ': score ' +
+      FP.formatScore(data.points[index].risk_score) +
+      '. Use the left and right arrow keys to move through the points.';
     if (canvas && canvas.setAttribute) {
       // the label is the only text alternative for a keyboard user, so keep it current
-      canvas.setAttribute('aria-label', historyAriaLabel(data.points) +
-        ' Showing point ' + (index + 1) + ' of ' + data.points.length + ': score ' +
-        FP.formatScore(data.points[index].risk_score) +
-        '. Use the left and right arrow keys to move through the points.');
+      canvas.setAttribute('aria-label', historyAriaLabel(data.points) + pointLabel);
     }
+    // ...and the same sentence on the page, for a reader who cannot see the hover tooltip
+    setText('history-summary', historyAriaLabel(data.points) + pointLabel);
   }
 
   function handleHistoryHover(event) {
@@ -1058,10 +1087,10 @@
 
   /* ===================================================== views and navigation === */
 
-  /* The site is one document with five views. The URL hash is the only source of
+  /* The site is one document with six views. The URL hash is the only source of
    * truth for which one is visible, so a link, a reload or the back button all land in
    * the same place; nothing here fetches, it only decides what is on screen. */
-  var VIEWS = ['overview', 'cities', 'city', 'alerts', 'data'];
+  var VIEWS = ['overview', 'cities', 'city', 'alerts', 'data', 'about'];
 
   function navigate(hash) {
     if (window.location.hash !== hash) window.location.hash = hash;
@@ -1114,6 +1143,10 @@
     if (viewChanged || zoneChanged) {
       if (route.view === 'city') renderCityDetail();
       if (route.view === 'alerts') renderAlerts();
+      if (route.view === 'about') renderAbout(state.payload);
+      // the About page carries the same live city list as the rest of the page, so it is
+      // rendered from whatever the last poll returned rather than hard-coding five names
+      if (route.view === 'about') renderSystemHealth();
       if (opts.focus !== false) focusView();
     }
   }
@@ -1179,6 +1212,22 @@
     }
 
     renderCityCards(state.zones);
+    renderRecentActivity();
+  }
+
+  /* "What should I pay attention to?" - the changes the page has actually observed since it was
+   * opened, plus the newest incidents. Both come from state the page already holds: nothing here
+   * is inferred, and an empty list says so rather than showing a blank panel. */
+  function renderRecentActivity() {
+    var host = el['recent-activity'];
+    if (!host) return;
+    var changes = state.changes || [];
+    var signature = (state.payload ? 'live' : 'loading') + '|' + changes.join('~') + '|' +
+      (state.incidents ? FP.incidentsSignature(state.incidents) : 'none');
+    if (signature === state.activitySignature) return;
+    state.activitySignature = signature;
+    host.innerHTML = FP.recentActivity(state.payload, state.incidents ? state.incidents.incidents : null,
+      Date.now(), { changes: changes });
   }
 
   /* Five compact cards: name, band, one plain sentence, score and freshness. The full
@@ -1187,19 +1236,35 @@
     var host = el['city-cards'];
     if (!host) return;
     var list = zones || [];
-    var signature = list.map(function (zone) {
+    // The loading/loaded state is part of the signature: an empty list before the first response
+    // is a skeleton, and an empty list *after* a response is an empty state, and those two must
+    // not hash to the same key (that mistake left the skeleton on screen for ever).
+    var signature = (state.payload ? 'loaded' : 'loading') + '|' + (list.map(function (zone) {
       var latest = zone.latest;
       return zone.zone_id + ':' + (latest ? latest.risk_class + ':' + latest.ts_epoch : 'none');
-    }).join('|') || 'empty';
+    }).join('|') || 'empty');
     if (signature === state.cityCardSignature) return;
     state.cityCardSignature = signature;
+    var noun = FP.zoneNoun(state.payload);
+    var stale = FP.staleZoneIds(state.payload);
     host.innerHTML = list.length
       ? list.map(function (zone) {
-        return FP.cityStatusCard(zone, { noun: FP.zoneNoun(state.payload) });
+        return FP.cityStatusCard(zone, { noun: noun, staleZoneIds: stale });
       }).join('')
-      : '<p class="muted" data-f="no-cities">No ' + FP.zoneNoun(state.payload) +
-        ' has reported a scored reading yet. ' +
-        'This page keeps polling the API and fills in as soon as the first reading arrives.</p>';
+      : (state.payload
+        // the API answered and there is genuinely nothing to show: an empty state with a
+        // way forward, not a blank grid
+        ? FP.emptyState({
+          key: 'no-cities',
+          icon: 'info',
+          title: 'No ' + noun + ' is reporting a scored reading',
+          detail: 'The API answered, but no ' + noun + ' has a complete reading yet. This page keeps ' +
+            'checking every few seconds.',
+          action: 'retry',
+          actionLabel: 'Check again now'
+        })
+        // nothing has arrived yet: placeholders that show the shape of what is coming
+        : FP.cityCardsSkeleton(3));
   }
 
   /* -------------------------------------------------------------- city detail --- */
@@ -1219,24 +1284,68 @@
       var signature = 'missing|' + String(zoneId) + '|' + (waiting ? 'loading' : 'known') + '|' + noun;
       if (signature !== state.detailSignature) {
         state.detailSignature = signature;
-        // h2: this card stands in for the city detail view, whose heading is an h2 too
-        slot.innerHTML = '<div class="card detail-missing">' +
-          '<h2>' + (waiting ? 'Loading this ' + noun + '…' : 'This ' + noun + ' is not in the current fleet') + '</h2>' +
-          '<p class="muted">' + (waiting
-            ? 'Waiting for the first response from <code>GET /zones</code>.'
-            : 'The API does not report a ' + noun + ' with the id <code>' + FP.escapeHtml(zoneId || '') + '</code>. ' +
-              'It may belong to a different fleet (the simulated demo zones are not part of the live one).') + '</p>' +
-          '<p><a class="ghost-link" href="#/cities">Back to all ' + pluralTitle.toLowerCase() + '</a></p>' +
-          '</div>';
+        if (waiting) {
+          // the shape of the page that is coming, rather than the word "loading"
+          slot.innerHTML = '<div class="card detail-missing" aria-hidden="true">' +
+            '<span class="skel skel-title"></span>' + FP.skeletonLines(3) + '</div>';
+        } else {
+          // h2: this card stands in for the city detail view, whose heading is an h2 too
+          slot.innerHTML = FP.emptyState({
+            key: 'unknown-city',
+            icon: 'info',
+            title: 'No ' + noun + ' with that name',
+            detail: 'The API does not report a ' + noun + ' with the id "' + String(zoneId || '') +
+              '", so it is not in the current fleet. It may belong to the simulated demo ' +
+              'fleet, or the link may be out of date.',
+            actionHref: '#/cities',
+            actionLabel: 'Back to all ' + pluralTitle.toLowerCase()
+          });
+        }
       }
+      // the alert history for a city that is not in the fleet is empty, and says so
+      renderCityIncidents(null);
       return;
     }
     var latest = zone.latest;
     var signature = zoneId + '|' + (latest ? latest.ts_epoch : 'none') + '|' + (state.payload ? state.payload.generated_at : '');
-    if (signature === state.detailSignature) return;
-    state.detailSignature = signature;
-    var feed = state.payload ? FP.feedStatus(state.payload, Date.now(), payloadAgeOffsetSeconds()) : null;
-    slot.innerHTML = FP.cityDetail(zone, { feed: feed, noun: FP.zoneNoun(state.payload) });
+    if (signature !== state.detailSignature) {
+      state.detailSignature = signature;
+      var feed = state.payload ? FP.feedStatus(state.payload, Date.now(), payloadAgeOffsetSeconds()) : null;
+      slot.innerHTML = FP.cityDetail(zone, { feed: feed, noun: FP.zoneNoun(state.payload) });
+    }
+    // Outside the signature check: the alert history belongs to whichever city is selected, and
+    // switching cities must never leave the previous city's alerts on screen.
+    renderCityIncidents(zone);
+  }
+
+  /* This city's own alert history, from the incident list the page already holds. */
+  function renderCityIncidents(zone) {
+    var host = el['city-incidents'];
+    if (!host) return;
+    var noun = FP.zoneNoun(state.payload);
+    var zoneId = zone && zone.zone_id ? zone.zone_id : null;
+    var incidents = (state.incidents && state.incidents.incidents) || [];
+    var signature = String(zoneId) + '|' + (state.incidents ? 'loaded' : 'loading') + '|' +
+      (state.incidents ? FP.incidentsSignature(state.incidents) : 'none');
+    if (signature === state.cityIncidentsSignature) return;
+    state.cityIncidentsSignature = signature;
+    if (!zoneId) {
+      host.innerHTML = FP.emptyState({
+        key: 'city-history',
+        icon: 'info',
+        title: 'No alert history to show',
+        detail: 'Pick a ' + noun + ' to see the alerts it has had.',
+        actionHref: '#/cities',
+        actionLabel: 'Back to all ' + FP.zoneNounPlural(state.payload)
+      });
+      return;
+    }
+    if (!state.incidents) {
+      host.innerHTML = '<div class="card incident-history" aria-hidden="true">' +
+        '<span class="skel skel-title"></span>' + FP.skeletonLines(2) + '</div>';
+      return;
+    }
+    host.innerHTML = FP.cityIncidentHistory(incidents, zoneId, Date.now(), { noun: noun, limit: 5 });
   }
 
   /* The freshness sentence inside the city view moves with the clock, like the one in
@@ -1270,36 +1379,48 @@
       // A zone that stopped reporting can leave an incident OPEN for ever (an incident
       // closes on a return to NORMAL, not on silence), so say when that is the case.
       var silentZones = FP.staleZoneIds(state.payload);
+      // Every incident row states what happened to its alert, using the API's own alert log
+      // count: "published to the notification topic" is only claimed where a publish is on
+      // the record, and delivery to a person is never claimed at all.
+      var rowOptions = { silentZoneIds: silentZones, alerting: payload ? payload.alerting : null };
       if (el['alerts-active']) {
         el['alerts-active'].innerHTML = loading
-          ? '<li class="muted">loading alerts…</li>'
+          ? FP.alertRowsSkeleton(2)
           : (split.active.length
             ? split.active.map(function (incident) {
-              return FP.alertRow(incident, Date.now(), { silentZoneIds: silentZones });
+              return FP.alertRow(incident, Date.now(), rowOptions);
             }).join('')
             : FP.alertsEmptyState('active', FP.zoneNoun(state.payload)));
       }
       if (el['alerts-closed']) {
         el['alerts-closed'].innerHTML = loading
-          ? '<li class="muted">loading incidents…</li>'
+          ? FP.alertRowsSkeleton(2)
           : (split.closed.length
             ? split.closed.map(function (incident) {
-              return FP.alertRow(incident, Date.now(), { silentZoneIds: silentZones });
+              return FP.alertRow(incident, Date.now(), rowOptions);
             }).join('')
             : FP.alertsEmptyState('closed', FP.zoneNoun(state.payload)));
       }
+      if (el['alerts-delivery']) {
+        el['alerts-delivery'].innerHTML = loading
+          ? '<div class="card"><p class="muted" data-f="loading">alert delivery details will appear here…</p></div>'
+          : FP.deliveryPanel(payload);
+      }
       if (el['alerts-summary']) {
         var alertsNoun = FP.zoneNoun(state.payload);
+        var health = FP.systemHealth(state.payload, payload ? payload.incidents : null, Date.now());
         var html = loading ? '' : statCard('Active alerts', String(split.active.length),
           split.active.length ? '<span class="pill band-' + FP.bandKey(summary.highest) + '">' +
             FP.escapeHtml(summary.highest) + '</span> highest severity'
             : 'no ' + alertsNoun + ' above WATCH', summary.tone === 'calm' ? '' : FP.bandKey(summary.highest)) +
           statCard('Resolved incidents', String(split.closed.length), 'kept as history', '') +
           statCard('Total recorded', String(split.total), 'source <code>GET /incidents</code>', '') +
-          // "armed" only claims the host-side publish path is configured: the browser is never
-          // told about subscribers, so delivery to a person is never asserted here
-          statCard('Alert publishing', payload && payload.alerting && payload.alerting.enabled ? 'Configured' : 'Not configured',
-            FP.escapeHtml(FP.alertingNote(payload ? payload.alerting : null)), payload && payload.alerting && payload.alerting.enabled ? 'normal' : '');
+          // how alert publishing is configured belongs to the delivery panel below, where it can
+          // be stated precisely; this card answers the "is anything reporting?" question instead
+          statCard(FP.zoneNounPlural(state.payload).charAt(0).toUpperCase() +
+            FP.zoneNounPlural(state.payload).slice(1) + ' reporting',
+            health.reporting + ' / ' + health.total, 'newest stored reading per ' + alertsNoun,
+            health.reporting === health.total && health.total > 0 ? 'normal' : '');
         if (el['alerts-summary'].getAttribute('data-rendered') !== html) {
           el['alerts-summary'].innerHTML = html;
           el['alerts-summary'].setAttribute('data-rendered', html);
@@ -1412,6 +1533,92 @@
     }
   }
 
+  /* --------------------------------------------------------- system health --- */
+
+  /* One honest sentence about right now: how much of the fleet is answering, how old the newest
+   * weather observation is, whether anything is stale, and whether any alert is open. Counts and
+   * ages only - no infrastructure detail, no topic, no region, nothing an attacker can use. */
+  function renderSystemHealth() {
+    var health = FP.systemHealth(state.payload, state.incidents ? state.incidents.incidents : null, Date.now());
+    var signature = health.tone + '|' + health.reporting + '|' + health.total + '|' +
+      health.lines.map(function (line) { return line.label; }).join('~') + '|' +
+      (state.lastError ? 'error' : 'ok') + '|' + (state.payload ? 'loaded' : 'loading');
+    if (signature === state.healthSignature) return;
+    state.healthSignature = signature;
+
+    var tone = state.lastError ? 'bad' : (state.payload ? health.tone : 'quiet');
+    var word = state.lastError ? 'Degraded' : (state.payload ? health.label : 'Connecting');
+    var detail = state.lastError
+      ? 'the API did not answer the last request'
+      : (state.payload ? health.reporting + '/' + health.total + ' reporting' : 'waiting for the first response');
+
+    var pill = el['health-pill'];
+    if (pill) {
+      pill.className = 'health-summary is-' + tone;
+    }
+    var dot = el['health-dot'];
+    if (dot) dot.className = 'health-dot is-' + tone;
+    setText('health-word', word);
+    setText('health-detail', detail);
+
+    var list = el['health-list'];
+    if (list) {
+      var lines = health.lines.slice();
+      if (state.lastError) {
+        lines.push({ icon: 'warning', tone: 'bad', label: 'The last API request failed' });
+      }
+      lines.push({
+        icon: 'refresh',
+        tone: 'quiet',
+        label: state.payload
+          ? 'Last successful update ' + FP.ageLabel(Math.round((Date.now() - state.payloadReceivedMs) / 1000))
+          : 'No successful update yet'
+      });
+      list.innerHTML = lines.map(function (line) {
+        return '<li class="health-item is-' + FP.escapeHtml(line.tone) + '">' +
+          FP.icon(line.icon, 16) + '<span>' + FP.escapeHtml(line.label) + '</span></li>';
+      }).join('');
+    }
+
+    var grid = el['alerts-status'];
+    if (grid) {
+      grid.innerHTML = health.lines.map(function (line) {
+        return '<article class="status-card is-' + FP.escapeHtml(line.tone) + '">' +
+          '<span class="status-icon">' + FP.icon(line.icon, 20) + '</span>' +
+          '<p class="status-label">' + FP.escapeHtml(line.label) + '</p></article>';
+      }).join('');
+    }
+  }
+
+  /* ---------------------------------------------------------------- about --- */
+
+  /* The About page repeats two live facts - which cities are monitored, and what the model does
+   * not do - so it is rendered from the payload rather than hard-coded, and stays true if the
+   * fleet changes. Everything else on that page is static prose in index.html. */
+  function renderAbout(payload) {
+    var names = state.zones.map(function (zone) { return zone.name; }).filter(Boolean);
+    var signature = (payload ? 'loaded' : 'loading') + '|' + names.join(',') + '|' +
+      (payload ? payload.zone_mode : '');
+    if (signature === state.aboutSignature) return;
+    state.aboutSignature = signature;
+
+    if (el['about-cities']) {
+      el['about-cities'].innerHTML = names.length
+        ? 'FloodPulse currently monitors <b>' + names.length + '</b> ' + FP.zoneNounPlural(payload) + ': ' +
+          FP.escapeHtml(names.join(', ')) + '. ' +
+          (payload && payload.zone_mode === 'live_weather'
+            ? 'Rainfall for each of them comes from the live weather provider.'
+            : 'This board is running in simulated mode: every value is generated by the FloodPulse simulator.')
+        : 'Waiting for the first response from <code>GET /zones</code> to list the monitored ' +
+          FP.zoneNounPlural(payload) + '.';
+    }
+    if (el['about-limitations']) {
+      el['about-limitations'].innerHTML = FP.methodologyFacts().limitations.map(function (limitation) {
+        return '<li>' + FP.escapeHtml(limitation) + '</li>';
+      }).join('');
+    }
+  }
+
   /* ----------------------------------------------------------------- wiring --- */
 
   /* ------------------------------------------------------------- incidents --- */
@@ -1478,6 +1685,8 @@
     }
     // the alerts view reads the same payload, split into active and resolved
     renderAlerts();
+    // the system status includes the active-alert count, so it moves with the incidents
+    renderSystemHealth();
   }
 
   /* Open incidents keep counting between polls; only the duration text is patched so
@@ -1543,6 +1752,29 @@
     });
     window.addEventListener('hashchange', function () {
       applyRoute({ focus: true });
+    });
+
+    // A "check again" button in any empty or error state: a real retry of the two read routes,
+    // not a page reload, so the reader keeps their place and their scroll position.
+    document.addEventListener('click', function (event) {
+      var button = event.target && event.target.closest ? event.target.closest('[data-action="retry"]') : null;
+      if (!button) return;
+      event.preventDefault();
+      if (button.disabled) return;
+      button.disabled = true;
+      setText('conn-detail', 'checking the API again…');
+      state.lastError = false;
+      state.incidentsFailedMs = null;
+      poll();
+      loadIncidents();
+      // every renderer is signature-guarded, so the retry has to defeat those guards explicitly
+      state.cityCardSignature = null;
+      state.activitySignature = null;
+      state.healthSignature = null;
+      state.detailSignature = null;
+      renderCityCards(state.zones);
+      renderSystemHealth();
+      setTimeout(function () { button.disabled = false; }, 1200);
     });
 
     bindTo('history-zone', 'click', function (event) {
@@ -1630,9 +1862,15 @@
   function start() {
     cacheDom();
     bind();
-    // the route decides which of the five views is visible, before any data arrives
+    // The route decides which of the six views is visible, before any data arrives.
     applyRoute({ focus: false });
     renderDataPage(null);
+    // The three slow panels start as skeletons rather than as sentences, so the first paint
+    // already shows the shape of what is coming (and the About/status panels get their static
+    // contents immediately, since they must be readable even if the API never answers).
+    renderCityCards([]);
+    renderAbout(null);
+    renderSystemHealth();
     if (!API_BASE) {
       // Say why the page will never fill in, in the same status line a failing poll uses:
       // this used to leave the badge on CONNECTING and five panels on "waiting for data…"
