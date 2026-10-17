@@ -1676,6 +1676,21 @@ check('the page carries its own security policy, with no inline script to bypass
   assert.ok(policy.includes(apiOrigin[1]), `connect-src does not allow ${apiOrigin[1]}`);
   assert.match(policy, /connect-src[^;]*http:\/\/localhost:/, 'local development is blocked outright');
   assert.ok(!/script-src[^;]*unsafe-inline/.test(policy), 'inline script is allowed by the policy');
+  // The page delivers its policy in a <meta> element, and a browser silently ignores three
+  // directives there: frame-ancestors and sandbox (they need a real response header) and
+  // report-uri/report-to. Carrying one would buy no protection, put a console warning in front of
+  // every visitor, and make the policy look stronger than it is. None may come back: if anti-
+  // framing is ever required, it belongs in an HTTP header from a layer that can send one.
+  const metaIgnored = ['frame-ancestors', 'sandbox', 'report-uri', 'report-to'];
+  const policies = [...htmlSource.matchAll(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/g)]
+    .map((match) => match[1]);
+  assert.equal(policies.length, 1, `the page declares ${policies.length} policies; only one can narrow the others`);
+  policies.forEach((declared) => {
+    metaIgnored.forEach((directive) => {
+      assert.ok(!new RegExp(`(^|;\\s*)${directive}\\b`).test(declared),
+        `${directive} is ignored in a <meta> policy and must not be declared there: ${declared}`);
+    });
+  });
   assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/.test(htmlSource), 'the page still has an inline script');
   assert.ok(!/javascript:/i.test(htmlSource), 'the markup contains a javascript: URL');
   // an external link must not hand the opened page a handle back to this one

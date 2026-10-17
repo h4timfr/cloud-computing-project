@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import urllib.request
 
 SITE = "http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com"
@@ -119,6 +120,63 @@ for asset, wanted in NEEDLES.items():
         f"  {'ok  ' if not missing else 'FAIL'} {asset} served ({len(body)} characters)"
         + (f" — missing: {', '.join(missing)}" if missing else "")
     )
+
+# --------------------------------------------------------------------- the policy itself ---
+# The page carries its policy in a <meta> element, so this compares the served directive list
+# rather than looking for a substring: a directive that is present but was quietly weakened is
+# exactly what a substring test would miss.
+REQUIRED_DIRECTIVES = {
+    "default-src": "'none'",
+    "script-src": "'self'",
+    "style-src": "'self' 'unsafe-inline'",
+    "img-src": "'self' data:",
+    "font-src": "'self'",
+    "object-src": "'none'",
+    "base-uri": "'none'",
+    "form-action": "'none'",
+}
+# A browser ignores these in a <meta> policy and logs a warning: frame-ancestors and sandbox need a
+# real response header, and S3 static website hosting cannot send one. Documented in README.md.
+META_IGNORED = ["frame-ancestors", "sandbox", "report-uri", "report-to"]
+
+policies = [
+    match.group(1) for match in re.finditer(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)"', html)
+]
+policy_ok = len(policies) == 1
+if not policy_ok:
+    print(f"  FAIL the page declares {len(policies)} policies")
+policy = policies[0] if policies else ""
+directives = {}
+for part in policy.split(";"):
+    name, _, value = part.strip().partition(" ")
+    if name:
+        directives[name] = value.strip()
+
+for name, value in REQUIRED_DIRECTIVES.items():
+    ok = directives.get(name) == value
+    policy_ok = policy_ok and ok
+    print(f"  {'ok  ' if ok else 'FAIL'} {name} is {value!r}"
+          + ("" if ok else f" (served: {directives.get(name)!r})"))
+
+connect = directives.get("connect-src", "")
+api = re.search(r'data-api="(https://[^"]+)"', html)
+for label, needle in [
+    ("the page can reach its own origin", "'self'"),
+    ("the page can reach its API", api.group(1) if api else "https://"),
+    ("local development stays possible", "http://localhost:"),
+]:
+    ok = needle in connect
+    policy_ok = policy_ok and ok
+    print(f"  {'ok  ' if ok else 'FAIL'} connect-src: {label}")
+
+for name in sorted(set(directives) - set(REQUIRED_DIRECTIVES)):
+    if name != "connect-src":
+        print(f"  note the served policy also declares {name}")
+for name in META_IGNORED:
+    ok = name not in directives
+    policy_ok = policy_ok and ok
+    print(f"  {'ok  ' if ok else 'FAIL'} not present in the policy: {name} (a meta element cannot enforce it)")
+failed += 0 if policy_ok else 1
 
 print(f"\n{'all deployed page contracts hold' if not failed else str(failed) + ' contract(s) failed'}")
 raise SystemExit(1 if failed else 0)
