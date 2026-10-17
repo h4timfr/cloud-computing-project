@@ -40,11 +40,19 @@ python -c "import urllib.request; h=urllib.request.urlopen('http://floodpulse-da
 Start-Process "http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com"
 ```
 
-With the page open, press **F12** once and check the Console tab is empty: the page carries a
-Content-Security-Policy, and a violation would be reported there (it is how a bad `connect-src`
-would show itself). No browser was available when this policy was written, so this is the manual
-check that replaces an automated one. Close the console afterwards — nothing about the demo needs
-it.
+With the page open, press **F12** once and check the Console tab is **completely silent**: the page
+carries a Content-Security-Policy, and a violation would be reported there (it is how a bad
+`connect-src` would show itself). No browser was available when this policy was written, so this is
+the manual check that replaces an automated one.
+
+Browser QA of the deployed page found exactly one entry here — *"The Content Security Policy
+directive 'frame-ancestors' is ignored when delivered via a `<meta>` element"* — and it has been
+fixed by removing that directive, which no meta element can enforce anyway (see the security
+section of `README.md` for the anti-framing gap this leaves and why closing it properly would need
+a new AWS resource). **Expected state now: no output at all.** If you see that warning again, the
+deployed page is stale or the directive came back; if you see anything else, treat it as a defect
+and write it down rather than dismissing it as noise. Close the console afterwards — nothing about
+the demo needs it.
 
 On the dashboard, confirm with your own eyes (it opens on **Overview**): the connection badge reads
 **LIVE**, the headline answers the question in one sentence (e.g. "2 of 5 cities are at a critical
@@ -258,7 +266,7 @@ demo, with F12 open.
 
 | # | Check | What good looks like |
 |---|---|---|
-| 1 | **Console is empty** | no CSP violation, no 404 for any asset, no uncaught error. A missing `bg-storm.webp` shows as a 404 here and the page still reads well (the gradient underneath is the fallback). |
+| 1 | **Console is empty** | no output *at all*: no CSP violation, no ignored-directive warning, no 404 for any asset, no uncaught error. A missing `bg-storm.webp` shows as a 404 here and the page still reads well (the gradient underneath is the fallback). |
 | 2 | **Overview in five seconds** | the question, then the sentence that answers it, then four cards. If you have to read a formula to understand the page, that is the bug this pass was about. |
 | 3 | **The backdrop** | the storm image is atmosphere behind the content, not something the text sits on. Anywhere a heading competes with the image is a defect: say so rather than squinting at it. |
 | 4 | **Widths** | 320, 360, 390, 430, 768, 1024, 1280, 1440+. No sideways scrolling at any of them; cards stack logically; the hero does not fill a phone screen; long city names wrap. |
@@ -281,6 +289,10 @@ demo, with F12 open.
 * Do not say the dashboard is an official warning service, and do not let the safety guidance read
   as if it were: it says FloodPulse does not issue official warnings and points to IMD and NDMA for
   those. The About page is the right place for that sentence in the demo.
+* Do not claim the dashboard is protected against clickjacking or framing. It is not, and it cannot
+  be from a `<meta>` policy: `frame-ancestors` is ignored there, and S3 website hosting cannot send
+  the HTTP response header that would work. The security section of `README.md` records the gap and
+  why it is acceptable for a page with no login, no session and no form.
 * Do not mix the two fleets in one sentence: `FLOODPULSE_ZONE_MODE` selects exactly one fleet, and the
   demo story is rehearsed on the demo fleet only.
 * Do not read a city that stopped reporting as a calm city: its score is an old one, and the board

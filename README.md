@@ -934,7 +934,7 @@ The page now carries its own `Content-Security-Policy`:
 default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
 font-src 'self'; connect-src 'self' https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
 https://*.execute-api.eu-north-1.amazonaws.com http://localhost:* http://127.0.0.1:*;
-object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+object-src 'none'; base-uri 'none'; form-action 'none'
 ```
 
 `script-src 'self'` means an injected string cannot execute even if an escaping mistake slips
@@ -944,14 +944,49 @@ only** (the renderers set a few style attributes for bar widths); `object-src`, 
 `form-action` are `'none'`. A `referrer` policy is set and external links carry
 `rel="noopener noreferrer"`.
 
+#### The one directive that had to go, and the gap it leaves (known limitation)
+
+Browser QA found a console warning: *"The Content Security Policy directive 'frame-ancestors' is
+ignored when delivered via a `<meta>` element."* The policy used to end with
+`frame-ancestors 'none'`. That is correct, and it was correct on every page load: per the CSP
+spec a browser **ignores `frame-ancestors`, `sandbox` and `report-uri`/`report-to` in a
+`<meta>`-delivered policy** — only a real HTTP response header can carry them. So the directive
+bought no protection at all, while putting a warning in front of every visitor. It has been
+removed, and nothing else about the policy changed: every other directive is byte-identical, and
+the deployed-page check now asserts each required directive's *exact* value (so a directive that
+is present but quietly weakened cannot pass).
+
+**The honest consequence: this page cannot currently prevent itself from being framed, and there
+is no meta-tag or JavaScript substitute that would.** Proper anti-framing/clickjacking protection
+needs `frame-ancestors 'none'` (plus `X-Frame-Options: DENY` for old browsers) as an **HTTP
+response header**. The dashboard is served by **S3 static website hosting**, which emits no custom
+headers — an object's `Content-Type`/`Cache-Control` metadata is all it can influence, and there is
+no header-injection layer in front of the bucket. Adding one means CloudFront with a
+response-headers policy (or a Lambda@Edge/CloudFront Function): **that is a new AWS resource, so it
+is deliberately out of scope for this pass** and was not created.
+
+Risk accepted, stated plainly rather than waved away: an attacker could frame this dashboard and
+overlay their own UI to mislead a visitor about what the public data says. The practical impact is
+low here because the page has **no login, no session, no cookies, no form** (`form-action 'none'`,
+`object-src 'none'`, `base-uri 'none'`), no destructive action and no data entry — the worst case
+is a misleading *presentation* of public information, not a stolen credential or a state change.
+If FloodPulse ever gains accounts, submissions or an operator console, framing protection stops
+being optional and the CloudFront header layer becomes a requirement, not a nicety.
+
+The gap is recorded here, in `web/index.html` (next to the policy, with an instruction to put the
+directive in a header if a header layer is ever added) and in `DEMO_RUNBOOK.md` item 1 of the
+manual visual check — and the harnesses now refuse to let the directive reappear in the meta
+policy.
+
 **Operational consequence, worth knowing before demo day:** the policy is what allows the page to
 talk to its API. Pointing `?api=` at a *different* origin — a local server, another deployment —
 requires adding that origin to `connect-src` first; loopback origins are already there so
 `?api=http://localhost:8000` still works. Nothing in the demo depends on this.
 
 Both the served page and the sources are checked for this: `tools/verify_deployed_page.py` asserts
-the policy, the absence of any inline script and the absence of a `javascript:` URL in the
-*deployed* page, and the static harness asserts the same plus that the policy cannot name an
+the policy directive by directive (exact values, no meta-unenforceable directive, exactly one
+policy), the absence of any inline script and the absence of a `javascript:` URL in the *deployed*
+page, and the static harness asserts the same plus that the policy cannot name an
 unrelated origin.
 
 ### One freshness contract, with every clock named
@@ -1132,12 +1167,17 @@ are the ones that would catch a visual regression the harness cannot see.
 
 | Asset | Size |
 | --- | --- |
-| `index.html` | 25.9 KB |
+| `index.html` | 26.8 KB |
 | `styles.css` | 79.3 KB |
 | `lib.js` | 116.7 KB |
 | `app.js` | 88.5 KB |
 | `bg-storm.webp` | 13.3 KB (1760×990, mean luminance 0.20, real photographic detail) |
-| **Total front end** | **~310 KB of source, five files, zero dependencies** |
+| **Total front end** | **~317 KB of source, five files, zero dependencies** |
+
+Browser QA after the first deploy found one console warning (the ignored `frame-ancestors`
+directive). It is fixed and the reason is documented in the security section above; the asset
+sizes here are the post-fix ones (`index.html` grew by ~0.8 KB because the comment next to the
+policy explains the gap to the next person who edits it).
 
 No framework, no bundler, no npm package, no CDN, no analytics, no video. The backdrop stays a
 local compressed WebP (well inside the 250 KB target) over a dark gradient, so a reader is never
@@ -1147,7 +1187,7 @@ looking at text on a photograph.
 
 | Harness | Before → after |
 | --- | --- |
-| `tools/dashboard_check.mjs` | 96 → **105 static checks** per mode, now including the eight M9 groups (phone-first layout, touch targets, icon consistency, product copy, Overview order, empty/loading/error states, asset budget, About-page scope, heading outline) |
+| `tools/dashboard_check.mjs` | 96 → **106 static checks** per mode, now including the eight M9 groups (phone-first layout, touch targets, icon consistency, product copy, Overview order, empty/loading/error states, asset budget, About-page scope, heading outline) plus the band-stripe survival check and the meta-policy directive list |
 | `tools/dashboard_run.mjs` | 46 → **54 runtime checks** live (44 → 52 for the demo fleet) |
 | `tools/dashboard_scenarios.mjs` | 44 → **49 scenarios** |
 | `python -m unittest discover -s tests -t .` | 509 tests, unchanged (no backend or test change in this milestone) |
@@ -1156,21 +1196,27 @@ looking at text on a photograph.
 
 | Check | Result |
 | --- | --- |
-| `node tools/dashboard_check.mjs --payload build/zones-live-weather.json …` | **105 checks passed, 0 failed** (same against the demo fixtures) |
+| `node tools/dashboard_check.mjs --payload build/zones-live-weather.json …` | **106 checks passed, 0 failed** (same against the demo fixtures) |
 | `node tools/dashboard_run.mjs --payload build/zones-live-weather.json …` | **54 runtime checks passed, 0 failed** (52 for the demo fleet) |
 | `node tools/dashboard_scenarios.mjs` | **49 scenario checks passed, 0 failed** |
 | `node tools/story_check.mjs --dir build/story` | **29 story checks passed, 0 failed** |
 | `python -m unittest discover -s tests -t .` | **509 tests, OK** |
 | `python tools/verify_deployed_code.py` | `RESULT: deployed Lambda code is byte-identical to the repository's src/` (no backend change was made) |
-| `python tools/verify_deployed_page.py` | **all deployed page contracts hold**, including the About page, the guidance links and the unchanged CSP |
+| `python tools/verify_deployed_page.py` | **all deployed page contracts hold**, including the About page, the guidance links and the CSP compared directive by directive: exact values, exactly one policy, and no directive a `<meta>` element cannot enforce |
 | `python tools/live_acceptance.py` | **35 checks passed, 0 failed** |
-| `node tools/dashboard_run.mjs --site <bucket> --api <api>` | **53 runtime checks passed, 0 failed** against the deployed assets and the live API |
+| `node tools/dashboard_run.mjs --site <bucket> --api <api>` | **54 runtime checks passed, 0 failed** against the deployed assets and the live API |
 | Fleet state after the deploy | `live_weather`, 5 cities, all NORMAL, no open incidents, demo fleet calm |
 
 ### Known residual gaps from this pass (recorded rather than hidden)
 
 * Layout is verified statically. Screenshots at each width, and the console's CSP report, are
-  manual steps with no browser on this machine.
+  manual steps with no browser on this machine. The one console entry browser QA did find (the
+  ignored `frame-ancestors` directive) was fixed by removing its cause and by asserting that the
+  served policy carries no meta-unenforceable directive — but the silence itself was verified as
+  bytes, not by listening, so the first F12 after this deploy is still the confirmation.
+* The dashboard cannot prevent itself being framed: that needs an HTTP response header, and S3
+  static website hosting cannot send one (see the security section; the CloudFront header layer
+  that would fix it is a new AWS resource and was deliberately not created).
 * `web/bg-storm.webp` was audited numerically (13.3 KB, 1760×990, dark, detailed) but could not be
   *looked at* here, so "it still looks good" is a judgement the reader has to make once, in a
   browser.
