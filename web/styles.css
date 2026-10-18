@@ -3305,11 +3305,14 @@ main, .topbar, .footer { max-width: 100%; }
 .city-cards-more-row { margin: 10px 0 0; }
 .city-cards-more[hidden] { display: none; }
 
-/* Same four columns, tracks that fit a 1200px viewport. */
+/* Same four columns and the same one row, in tracks that fit a 1200px viewport. The row has to be
+ * declared here as well: without it this tier inherits the stacked areas from the base rule, which is
+ * exactly what a real browser showed at 1280px before this line existed. */
 @media (min-width: 1200px) and (max-width: 1319px) {
   .cities-toolbar {
     gap: 12px 10px;
     grid-template-columns: minmax(260px, 1.5fr) minmax(330px, 2fr) minmax(280px, 1.5fr) minmax(160px, 0.8fr);
+    grid-template-areas: 'search region risk sort';
   }
 }
 

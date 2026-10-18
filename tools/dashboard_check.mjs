@@ -3389,6 +3389,12 @@ check('M11.2: the control bar declares a layout that fits every width the brief 
     assert.ok(tracks, `the toolbar declares no columns at ${viewport}px`);
     const gaps = pixelValues(declared('.cities-toolbar', 'gap', viewport));
     const columnGap = gaps.length > 1 ? gaps[1] : (gaps[0] || 0);
+    // and the declared shape: a count of areas rows that matches the tier's intent
+    const areas = declared('.cities-toolbar', 'grid-template-areas', viewport) || '';
+    const declaredRows = (areas.match(/'[^']+'|"[^"]+"/g) || []).length;
+    const expectedRows = viewport >= 1200 ? 1 : viewport >= 768 ? 2 : 4;
+    assert.equal(declaredRows, expectedRows,
+      `at ${viewport}px the bar declares ${declaredRows} grid row(s), expected ${expectedRows}: ${areas}`);
     const minima = trackMinimums(tracks);
     const required = minima.reduce((sum, one) => sum + one, 0) + Math.max(0, minima.length - 1) * columnGap;
     const available = viewport - 2 * gutterFor(viewport);
