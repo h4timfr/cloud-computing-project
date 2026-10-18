@@ -85,7 +85,32 @@ status, zones, elapsed, headers = get("/zones", origin=ORIGIN)
 check("GET /zones returns 200", status == 200, f"HTTP {status}")
 check("the live fleet is served", zones.get("zone_mode") == "live_weather",
       f"zone_mode={zones.get('zone_mode')!r}")
-check("five cities are present", zones.get("zone_count") == 5 and len(zones.get("zones", [])) == 5)
+check("the whole Indian fleet is present",
+      zones.get("zone_count") == 15 and len(zones.get("zones", [])) == 15,
+      f"zone_count={zones.get('zone_count')} zones={len(zones.get('zones', []))}")
+
+# M11: the coverage block is the API's own account of what the fleet covers, and every sentence on
+# the page is written from it - so it is checked here rather than trusted
+coverage = zones.get("coverage") or {}
+check("the coverage block counts the fleet, the states and the regions",
+      coverage.get("city_count") == 15 and coverage.get("state_count") == 14
+      and coverage.get("region_count") == 5,
+      f"coverage={json.dumps(coverage)[:160]}")
+check("the coverage block groups every city into one of the five regions",
+      sorted(entry.get("region") for entry in coverage.get("regions", []))
+      == sorted(["North", "South", "East", "West", "Northeast"]),
+      f"regions={[entry.get('region') for entry in coverage.get('regions', [])]}")
+check("a region carries counts and its cities, never a risk score of its own",
+      all(set(entry) == {"region", "city_count", "cities"} for entry in coverage.get("regions", [])),
+      f"a region carries more than its cities: {json.dumps(coverage.get('regions', [])[:1])[:160]}")
+check("every city states its own city, state, region and display name",
+      all(zone.get("city") and zone.get("state") and zone.get("region") and zone.get("display_name")
+          for zone in zones.get("zones", [])),
+      f"incomplete geography: {[zone.get('zone_id') for zone in zones.get('zones', []) if not (zone.get('city') and zone.get('state') and zone.get('region'))]}")
+check("the highest-risk city is named as a city and a state",
+      bool((zones.get("highest_risk_zone") or {}).get("city"))
+      and bool((zones.get("highest_risk_zone") or {}).get("state")),
+      f"highest_risk_zone={json.dumps(zones.get('highest_risk_zone'))[:160]}")
 check("data is labelled mixed (real + modelled + simulated)",
       zones.get("data_classification") == "mixed", str(zones.get("data_classification")))
 check("the response denies being a validated or calibrated model",
@@ -103,7 +128,7 @@ check("the weather feed block is present and enabled", weather.get("enabled") is
 check("the feed reports its refresh window", weather.get("refresh_seconds") == 600)
 check("attribution is carried for CC BY", "Open-Meteo" in str(weather.get("attribution", "")))
 live_zones = weather.get("live_zones") or []
-check("all five cities are covered by the feed", len(live_zones) == 5, f"{len(live_zones)} zones")
+check("all fifteen cities are covered by the feed", len(live_zones) == 15, f"{len(live_zones)} zones")
 age_map = weather.get("cache_age_seconds") or {}
 check("the per-city cache age map covers the fleet",
       set(age_map) == set(live_zones), f"{sorted(age_map)}")
@@ -141,7 +166,7 @@ for zone in zones["zones"]:
     klass = str(latest.get("risk_class") or "").upper()
     counts[klass if klass in counts else "NO_READING"] += 1
 print(f"       fleet distribution: {counts}")
-check("the fleet totals five counted zones", sum(counts.values()) == 5)
+check("the fleet totals fifteen counted zones", sum(counts.values()) == 15)
 check("the ranking leader matches the highest score",
       zones["highest_risk_zone"]["zone_id"] == max(
           zones["zones"], key=lambda z: (z.get("latest") or {}).get("risk_score", -1))["zone_id"])
@@ -163,6 +188,10 @@ check("a window outside the range is a 400", status == 400, f"HTTP {status} {jso
 
 print("\nGET /incidents")
 status, incidents, _, _ = get("/incidents?limit=50")
+check("every incident names the city and the state it was recorded for",
+      all(entry.get("zone_name") and entry.get("zone_state")
+          for entry in (incidents.get("incidents") or [])),
+      f"no state: {[entry.get('incident_id') for entry in (incidents.get('incidents') or []) if not entry.get('zone_state')]}")
 check("incidents returns 200", status == 200, f"HTTP {status}")
 check("incidents report open and closed counts",
       isinstance(incidents.get("open_count"), int) and isinstance(incidents.get("closed_count"), int),

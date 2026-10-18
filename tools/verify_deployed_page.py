@@ -85,6 +85,13 @@ FORBIDDEN = {
     "the model name is back in the primary header": 'meta-item">model <b id="summary-model"',
     "an AWS resource name is on the page": "arn:aws",
     "the notification topic is named": "floodpulse-alerts",
+# M11: fifteen cities, and the three things that make finding one of them possible
+    "the search box is labelled for what it searches": 'id="cities-search-label"',
+    "the toolbar is a search landmark": 'class="cities-toolbar" id="cities-toolbar" role="search"',
+    "the result count is a polite status region": 'id="cities-count" role="status" aria-live="polite"',
+    "the empty state has its own element": 'id="cities-empty"',
+    "the way to the rest of the fleet leads to the Cities page": 'id="city-cards-more" href="#/cities"',
+    "the sort control offers the three orders": '<option value="fresh">Freshness</option>',
     "the account id is on the page": "725934295966",
     # and no view ever claims a subscription that SNS has not confirmed
     "a subscription claim SNS has not confirmed": "You are subscribed",
@@ -141,6 +148,14 @@ NEEDLES = {
         "a card image is decorative and reserves its box": 'alt="" width="800" height="450"',
         "every card image below the first row is lazy": 'loading="lazy"',
         "the image is decoded off the main thread": 'decoding="async"',
+        # M11: the fifteen-city fleet
+        "the chips are built beside the other renderers": 'function filterChips(kind, options, active)',
+        "a chip says whether it is pressed": 'aria-pressed=',
+        "the fleet's scope is stated, not implied": 'function fleetScopeNote(payload)',
+        "the drawn plate names the region of its city": 'city-thumb-region',
+        "a city card names its state and region": 'data-f="city_state"',
+        "an alert row names the city and the state": 'function incidentZoneLabel(incident)',
+        "a city card says how to open it": 'function openCityLabel(noun)',
     },
     "app.js": {
         "the chart answers the arrow keys": "handleHistoryKey",
@@ -161,6 +176,12 @@ NEEDLES = {
         "the hero is patched field by field": "setText('hero-monitor'",
         "the band edges have one definition": "FP.SCORE_BAND_EDGES",
         "the alert preview reads the same incidents as the alerts page": "renderAlertPreview",
+        # M11: the fifteen-city fleet
+        "the Overview shows a named limit, not the fleet": 'OVERVIEW_CITY_LIMIT = 5',
+        "the Overview counts the fleet from the payload": 'payload.zone_count',
+        "the empty state offers the way back": 'clear-filters',
+        "the risk filter offers the API's own floors": 'RISK_FILTERS',
+        "a filter change never refetches": 'renderCitiesPage();',
     },
     "styles.css": {
         "change note": "change-note",
@@ -195,6 +216,10 @@ NEEDLES = {
         "the ordinary card surface is deployed": "--surface-card",
         "the header surface is deployed": "--topbar-surface",
         "the hero keeps its cool edge": "--hero-edge",
+        # M11: the fifteen-city fleet
+        "a chip reuses the button style and keeps its target size": '.filter-chip',
+        "the drawn plate's region label is styled": '.city-thumb-region',
+        "the empty state is styled": '.cities-empty',
     },
 }
 for asset, wanted in NEEDLES.items():
