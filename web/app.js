@@ -164,7 +164,7 @@
       'ov-headline', 'ov-subline', 'ov-intro', 'ov-stats', 'band-strip-title',
       'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
       // M11: the Cities page's find-and-sort controls and the Overview's coverage note
-      'cities-search', 'cities-region', 'cities-region-label', 'cities-region-field', 'cities-risk',
+      'cities-search', 'cities-coast', 'cities-coast-label', 'cities-coast-field', 'cities-risk',
       'cities-sort', 'cities-count', 'cities-empty', 'city-cards-note', 'city-cards-more',
       'alerts-lede', 'alerts-summary', 'alerts-active', 'alerts-closed',
       'provenance-legend', 'attribution-block', 'attribution-detail', 'summary-weather-provider',
@@ -488,11 +488,13 @@
     var names = zones.slice(0, 5).map(function (zone) { return zone.name; });
     var suffix = zones.length > names.length ? ' +' + (zones.length - names.length) : '';
     if (feed.live) {
-      var regions = FP.coverageInfo(payload);
-      var where = regions && regions.regionCount !== null
-        ? ' in ' + regions.regionCount + (regions.regionCount === 1 ? ' region' : ' regions') : '';
-      return 'India live-weather monitoring · ' + (feed.zoneCount || zones.length) +
-        ' cities' + where + ' · ' + names.join(', ') + suffix;
+      var coasts = FP.coverageInfo(payload);
+      var where = coasts && coasts.coastCount !== null
+        ? ' in ' + coasts.coastCount + (coasts.coastCount === 1 ? ' coast group' : ' coast groups') : '';
+      // The status strip names the product and the fleet size. It deliberately does not say
+      // "India": the fleet is a selected set of coastal cities, not national coverage.
+      return 'FloodPulse Coastal India · ' + (feed.zoneCount || zones.length) +
+        ' coastal cities' + where + ' · ' + names.join(', ') + suffix;
     }
     return 'Simulated sensor fleet · ' + zones.length + ' zones · ' +
       (names.length ? names.join(', ') + suffix : 'demo mode');
@@ -600,6 +602,9 @@
     if (age !== null) facts.push('Updated ' + FP.ageLabel(age));
     if (latest) facts.push('Trend: ' + (trendWords[direction] || 'holding steady'));
     setText('hero-facts', facts.join(' · '));
+    // The fleet's scope, from the API's own coverage block: the page must not
+    // state a wider or narrower fleet than the payload it is showing.
+    setText('why-cities-note', FP.fleetScopeNote(state.payload));
     setText('hero-state', highest.name + ' · ' + FP.classLabel(highest.risk_class) + ' ' + noun + ' risk');
   }
 
@@ -2092,7 +2097,7 @@
    */
 
   function cityFilters() {
-    if (!state.cities) state.cities = { query: '', region: 'all', risk: 'all', sort: 'risk' };
+    if (!state.cities) state.cities = { query: '', coast: 'all', risk: 'all', sort: 'risk' };
     return state.cities;
   }
 
@@ -2116,16 +2121,16 @@
     host.innerHTML = FP.filterChips(kind, options, active);
   }
 
-    /* Both chip groups, from the fleet's own regions and the API's own class names. */
+    /* Both chip groups, from the fleet's own coast groups and the API's own class names. */
 
   function renderCityFilters(payload) {
     var rules = cityFilters();
-    var regions = FP.regionOptions(payload);
-    var grouped = regions.length > 1;
-    ['cities-region', 'cities-region-label', 'cities-region-field'].forEach(function (id) {
+    var coasts = FP.coastOptions(payload);
+    var grouped = coasts.length > 1;
+    ['cities-coast', 'cities-coast-label', 'cities-coast-field'].forEach(function (id) {
       if (el[id]) el[id].hidden = !grouped;
     });
-    renderChipGroup(el['cities-region'], 'region', grouped ? regions : [], rules.region);
+    renderChipGroup(el['cities-coast'], 'coast', grouped ? coasts : [], rules.coast);
     renderChipGroup(el['cities-risk'], 'risk', RISK_FILTERS, rules.risk);
     if (el['cities-sort'] && el['cities-sort'].value !== rules.sort) el['cities-sort'].value = rules.sort;
     if (el['cities-search'] && el['cities-search'].value !== rules.query) {
@@ -2165,7 +2170,7 @@
     // poll would announce itself every five seconds for nothing.
     if (el['cities-count']) {
       var line = state.payload ? FP.citiesResultLine(visible.length, all.length, plural,
-        FP.cityFilterLabels(rules, { regions: FP.regionOptions(state.payload), risks: RISK_FILTERS })) : '';
+        FP.cityFilterLabels(rules, { coasts: FP.coastOptions(state.payload), risks: RISK_FILTERS })) : '';
       if (el['cities-count'].textContent !== line) el['cities-count'].textContent = line;
     }
     renderCards(visible);
@@ -2179,7 +2184,7 @@
       renderCitiesPage();
     });
     // one handler per chip group: the group's own attribute names the filter it sets
-    var groups = { 'cities-region': ['region', 'data-region'], 'cities-risk': ['risk', 'data-risk'] };
+    var groups = { 'cities-coast': ['coast', 'data-coast'], 'cities-risk': ['risk', 'data-risk'] };
     Object.keys(groups).forEach(function (id) {
       var entry = groups[id];
       bindTo(id, 'click', function (event) {
@@ -2199,7 +2204,7 @@
         ? event.target.closest('[data-action="clear-filters"]') : null;
       if (!button) return;
       event.preventDefault();
-      state.cities = { query: '', region: 'all', risk: 'all', sort: 'risk' };
+      state.cities = { query: '', coast: 'all', risk: 'all', sort: 'risk' };
       renderCitiesPage();
     });
   }

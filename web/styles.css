@@ -3193,7 +3193,7 @@ main, .topbar, .footer { max-width: 100%; }
  * one among fifteen, and an Overview that says its cards are the highest-risk few. Almost none of
  * this is new styling - the chips are .ghost, the row is .button-group, the search box is
  * .subscribe-input, the way to the rest is .ghost-link - so what follows is the toolbar's layout,
- * the place lines and the plate's region label, and nothing else.
+ * the place lines and the plate's coast label, and nothing else.
  */
 
 .city-card .city-place,
@@ -3204,7 +3204,7 @@ main, .topbar, .footer { max-width: 100%; }
   color: var(--slate-300);
 }
 
-.city-region, .zone-region, .detail-region { color: var(--slate-400); }
+.city-coast, .zone-coast, .detail-coast { color: var(--slate-400); }
 
 /* The label beside the arrow, on both card shapes. Decorative: the card names itself for
  * assistive tech, so this travels with the arrow inside one aria-hidden span. */
@@ -3222,9 +3222,9 @@ main, .topbar, .footer { max-width: 100%; }
 
 .zone-card:hover .city-open-label, .zone-card:focus-within .city-open-label { color: var(--cyan-300); }
 
-/* Ten of the fifteen cities have no photograph, so the drawn plate says which region the city is
+/* Most monitored cities have no photograph, so the drawn plate says which coast the city is
  * in instead of showing a bare icon. */
-.city-thumb-region {
+.city-thumb-coast {
   position: absolute;
   inset: auto auto 10px 12px;
   z-index: 1;
@@ -3258,7 +3258,7 @@ main, .topbar, .footer { max-width: 100%; }
   align-items: end;
   margin: 0 0 6px;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: 'search' 'region' 'risk' 'sort';
+  grid-template-areas: 'search' 'coast' 'risk' 'sort';
 }
 
 /* 1320px and up: one row, the tracks the brief names. 280+360+300+170 plus three 16px gaps is
@@ -3266,14 +3266,14 @@ main, .topbar, .footer { max-width: 100%; }
 @media (min-width: 1320px) {
   .cities-toolbar {
     grid-template-columns: minmax(280px, 1.5fr) minmax(360px, 2fr) minmax(300px, 1.5fr) minmax(170px, 0.8fr);
-    grid-template-areas: 'search region risk sort';
+    grid-template-areas: 'search coast risk sort';
   }
 }
 
 /* min-width: 0 everywhere, so a long label wraps inside its track instead of widening the page. */
 .toolbar-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .toolbar-field-search { grid-area: search; }
-.toolbar-field-region { grid-area: region; }
+.toolbar-field-coast { grid-area: coast; }
 .toolbar-field-risk { grid-area: risk; }
 .toolbar-field-sort { grid-area: sort; }
 .toolbar-label { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--slate-400); }
@@ -3298,7 +3298,7 @@ main, .topbar, .footer { max-width: 100%; }
   .cities-toolbar {
     gap: 12px 10px;
     grid-template-columns: minmax(260px, 1.5fr) minmax(330px, 2fr) minmax(280px, 1.5fr) minmax(160px, 0.8fr);
-    grid-template-areas: 'search region risk sort';
+    grid-template-areas: 'search coast risk sort';
   }
 }
 
@@ -3307,7 +3307,7 @@ main, .topbar, .footer { max-width: 100%; }
   .cities-toolbar {
     gap: 12px 14px;
     grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-    grid-template-areas: 'search sort' 'region risk';
+    grid-template-areas: 'search sort' 'coast risk';
   }
 }
 
@@ -3317,7 +3317,7 @@ main, .topbar, .footer { max-width: 100%; }
   .cities-toolbar {
     gap: 12px;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: 'search' 'region' 'risk' 'sort';
+    grid-template-areas: 'search' 'coast' 'risk' 'sort';
   }
   .filter-chip { padding: 0 11px; font-size: 0.77rem; }
   .metric {
