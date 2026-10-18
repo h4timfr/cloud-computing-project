@@ -420,7 +420,7 @@ main {
   background: rgba(148, 163, 184, 0.06);
   box-shadow: none;
 }
-.band-tile.is-zero .band-name { color: var(--slate-300); }
+.band-tile.is-zero .band-name,
 .band-tile.is-zero .band-count { color: var(--slate-300); }
 .band-strip-label {
   margin: 0 0 0 auto;
@@ -452,7 +452,7 @@ main {
 
 /* ------------------------------------------------------------------ hero row --- */
 
-.hero-row { display: grid; grid-template-columns: minmax(0, 2.05fr) minmax(300px, 1fr); gap: var(--gap); }
+
 
 .hero {
   padding: 24px 26px;
@@ -521,7 +521,7 @@ main {
 .hero.band-warning::before { background: radial-gradient(60% 120% at 100% 0%, rgba(249, 115, 22, 0.16), transparent 70%); }
 .hero.band-critical::before { background: radial-gradient(60% 120% at 100% 0%, rgba(239, 68, 68, 0.20), transparent 70%); }
 
-.side-panel { padding: var(--pad); display: flex; flex-direction: column; gap: 10px; }
+
 .panel-title {
   margin: 0;
   font-family: var(--mono);
@@ -539,7 +539,7 @@ main {
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
-.panel-note { margin: 0; font-size: 0.76rem; color: var(--slate-400); }
+
 
 /* The freshness row states the age of the external feed, so it is coloured by feed state. */
 #summary-freshness[data-feed-state="fresh"] { color: var(--src-real); }
@@ -616,7 +616,7 @@ main {
  * vivid band colour (CRITICAL #ef4444 = 4.90:1) while this stylesheet and the checks both
  * claim small band text always uses the light variant. Only the unknown band inherits now. */
 .zone-card .pill.band-unknown { color: var(--slate-300); }
-.zone-card.is-empty { border-top-color: var(--slate-400); }
+.zone-card.is-empty,
 .zone-card.band-unknown { border-top-color: var(--slate-400); }
 
 .zone-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
@@ -1085,7 +1085,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .city-card.is-empty { border-left-color: var(--slate-400); }
 .city-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .city-head h3 { margin: 0; font-size: 1.14rem; color: var(--white); }
-.city-headline { margin: 0; font-size: 0.92rem; color: var(--slate-300); }
+
 .city-figures { display: flex; align-items: baseline; gap: 8px; }
 .city-score {
   font-family: var(--mono);
@@ -1095,9 +1095,9 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   color: var(--white);
 }
 .city-score-unit { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--slate-400); }
-.city-meta { margin: 0; font-size: 0.82rem; color: var(--slate-400); }
-.city-driver { color: var(--slate-300); }
-.city-more { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--cyan-400); }
+
+
+
 .arrow { flex: 0 0 auto; }
 
 .snapshot-panel { padding: var(--pad); display: grid; gap: 10px; }
@@ -1105,7 +1105,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 
 /* ------------------------------------------------------------- city detail --- */
 
-.city-detail-slot { display: grid; gap: var(--gap); }
+.city-detail-slot,
 .city-detail { display: grid; gap: var(--gap); }
 .detail-head {
   display: grid;
@@ -1207,7 +1207,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .metric-tile[data-state="watch"] { border-color: rgba(251, 191, 36, 0.42); }
 .metric-tile[data-state="watch"] .metric-icon { color: var(--band-watch-text); }
 .metric-tile[data-state="critical"] { border-color: rgba(239, 68, 68, 0.5); }
-.metric-tile[data-state="critical"] .metric-icon { color: var(--band-critical-text); }
+.metric-tile[data-state="critical"] .metric-icon,
 .metric-tile[data-state="critical"] .tile-value b { color: var(--band-critical-text); }
 
 .detail-missing { padding: 22px 24px; display: grid; gap: 8px; }
@@ -1339,7 +1339,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 }
 
 @media (max-width: 1180px) {
-  .hero-row { grid-template-columns: minmax(0, 1fr); }
+
   .hero.band-normal, .hero.band-watch, .hero.band-warning, .hero.band-critical { grid-template-columns: minmax(0, 1fr); }
   .band-strip-label { margin-left: 0; flex-basis: 100%; }
   /* Below this width the status block no longer fits beside the brand: it drops to its
@@ -1410,7 +1410,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   .detail-head h2 { font-size: 1.6rem; }
   .explain-block { padding: 16px; }
   .explain-block h3 { font-size: 1.08rem; }
-  .city-cards { grid-template-columns: minmax(0, 1fr); }
+  .city-cards,
   .stat-row { grid-template-columns: minmax(0, 1fr); }
   .stat-value { font-size: 1.32rem; }
   .metric { grid-template-columns: 88px 74px minmax(0, 1fr); }
@@ -1835,7 +1835,7 @@ body {
 
 .city-card .city-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .city-card h3 { font-size: 1.2rem; margin: 0; letter-spacing: -0.01em; }
-.city-headline { margin: 0; font-size: var(--text-lg); color: var(--slate-200); }
+
 
 .city-figures {
   display: flex;
@@ -1846,14 +1846,7 @@ body {
 
 .city-trend { margin-left: auto; }
 
-.city-measures {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  padding: 10px 0;
-  border-top: 1px solid var(--stroke);
-  border-bottom: 1px solid var(--stroke);
-}
+
 
 .figure { display: inline-flex; align-items: center; gap: 7px; color: var(--slate-300); }
 .figure svg { color: var(--cyan-400); }
@@ -1861,19 +1854,12 @@ body {
 .figure-body b { font-size: 1.08rem; font-weight: 640; color: var(--white); }
 .figure-unit { font-size: var(--text-sm); color: var(--slate-400); }
 
-.city-meta {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--slate-300);
-}
+
 
 .city-meta.muted { color: var(--slate-400); }
-.city-driver { display: inline-flex; align-items: center; gap: 7px; }
-.city-driver svg { color: var(--band-warning-text); }
-.city-meta svg { color: var(--slate-400); }
+
+
+
 
 .city-provenance { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
 
@@ -2234,7 +2220,7 @@ body {
   .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat { padding: 14px; }
   .stat-value { font-size: 1.5rem; }
-  .city-measures { gap: 6px 14px; }
+
   .block-title { margin-top: 22px; }
   .chart-summary { font-size: var(--text-xs); }
   /* touch targets: help buttons and disclosure summaries reach 44px on a small screen */
@@ -2247,7 +2233,7 @@ body {
   body { font-size: 0.98rem; }
   .hero-kicker { letter-spacing: 0; }
   .hero-reason { font-size: var(--text-base); }
-  .health-summary { gap: 6px; }
+  .health-summary,
   .city-figures { gap: 6px; }
   .city-trend { margin-left: 0; }
   .figure-body b { font-size: 1rem; }

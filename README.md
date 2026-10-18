@@ -2657,124 +2657,6 @@ in a shipped file is a byte on a visitor's connection. These narratives were wri
 beside the code they explain; they are kept here word for word, with the section
 banner and a one-line pointer left at each site.
 
-### The API names this field `variable`; an earlier fixture (and the harness built o
-
-```javascript
-    // The API names this field `variable`; an earlier fixture (and the harness built on it)
-    // called it `metric`. Both are accepted, because reading only one of them left the map
-    // empty on every real payload - the weighted contributions, the driver shares and the
-    // "what is not driving this" half of the plain sentence all silently disappeared, with no
-    // error anywhere. The live payload is checked against this in the runtime harness.
-
-```
-
-### Everything the page knows about the external weather feed, derived only from the
-
-```javascript
-  // Everything the page knows about the external weather feed, derived only from the
-  // payload. Missing fields come back as null: nothing here is guessed or assumed fresh.
-  //
-  // ageOffsetSeconds is the time this page has been holding the payload: the API reports
-  // an age that was true when it answered, and adding the local elapsed time is what makes
-  // the age (and the countdown) keep moving between polls instead of freezing for 5 s.
-
-```
-
-### icons
-
-```javascript
-/* ------------------------------------------------------------------ icons ---
-   *
-   * One local icon set, defined as SVG path data and inlined into the markup. No icon font, no
-   * CDN, no sprite fetch: the page has to satisfy `script-src 'self'` and stay one request per
-   * asset, and inline SVG is the only thing that does both. Every icon is drawn on the same
-   * 24x24 grid with one stroke width and round caps, inherits `currentColor` so it takes the
-   * colour of whatever it sits in, and is hidden from assistive technology by default - the
-   * words next to it carry the meaning, and a screen reader should not hear "cloud" twice.
-   */
-```
-
-### loading states
-
-```javascript
-/* -------------------------------------------------------- loading states ---
-   *
-   * Skeletons rather than the word "loading". The page is polled every few seconds and the
-   * first paint happens before the first response, so this is the state a visitor is most
-   * likely to meet. The placeholders are aria-hidden: announcing "loading" once per card while
-   * the API is answering would be noise, and the polite regions elsewhere already carry the
-   * real connection state.
-   */
-```
-
-### M10
-
-```javascript
-/* ================================================================== M10 ===
-   *
-   * Presentation pieces for the premium pass, plus the wording of the public email
-   * subscription form.
-   *
-   * Nothing here invents a number: the meter's fill is the score the API reported, the
-   * monitoring sentence counts the bands the payload reported, and the alert preview shows
-   * the incidents the incidents route returned. The subscription wording is deliberately
-   * unable to promise delivery - AWS sends the confirmation email, and until the visitor
-   * follows it the subscription is pending, so no state on this page may say "subscribed".
-   */
-```
-
-### M11
-
-```javascript
-/* ====================================================================== M11 ===
-   *
-   * Fifteen cities in one fleet. These helpers keep the copy honest - what the payload says the
-   * fleet covers, where each city is, and which cities a visitor's own filters leave - and all of
-   * them are pure functions of the payload, so nothing here fetches anything.
-   */
-```
-
-### email alert subscriptions
-
-```javascript
-/* ------------------------------------------------- email alert subscriptions ---
-   *
-   * A visitor's browser calls POST /subscriptions, which asks SNS to subscribe the address.
-   * AWS sends the confirmation message; the browser never sees the topic, the subscription
-   * ARN or any AWS error text. These are the only four things the form may say, and none of
-   * them claims that anybody is subscribed.
-   */
-```
-
-### The facts line answers "how bad, why, how fresh, which way" in one narrow column
-
-```javascript
-    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
-    // the same information as the cards below, in the order a reader asks for it. The score and
-    // the age are the API's own answer for the leading city (`highest_risk_zone`), not a second
-    // reading taken out of the zone table, so this sentence can never disagree with the band the
-    // page just announced.
-
-```
-
-### Size the backing store from the laid-out width, like the history chart does. The
-
-```javascript
-    // Size the backing store from the laid-out width, like the history chart does. The old
-    // code drew a dpr-scaled path into the 280x56 attribute-sized bitmap, so on a HiDPI
-    // screen the newest samples were drawn past the right edge and silently clipped, and on
-    // a 1x screen a 280 px bitmap was stretched across the card. clientWidth is 0 for a
-    // canvas that is not laid out (a hidden view), so fall back to the attribute size.
-
-```
-
-## Interface notes (moved out of the shipped scripts)
-
-The M9 front-end budget counts the bytes of the four shipped files, and a comment
-in a shipped file is a byte on a visitor's connection. These narratives were written
-beside the code they explain; they are kept here word for word, with the section
-banner and a one-line pointer left at each site.
-
 ### Plain-language explanation per metric, shown as a help tooltip in the city page.
 
 ```javascript
@@ -3349,6 +3231,13 @@ few, states the fleet's own total next to them, and links to the rest.
   subscription flow is untouched.
 
 ### Bytes, and the ceiling that did not move
+
+M11.3 removed the CSS nothing renders: fifteen rules whose class names appear in no markup, no
+script, no harness and no test, plus eight adjacent rules with identical bodies, which became four.
+The `:root` block was left alone even where a custom property looks unread, because it is not private
+to the stylesheet: `dashboard_check.mjs` reads `--navy-800` through `token()` for a contrast ratio and
+fails if the declaration disappears. A palette entry no rule reads is still part of the palette
+contract, so it stays.
 
 The M9 check keeps the four shipped front-end files under 400 KB of source, and M11 adds roughly
 25 KB of UI. Rather than raise a ceiling whose own comment says it exists to catch "a framework or
