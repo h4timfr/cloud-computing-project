@@ -3342,6 +3342,25 @@ were left alone. The bill was paid out of this milestone's own prose instead - a
 paragraphs where three were drafted, and four-line comments on two-line helpers cut to one line - and every
 claim, source and URL survived.
 
+### Weather: one batched request for the coastal fleet
+
+The batching rule is untouched: the whole fleet travels in **one** Open-Meteo request, refreshed at most every
+600 s, with a bounded response, partial-failure isolation, a stale fallback, a last-good cache and no retry
+storm. Only the coordinate list changed. Measured after the M13 deploy:
+
+| | M11 (15 cities) | M13 (12 cities) |
+| --- | --- | --- |
+| provider requests per refresh | 1 | 1 |
+| request URL length | 491 characters | 431 characters |
+| live `/zones` response | - | 53,446 B |
+| cities with a cache age | 15 | 12, oldest 0 s |
+| cities failing their fetch | 0 | 0 |
+
+The provider's own response size and refresh duration could **not** be re-measured for this milestone: direct
+requests from this machine were answered `http_429` (Open-Meteo rate-limiting this IP) while the Lambda's own
+refresh was succeeding and serving the cache. That is recorded rather than estimated. The same throttling is
+what exposed two tests that had been passing on a live provider call rather than on the code.
+
 ### The harness, and the one number that changed
 
 | check | before M13 | after M13 |
