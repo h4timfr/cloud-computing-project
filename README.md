@@ -2317,12 +2317,6 @@ moved: a comment is the one thing in a shipped stylesheet that carries no behavi
 
 ## Interface notes (kept out of the shipped stylesheet)
 
-The M9 front-end budget keeps the four shipped files under 400 KB total, and the bytes it
-counts are bytes on a visitor's connection. The long narratives below were written in
-`web/styles.css` while the look was being arrived at; they are kept here word for word, with a
-one-line pointer left at each site. Nothing about the rules or the behaviour changed when they
-moved: a comment is the one thing in a shipped stylesheet that carries no behaviour.
-
 ### M9 - product experience, information design and responsive polish
 
 ```
@@ -2340,7 +2334,7 @@ moved: a comment is the one thing in a shipped stylesheet that carries no behavi
  */
 ```
 
-### M10 - premium pass: cinematic shell, grouped header, the hero, city ca
+### M10 - premium pass: cinematic shell, grouped header, the hero, city cards
 
 ```
 /* ============================================================================
@@ -2539,124 +2533,6 @@ in a shipped file is a byte on a visitor's connection. These narratives were wri
 beside the code they explain; they are kept here word for word, with the section
 banner and a one-line pointer left at each site.
 
-### The API names this field `variable`; an earlier fixture (and the harness built o
-
-```javascript
-    // The API names this field `variable`; an earlier fixture (and the harness built on it)
-    // called it `metric`. Both are accepted, because reading only one of them left the map
-    // empty on every real payload - the weighted contributions, the driver shares and the
-    // "what is not driving this" half of the plain sentence all silently disappeared, with no
-    // error anywhere. The live payload is checked against this in the runtime harness.
-
-```
-
-### Everything the page knows about the external weather feed, derived only from the
-
-```javascript
-  // Everything the page knows about the external weather feed, derived only from the
-  // payload. Missing fields come back as null: nothing here is guessed or assumed fresh.
-  //
-  // ageOffsetSeconds is the time this page has been holding the payload: the API reports
-  // an age that was true when it answered, and adding the local elapsed time is what makes
-  // the age (and the countdown) keep moving between polls instead of freezing for 5 s.
-
-```
-
-### icons
-
-```javascript
-/* ------------------------------------------------------------------ icons ---
-   *
-   * One local icon set, defined as SVG path data and inlined into the markup. No icon font, no
-   * CDN, no sprite fetch: the page has to satisfy `script-src 'self'` and stay one request per
-   * asset, and inline SVG is the only thing that does both. Every icon is drawn on the same
-   * 24x24 grid with one stroke width and round caps, inherits `currentColor` so it takes the
-   * colour of whatever it sits in, and is hidden from assistive technology by default - the
-   * words next to it carry the meaning, and a screen reader should not hear "cloud" twice.
-   */
-```
-
-### loading states
-
-```javascript
-/* -------------------------------------------------------- loading states ---
-   *
-   * Skeletons rather than the word "loading". The page is polled every few seconds and the
-   * first paint happens before the first response, so this is the state a visitor is most
-   * likely to meet. The placeholders are aria-hidden: announcing "loading" once per card while
-   * the API is answering would be noise, and the polite regions elsewhere already carry the
-   * real connection state.
-   */
-```
-
-### M10
-
-```javascript
-/* ================================================================== M10 ===
-   *
-   * Presentation pieces for the premium pass, plus the wording of the public email
-   * subscription form.
-   *
-   * Nothing here invents a number: the meter's fill is the score the API reported, the
-   * monitoring sentence counts the bands the payload reported, and the alert preview shows
-   * the incidents the incidents route returned. The subscription wording is deliberately
-   * unable to promise delivery - AWS sends the confirmation email, and until the visitor
-   * follows it the subscription is pending, so no state on this page may say "subscribed".
-   */
-```
-
-### M11
-
-```javascript
-/* ====================================================================== M11 ===
-   *
-   * Fifteen cities in one fleet. These helpers keep the copy honest - what the payload says the
-   * fleet covers, where each city is, and which cities a visitor's own filters leave - and all of
-   * them are pure functions of the payload, so nothing here fetches anything.
-   */
-```
-
-### email alert subscriptions
-
-```javascript
-/* ------------------------------------------------- email alert subscriptions ---
-   *
-   * A visitor's browser calls POST /subscriptions, which asks SNS to subscribe the address.
-   * AWS sends the confirmation message; the browser never sees the topic, the subscription
-   * ARN or any AWS error text. These are the only four things the form may say, and none of
-   * them claims that anybody is subscribed.
-   */
-```
-
-### The facts line answers "how bad, why, how fresh, which way" in one narrow column
-
-```javascript
-    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
-    // the same information as the cards below, in the order a reader asks for it. The score and
-    // the age are the API's own answer for the leading city (`highest_risk_zone`), not a second
-    // reading taken out of the zone table, so this sentence can never disagree with the band the
-    // page just announced.
-
-```
-
-### Size the backing store from the laid-out width, like the history chart does. The
-
-```javascript
-    // Size the backing store from the laid-out width, like the history chart does. The old
-    // code drew a dpr-scaled path into the 280x56 attribute-sized bitmap, so on a HiDPI
-    // screen the newest samples were drawn past the right edge and silently clipped, and on
-    // a 1x screen a 280 px bitmap was stretched across the card. clientWidth is 0 for a
-    // canvas that is not laid out (a hidden view), so fall back to the attribute size.
-
-```
-
-## Interface notes (moved out of the shipped scripts)
-
-The M9 front-end budget counts the bytes of the four shipped files, and a comment
-in a shipped file is a byte on a visitor's connection. These narratives were written
-beside the code they explain; they are kept here word for word, with the section
-banner and a one-line pointer left at each site.
-
 ### Plain-language explanation per metric, shown as a help tooltip in the city page.
 
 ```javascript
@@ -2681,7 +2557,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### The API names this field `variable`; an earlier fixture (and the harness built o
+### The API names this field `variable`
 
 ```javascript
     // The API names this field `variable`; an earlier fixture (and the harness built on it)
@@ -2692,7 +2568,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### A page that has never reached the API is CONNECTING, and says why it is still wa
+### A page that has never reached the API is CONNECTING
 
 ```javascript
       // A page that has never reached the API is CONNECTING, and says why it is still waiting.
@@ -2702,7 +2578,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### Everything the page knows about the external weather feed, derived only from the
+### Everything the page knows about the external weather feed
 
 ```javascript
   // Everything the page knows about the external weather feed, derived only from the
@@ -2724,7 +2600,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### The plain-language reason, not the model's own output string. The raw line
+### The plain-language reason, not the model's own output string
 
 ```javascript
           // The plain-language reason, not the model's own output string. The raw line
@@ -2761,7 +2637,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### One plain sentence explaining *why* the city is in its band, plus one line of ad
+### One plain sentence explaining *why* the city is in its band
 
 ```javascript
   /* One plain sentence explaining *why* the city is in its band, plus one line of advice.
@@ -2789,7 +2665,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknow
+### '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}
 
 ```javascript
   /* '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknown ->
@@ -2799,7 +2675,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### One sentence for the top of the page, written for a non-technical reader. The no
+### One sentence for the top of the page, written for a non-technical reader
 
 ```javascript
   /* One sentence for the top of the page, written for a non-technical reader. The noun comes
@@ -2834,7 +2710,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### The raw model, folded away by default: native <details>, keyboard accessible, no
+### The raw model, folded away by default: native <details>
 
 ```javascript
   /* The raw model, folded away by default: native <details>, keyboard accessible, no JS.
@@ -2845,7 +2721,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### The arithmetic behind one reading, written out. Every number is the API's own: t
+### The arithmetic behind one reading, written out
 
 ```javascript
   /* The arithmetic behind one reading, written out. Every number is the API's own: the weighted
@@ -2909,7 +2785,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a
+### City nightscape imagery: an explicit, trusted, local mapping
 
 ```javascript
   /* City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a file beside
@@ -2955,7 +2831,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### The page states its own API base in a data attribute, not in a script tag: the d
+### The page states its own API base in a data attribute, not in a script tag
 
 ```javascript
   /* The page states its own API base in a data attribute, not in a script tag: the deployed
@@ -2965,7 +2841,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### An API base may be overridden with ?api=<origin> for testing, which means it can
+### An API base may be overridden with ?api=<origin> for testing
 
 ```javascript
   /* An API base may be overridden with ?api=<origin> for testing, which means it can also be
@@ -3027,7 +2903,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### The plain-language reason is patched like every other value on this card: the ca
+### The plain-language reason is patched like every other value on this card
 
 ```javascript
     // The plain-language reason is patched like every other value on this card: the card is only
@@ -3048,7 +2924,7 @@ banner and a one-line pointer left at each site.
 
 ```
 
-### ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an
+### ``metaHtml`` is deliberately raw HTML, not text
 
 ```javascript
   /* ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an inline
