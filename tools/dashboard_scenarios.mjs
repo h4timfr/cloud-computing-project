@@ -575,7 +575,8 @@ async function main() {
     await runtime.settle();
 
     await check('live mode labels the board as an India live-weather fleet', () => {
-      assert.match(dom.text('brand-subtitle'), /India live-weather monitoring · 5 cities/);
+      assert.match(dom.text('brand-subtitle'),
+      /India live-weather monitoring · 15 cities in 5 regions/);
       assert.match(dom.text('ranking-title'), /Risk ranking by city/);
       assert.match(dom.html('zones-title'), /City detail/);
       assert.match(dom.text('banner-title'), /LIVE WEATHER/);
@@ -897,12 +898,16 @@ async function main() {
 
     await check('an open incident on a silent zone says the zone stopped reporting', () => {
       const rows = dom.html('alerts-active');
-      if (!open) {
-        assert.ok(rows.length >= 0, 'the fixture has no open incident to check');
-        return;
-      }
-      assert.match(rows, /zone not reporting/,
-        `the alert does not mention the silent zone: ${rows.slice(0, 400)}`);
+      // the row for the stale zone itself, so the check cannot be satisfied by some other
+      // incident's row, and so a fixture without such an incident fails loudly instead of
+      // dropping the branch
+      const row = rows.split('<li class="alert-row').slice(1)
+        .find((entry) => entry.includes(`data-incident="${open.incident_id}"`));
+      assert.ok(open, 'the fixture has no open incident to move onto the silent zone');
+      assert.ok(row, `no alert row for incident ${open.incident_id} on the silent zone ${staleId}: `
+        + `${rows.slice(0, 400)}`);
+      assert.match(row, /stopped reporting/,
+        `the alert for ${staleName} does not mention that it stopped reporting: ${row.slice(0, 500)}`);
     });
   })();
 

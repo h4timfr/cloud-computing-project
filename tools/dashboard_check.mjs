@@ -3178,6 +3178,100 @@ check('M10.2: nothing multiplies the backdrop twice, and no shell paints over it
     'the hero no longer uses the most transparent surface');
 });
 
+/* ---------------------------------------------------------------- M11: cities --- */
+
+check('M11: the Cities page controls are in the markup, labelled, and each one is wired', () => {
+  // the search box: a real label, a real type, and the list it filters named for assistive tech
+  assert.match(htmlSource, /<label[^>]*for="cities-search"[^>]*>Search city or state<\/label>/,
+    'the search box has no label that says what it searches');
+  assert.match(htmlSource, /id="cities-search"[^>]*type="search"/,
+    'the search box is not a search input');
+  assert.match(htmlSource, /id="cities-search"[^>]*aria-controls="zones"/,
+    'the search box does not name the list it filters');
+  assert.match(htmlSource, /id="cities-toolbar"[^>]*role="search"[^>]*aria-labelledby="cities-search-label"/,
+    'the toolbar is not a labelled search landmark');
+  ['risk', 'name', 'fresh'].forEach((value) => {
+    assert.match(htmlSource, new RegExp(`<option value="${value}"`),
+      `the sort control does not offer the "${value}" order`);
+  });
+  assert.match(htmlSource, /<label[^>]*for="cities-sort"/, 'the sort control has no label');
+  // the result count is polite, and it is written only when the sentence changes
+  assert.match(htmlSource, /id="cities-count"[^>]*role="status"[^>]*aria-live="polite"/,
+    'the result count is not a polite status region');
+  assert.match(appSource, /el\['cities-count'\]\.textContent !== line/,
+    'the result count is rewritten on every poll, so it announces itself every few seconds');
+  // the empty state is its own element, hidden until a filter excludes everything, and outside
+  // the grid (so "the grid is empty" and "the filters excluded everything" stay different states)
+  assert.match(htmlSource, /id="cities-empty"[^>]*hidden/,
+    'the empty state is on screen before any payload arrives');
+  const gridAt = htmlSource.indexOf('<section id="zones"');
+  const gridClosedAt = htmlSource.indexOf('</section>', gridAt);
+  const emptyAt = htmlSource.indexOf('id="cities-empty"');
+  assert.ok(gridAt > 0 && gridClosedAt > gridAt, 'the card grid is not a section of the page');
+  assert.ok(emptyAt > gridClosedAt,
+    'the empty state is nested inside the card grid: "no cards" and "no match" would share a state');
+  assert.match(libSource, /action: 'clear-filters'/, 'the empty state offers no way back to the fleet');
+  assert.match(appSource, /'\[data-action="clear-filters"\]'/, 'the empty state\'s button is not wired');
+});
+
+check('M11: the Overview names the fleet it is showing part of, and links to all of it', () => {
+  assert.match(htmlSource, /id="city-cards-more"[^>]*href="#\/cities"/,
+    'the way to the rest of the fleet does not lead to the Cities page');
+  assert.match(htmlSource, /id="city-cards-more"[^>]*hidden/,
+    'the way to the rest of the fleet is on screen before any payload arrives');
+  assert.match(appSource, /FP\.ranking\(all\)\.slice\(0, OVERVIEW_CITY_LIMIT\)/,
+    'the Overview does not slice the fleet by one named limit');
+  assert.match(appSource, /var OVERVIEW_CITY_LIMIT = 5;/,
+    'the Overview limit is not defined in one place');
+  assert.match(appSource, /payload\.zone_count/, 'no sentence counts the fleet from the payload');
+  assert.ok(!/\b15 cities\b/.test(htmlSource + appSource + libSource),
+    'a page hardcodes the size of the fleet instead of reading it from the payload');
+});
+
+check('M11: every chip is built from the payload, and says what it sets', () => {
+  assert.match(libSource, /function filterChips\(kind, options, active\)/,
+    'the chip renderer is not in lib.js, where the other renderers live');
+  assert.match(libSource, /class="ghost filter-chip/, 'a filter chip does not reuse the button style');
+  assert.match(libSource, /aria-pressed="' \+ \(on \? 'true' : 'false'\)/,
+    'a chip does not tell assistive tech whether it is pressed');
+  assert.match(libSource, /data-' \+ kind \+ '="' \+ escapeHtml\(option\.value\)/,
+    'a chip does not carry the value it sets');
+  assert.match(libSource, /options\.push\(\{ value: entry\.region, label: entry\.region \}\)/,
+    'the region chips are not the regions the payload grouped the fleet into');
+  assert.match(libSource, /BANDS\.indexOf\(String\([\s\S]{0,140}?\.toUpperCase\(\)\)/,
+    'a risk floor is compared with a case the API does not use');
+  ['WATCH', 'WARNING', 'CRITICAL'].forEach((floor) => {
+    assert.match(appSource, new RegExp(`'${floor}'`), `the risk filter does not offer ${floor}+`);
+  });
+  // filtering is client-side: a control can never be the reason the page asks for the fleet again
+  assert.ok(!/fetch\([^)]*cities-(search|region|risk|sort)/.test(appSource),
+    'a filter control fetches from the API instead of filtering what the page already has');
+});
+
+check('M11: a region is navigation, never a second risk score', () => {
+  assert.match(libSource, /regions: \(Array\.isArray\(block\.regions\) \? block\.regions : \[\]\)/,
+    'the coverage block is not read as the API sent it');
+  assert.ok(!/region[\s\S]{0,40}?risk_score/i.test(libSource + appSource),
+    'a region is given a risk score of its own');
+  assert.match(cssSource, /\.city-thumb-region\s*\{/, 'the drawn plate cannot name its region');
+  assert.match(libSource, /class="city-thumb-region"/, 'no drawn plate names the region of its city');
+  assert.match(libSource, /function fleetScopeNote\(payload\)/,
+    'the fleet has no sentence stating what it does and does not cover');
+});
+
+check('M11: a city card names the city, its state and its region, and the way into it', () => {
+  assert.match(libSource, /function cityPlaceLine\(zone\)/, 'a card has no place line');
+  assert.match(libSource, /class="city-place" data-f="city_state"/,
+    'the place line is not marked as the city and its state');
+  assert.match(libSource, /class="city-region"> · /, 'the place line does not name the region');
+  assert.match(libSource, /function openCityLabel\(noun\)/, 'a card does not say how to open it');
+  assert.match(libSource, /class="city-open-label" aria-hidden="true"/,
+    'the open label is not decorative, so a screen reader hears it twice');
+  assert.match(libSource, /function incidentZoneLabel\(incident\)/,
+    'an alert row cannot name the city and the state its incident was recorded for');
+  assert.match(cssSource, /\.zone-card:hover \.city-open-label/, 'the open label does not respond to hover');
+});
+
 /* ------------------------------------------------------------------ report --- */
 
 console.log(`\n${passed} checks passed, ${failures.length} failed`);

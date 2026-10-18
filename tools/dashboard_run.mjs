@@ -547,16 +547,47 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.match(stats, /reporting/);
   });
 
-  check('every city appears as a status card on the overview', () => {
+  /* How many cities the Overview carries, from one place: the page's own limit, never more
+   * cities than the payload has. */
+  const overviewLimit = (fleet) => Math.min(5, fleet.zones.length);
+
+  const zoneIdsIn = (html, attribute) => (html.match(new RegExp(`${attribute}="([^"]+)"`, 'g')) || [])
+    .map((match) => match.replace(new RegExp(`^${attribute}="`), '').replace(/"$/, ''));
+
+  const riskOrder = (fleet) => fleet.zones
+    .map((zone) => ({ id: zone.zone_id, score: zone.latest ? zone.latest.risk_score : -1 }))
+    .sort((a, b) => (b.score - a.score))
+    .map((entry) => entry.id);
+
+  check('the overview shows the highest-risk few, and a way to the rest', () => {
+    // M11: fifteen cities are more than an overview should carry. The cards are the highest-risk
+    // few, in the fleet's own order; the page says how many cities there are; and the rest are
+    // one click away. The set has to be exactly right in both directions - no card outside the
+    // top few, and none of the top few missing.
     const html = dom.html('city-cards');
-    assert.equal(cityCardsIn(html), payload.zones.length,
-      `expected ${payload.zones.length} city cards, found ${cityCardsIn(html)}`);
-    payload.zones.forEach((zone) => {
+    const limit = overviewLimit(payload);
+    assert.equal(cityCardsIn(html), limit,
+      `expected ${limit} city cards, found ${cityCardsIn(html)}`);
+    const expected = riskOrder(payload).slice(0, limit);
+    assert.deepEqual(zoneIdsIn(html, 'data-zone').slice().sort(), expected.slice().sort(),
+      `the overview cards are ${zoneIdsIn(html, 'data-zone').join(', ')}, `
+      + `expected the ${limit} highest-risk: ${expected.join(', ')}`);
+    expected.forEach((id) => {
+      const zone = payload.zones.find((entry) => entry.zone_id === id);
       assert.ok(html.includes(zone.name), `no overview card for ${zone.name}`);
-      assert.ok(html.includes(`href="#/cities/${zone.zone_id}"`), `${zone.zone_id} has no link to its city view`);
+      assert.ok(html.includes(`href="#/cities/${id}"`), `${id} has no link to its city view`);
     });
     assert.ok(!/weighted contribution|rise_fraction|hysteresis/i.test(html),
       'the overview cards leak model jargon');
+    // the note counts the fleet, and the link leads to all of it
+    assert.match(dom.text('city-cards-note'), new RegExp(`highest-risk .* of ${payload.zone_count}`),
+      `the note under the cards reads "${dom.text('city-cards-note')}"`);
+    const more = dom.node('city-cards-more');
+    // the link's own href is static markup, so it is checked against index.html by
+    // tools/dashboard_check.mjs: this fake DOM only holds what the controller wrote here
+    assert.equal(more.hidden, false, 'the way to the rest of the fleet is hidden');
+    assert.match(dom.text('city-cards-more'), new RegExp(`View all ${payload.zone_count} cities`),
+      `the link reads "${dom.text('city-cards-more')}"`);
   });
 
   check('the overview keeps the fleet distribution and the freshness line', () => {
@@ -981,7 +1012,8 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     await flaky.runtime.settle();
     assert.equal(flaky.dom.text('conn-badge'), 'LIVE', 'the first poll did not succeed');
     const rendered = flaky.dom.html('city-cards');
-    assert.ok(cityCardsIn(rendered) === payload.zones.length, 'the first poll did not render the cities');
+    assert.equal(cityCardsIn(rendered), overviewLimit(payload),
+      'the first poll did not render the highest-risk cities');
 
     await flaky.runtime.advance(6000);
     await flaky.runtime.driveUntilRequest(1);
@@ -1180,10 +1212,15 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.ok(!/class="card city-card/.test(early), 'a placeholder carries the class of a real card');
     assert.ok(!/risk_score/.test(early), 'a placeholder invents a score');
     assert.match(early, /data-f="loading"/, 'the loading marker is gone');
+    const placeholders = (early.match(/skel-card/g) || []).length;
+    assert.ok(placeholders <= 5,
+      `the loading grid promises ${placeholders} cards for an overview that shows at most five`);
     await slow.runtime.settle();
     const settled = slow.dom.html('city-cards');
     assert.ok(!/skel-card/.test(settled), 'the skeleton stayed on screen after the data arrived');
-    assert.equal(cityCardsIn(settled), payload.zones.length, 'the cards did not replace the skeleton');
+    assert.equal(cityCardsIn(settled), overviewLimit(payload), 'the cards did not replace the skeleton');
+    assert.ok(placeholders >= cityCardsIn(settled),
+      'the skeleton promised fewer cards than then arrived');
   });
 
   await checkAsync('every view survives an API that reports nothing at all', async () => {
@@ -1392,10 +1429,11 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     await fresh.runtime.settle();
     const FP = fresh.sandbox.window.FP;
     const html = fresh.dom.html('city-cards');
-    const plates = (html.match(/class="city-thumb/g) || []).length;
+    const limit = overviewLimit(payload);
+    const plates = (html.match(/class="city-thumb band-/g) || []).length;
     const meters = (html.match(/class="city-meter band-/g) || []).length;
-    assert.ok(plates >= payload.zones.length, `expected a plate per city, found ${plates}`);
-    assert.ok(meters >= payload.zones.length, `expected a meter per city, found ${meters}`);
+    assert.equal(plates, limit, `expected a plate per card, found ${plates}`);
+    assert.equal(meters, limit, `expected a meter per card, found ${meters}`);
     // decoration must stay decoration
     assert.match(html, /<span class="city-thumb[^"]*" data-band="\w+" aria-hidden="true">/,
       'the city plate is not hidden from assistive tech');
@@ -1406,7 +1444,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     // carries the name, the band, the score and the meter, so nothing about risk depends on a
     // photograph.
     const cards = html.split('<a class="card city-card').slice(1);
-    assert.equal(cards.length, payload.zones.length, 'the card count does not match the fleet');
+    assert.equal(cards.length, limit, 'the card count does not match the cities the overview shows');
     let images = 0;
     let lazy = 0;
     cards.forEach((card) => {
@@ -1433,16 +1471,19 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       images += 1;
       if (/loading="lazy"/.test(tag)) lazy += 1;
     });
-    // The count is exact in both directions: five images for the five mapped cities of the live
-    // fleet, and none at all for a fleet of invented zones like the demo one, where a nightscape
-    // of "riverside north" does not exist and must not be faked.
-    const mappedCount = payload.zones.filter((zone) => FP.cityImageFor(zone)).length;
-    assert.equal(images, mappedCount,
-      `the page loaded ${images} images for ${mappedCount} mapped zones`);
-    if (mappedCount > 4) {
-      assert.ok(lazy > 0, 'nothing below the first four cards is lazy-loaded');
-      assert.ok(!/loading="lazy"/.test(cards[0]), 'the first card defers its own image');
-    }
+    // Exact in both directions, over the cards that are actually on this page: an image for
+    // every mapped city it shows, and none at all for a city with no prepared nightscape - of
+    // which the live fleet has ten, and the demo fleet's invented zones have all of theirs.
+    // The whole fleet's imagery is pinned on the Cities page, where all fifteen cities are.
+    const shownMapped = cards.filter((card) => FP.cityImageFor({ zone_id: /data-zone="([^"]+)"/.exec(card)[1] }));
+    assert.equal(images, shownMapped.length,
+      `the page loaded ${images} images for the ${shownMapped.length} mapped cities it shows`);
+    // Lazy loading is as exact as the imagery: the fifth card onwards, and only a card that has
+    // an image to defer can defer one.
+    const expectedLazy = cards.filter((card, index) => index >= 4
+      && FP.cityImageFor({ zone_id: /data-zone="([^"]+)"/.exec(card)[1] })).length;
+    assert.equal(lazy, expectedLazy, `the page deferred ${lazy} images, expected ${expectedLazy}`);
+    if (limit > 1) assert.ok(!/loading="lazy"/.test(cards[0]), 'the first card defers its own image');
     assert.ok(lazy <= images, 'more lazy images than images');
     assert.ok(!/\bsrc="[^"]*https?:/.test(html), 'a city card references a remote asset');
     assert.ok(!/src="[^"]*\.svg"/.test(html), 'a city card loads one of the fake .svg files');
@@ -1462,8 +1503,10 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     await fresh.runtime.settle();
     const html = fresh.dom.html('alert-preview');
     assert.ok(html.length > 40, 'the alert preview did not render');
+    // the field the API actually sends: this read `entry.status` and so never took the rows
+    // branch at all, which is why the count below was never checked against a real incident
     const open = incidents && Array.isArray(incidents.incidents)
-      ? incidents.incidents.filter((entry) => entry.status === 'OPEN')
+      ? incidents.incidents.filter((entry) => entry.current_status === 'OPEN')
       : [];
     if (open.length === 0) {
       assert.match(html, /data-f="alert-preview-empty"/, 'an empty preview is not marked as one');
@@ -1477,6 +1520,209 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       assert.match(fresh.dom.text('alert-preview-title'), /Active alerts/, 'the preview title is wrong');
     }
     assert.ok(!/heuristic|weighted base/.test(html), 'the preview shows model vocabulary');
+  });
+
+  group('M11: fifteen cities on one page, and no request to filter them');
+
+  /* The controls are driven the way a browser drives them: the search box with an input event,
+   * a chip with a click resolved to that chip (target.closest), the select with a change. Every
+   * one of them must filter the list already in memory - the whole point of doing this on the
+   * client is that finding one city of fifteen costs the API nothing. */
+  const typeSearch = (source, value) => source.dom.fire(source.dom.node('cities-search'), 'input', { target: { value } });
+  const clickChip = (source, group, attribute, value) => source.dom.fire(source.dom.node(group), 'click', {
+    target: source.dom.targetWith(`[data-${attribute}]`, `data-${attribute}`, value)
+  });
+  const chooseSort = (source, value) => source.dom.fire(source.dom.node('cities-sort'), 'change', { target: { value } });
+  const gridCards = (source) => (source.dom.html('zones').match(/<article class="card zone-card/g) || []).length;
+  const gridOrder = (source) => (source.dom.html('zones').match(/data-zone="([^"]+)"/g) || [])
+    .map((match) => match.replace(/^data-zone="/, '').replace(/"$/, ''));
+  const bootOnCities = async () => {
+    const view = boot({ payload, incidents, history, overrides: {} });
+    await view.runtime.settle();
+    clickNav(view.dom, 'cities');
+    return view;
+  };
+
+  await checkAsync('the cities page lists every city, and the search finds one by city or state', async () => {
+    const find = await bootOnCities();
+    assert.equal(gridCards(find), payload.zones.length,
+      `the page lists ${gridCards(find)} of ${payload.zones.length} cities`);
+    assert.match(find.dom.text('cities-count'), new RegExp(`Showing all ${payload.zones.length} cities`),
+      `the count reads "${find.dom.text('cities-count')}"`);
+    const before = find.runtime.countMatching('/zones');
+
+    // case-insensitive, by city
+    const city = payload.zones[payload.zones.length - 1];
+    typeSearch(find, city.name.toUpperCase());
+    assert.equal(gridCards(find), 1, `searching "${city.name.toUpperCase()}" left ${gridCards(find)} cities`);
+    assert.match(find.dom.html('zones'), new RegExp(city.name), 'the city that matched is not on screen');
+    assert.match(find.dom.text('cities-count'), new RegExp(`Showing 1 of ${payload.zones.length} cities`),
+      `the count reads "${find.dom.text('cities-count')}"`);
+
+    // by state, and only the cities in it
+    const inState = payload.zones.filter((zone) => zone.state === city.state);
+    typeSearch(find, city.state.toLowerCase());
+    assert.equal(gridCards(find), inState.length,
+      `searching "${city.state}" left ${gridCards(find)} cities, expected ${inState.length}`);
+    inState.forEach((zone) => assert.ok(find.dom.html('zones').includes(zone.name),
+      `${zone.name} is in ${city.state} but the search hid it`));
+
+    assert.equal(find.runtime.countMatching('/zones'), before,
+      'the search box asked the API for the fleet again');
+
+    // clearing the box puts the fleet back
+    typeSearch(find, '');
+    assert.equal(gridCards(find), payload.zones.length, 'clearing the search did not restore the fleet');
+    assert.equal(find.dom.html('cities-empty'), '', 'the empty state stayed after clearing the search');
+  });
+
+  await checkAsync('the region and risk chips filter the whole fleet, and promise what they deliver', async () => {
+    const filter = await bootOnCities();
+    const before = filter.runtime.countMatching('/zones');
+    const regions = payload.coverage.regions;
+
+    // one chip per region the API grouped the fleet into, plus All - nothing invented, nothing missing
+    const regionGroup = filter.dom.html('cities-region');
+    assert.equal((regionGroup.match(/data-region="/g) || []).length, regions.length + 1,
+      `the region filter offers ${(regionGroup.match(/data-region="/g) || []).length} chips for ${regions.length} regions`);
+    regions.forEach((entry) => assert.ok(regionGroup.includes(`data-region="${entry.region}"`),
+      `no chip for the ${entry.region} region`));
+
+    const south = regions.find((entry) => entry.region === 'South');
+    clickChip(filter, 'cities-region', 'region', 'South');
+    assert.equal(gridCards(filter), south.city_count,
+      `the South chip shows ${gridCards(filter)} cities; the API reported ${south.city_count}`);
+    assert.match(filter.dom.html('cities-region'), /data-region="South" aria-pressed="true"/,
+      'the active region chip is not marked pressed for assistive tech');
+    assert.match(filter.dom.html('cities-region'), /data-region="all" aria-pressed="false"/,
+      'the All region chip is still marked pressed');
+
+    // a risk floor stacks on top of the region, and the count line follows every change
+    const both = payload.zones.filter((zone) => zone.region === 'South' && zone.latest
+      && zone.latest.risk_class !== 'NORMAL' && zone.latest.risk_class !== 'WATCH');
+    clickChip(filter, 'cities-risk', 'risk', 'WARNING');
+    assert.equal(gridCards(filter), both.length,
+      `South + WARNING+ shows ${gridCards(filter)} cities, expected ${both.length}`);
+    assert.match(filter.dom.text('cities-count'),
+      new RegExp(`Showing ${both.length} of ${payload.zones.length} cities`),
+      `the count reads "${filter.dom.text('cities-count')}"`);
+    both.forEach((zone) => assert.ok(gridOrder(filter).includes(zone.zone_id),
+      `${zone.zone_id} is South and at WARNING or worse, but the filters hid it`));
+
+    // and All on both controls brings every city back
+    clickChip(filter, 'cities-region', 'region', 'all');
+    clickChip(filter, 'cities-risk', 'risk', 'all');
+    assert.equal(gridCards(filter), payload.zones.length, 'the All chips did not restore the fleet');
+    assert.equal(filter.runtime.countMatching('/zones'), before,
+      'changing the filters asked the API for the fleet again');
+  });
+
+  await checkAsync('filters that exclude every city say so, and offer the way back', async () => {
+    const none = await bootOnCities();
+    typeSearch(none, 'zz-no-such-city');
+    assert.equal(gridCards(none), 0, 'a search that matches nothing still rendered cards');
+    assert.equal(none.dom.html('zones'), '', 'the empty state was rendered inside the card grid');
+    assert.equal(none.dom.node('cities-empty').hidden, false, 'the empty state stayed hidden');
+    assert.match(none.dom.html('cities-empty'), /data-empty="no-city-match"/,
+      'the empty state is not the designed one');
+    assert.match(none.dom.html('cities-empty'), /No cities match these filters\./,
+      `the empty state reads "${none.dom.html('cities-empty')}"`);
+    assert.match(none.dom.text('cities-count'), new RegExp(`Showing 0 of ${payload.zones.length} cities`),
+      `the count reads "${none.dom.text('cities-count')}"`);
+
+    // "Clear filters" is a real control, and it puts the fleet and the controls back
+    none.dom.fire(none.dom.document, 'click', {
+      target: none.dom.targetWith('[data-action="clear-filters"]', 'data-action', 'clear-filters'),
+      preventDefault() {}
+    });
+    assert.equal(gridCards(none), payload.zones.length, 'clearing the filters did not restore the fleet');
+    assert.equal(none.dom.node('cities-search').value, '', 'the search box still holds the query');
+    assert.equal(none.dom.html('cities-empty'), '', 'the empty state stayed after clearing the filters');
+    assert.match(none.dom.html('cities-risk'), /data-risk="all" aria-pressed="true"/,
+      'the risk filter did not return to All');
+  });
+
+  await checkAsync('the sort orders the whole fleet, and a missing reading never looks fresh', async () => {
+    const ordered = await bootOnCities();
+    const risk = payload.zones.slice()
+      .sort((a, b) => ((b.latest ? b.latest.risk_score : -1) - (a.latest ? a.latest.risk_score : -1)))
+      .map((zone) => zone.zone_id);
+    assert.deepEqual(gridOrder(ordered), risk, 'the page does not open on highest risk first');
+
+    chooseSort(ordered, 'name');
+    const byName = payload.zones.slice().sort((a, b) => a.name.localeCompare(b.name)).map((z) => z.zone_id);
+    assert.deepEqual(gridOrder(ordered), byName, 'A-Z does not order the fleet by city name');
+
+    chooseSort(ordered, 'fresh');
+    const byAge = payload.zones.slice().sort((a, b) => {
+      const aAge = a.latest ? a.latest.age_seconds : Infinity;
+      const bAge = b.latest ? b.latest.age_seconds : Infinity;
+      return aAge === bAge ? a.name.localeCompare(b.name) : aAge - bAge;
+    }).map((zone) => zone.zone_id);
+    assert.deepEqual(gridOrder(ordered), byAge,
+      'Freshness does not order the fleet by how current its reading is');
+
+    // a city with no reading is never sorted among the fresh ones: with two reading-based
+    // orders it goes last, so it cannot sit at the top of a list that reads as "freshest first"
+    const partial = JSON.parse(JSON.stringify(payload));
+    const quiet = partial.zones[0].zone_id;
+    partial.zones[0].latest = null;
+    const shortBoard = boot({ payload: partial, incidents, history, overrides: {} });
+    await shortBoard.runtime.settle();
+    clickNav(shortBoard.dom, 'cities');
+    ['risk', 'fresh'].forEach((key) => {
+      chooseSort(shortBoard, key);
+      const order = gridOrder(shortBoard);
+      assert.equal(order[order.length - 1], quiet,
+        `a city with no reading is not last under "${key}": ${order.join(', ')}`);
+    });
+    chooseSort(shortBoard, 'name');
+    assert.equal(gridOrder(shortBoard).length, partial.zones.length,
+      'a city with no reading disappeared from the A-Z list');
+  });
+
+  await checkAsync('the whole fleet on the Cities page: every city, and only a mapped city loads an image', async () => {
+    const full = await bootOnCities();
+    const FP = full.sandbox.window.FP;
+    const grid = full.dom.html('zones');
+    const cards = grid.split('<article class="card zone-card').slice(1);
+    assert.equal(cards.length, payload.zones.length,
+      `the grid lists ${cards.length} of ${payload.zones.length} cities`);
+    // a plate for every city, and an image for exactly the cities that have one prepared
+    assert.equal((grid.match(/class="city-thumb band-/g) || []).length, payload.zones.length,
+      'not every city card carries its band-coloured plate');
+    const mapped = payload.zones.filter((zone) => FP.cityImageFor(zone));
+    assert.equal((grid.match(/<img class="city-photo"/g) || []).length, mapped.length,
+      `the grid loads ${(grid.match(/<img class="city-photo"/g) || []).length} images for ${mapped.length} mapped cities`);
+    // a city with no photograph keeps the drawn plate, and the plate names its region
+    const plateRegions = (grid.match(/class="city-thumb-region"/g) || []).length;
+    assert.equal(plateRegions, payload.zones.length - mapped.length,
+      `${plateRegions} drawn plates name a region, expected ${payload.zones.length - mapped.length}`);
+    assert.ok(!/src="[^"]*https?:/.test(grid), 'a city card references a remote asset');
+
+    // every card names its city, its state, its region and the way in
+    payload.zones.forEach((zone) => {
+      assert.ok(grid.includes(`href="#/cities/${zone.zone_id}"`), `${zone.zone_id} has no link to its city view`);
+      assert.ok(grid.includes(`${zone.name}, ${zone.state}`), `${zone.zone_id} does not name its state`);
+      assert.ok(grid.includes(`&#183; ${zone.region} region`) || grid.includes(`· ${zone.region} region`),
+        `${zone.zone_id} does not name its region`);
+      assert.ok(grid.includes('Open city'), `${zone.zone_id} does not say how to open it`);
+    });
+    // and the caveat is stated, not implied: the cities are monitored, not the states
+    assert.ok(!/monitoring the (state|region|country)/i.test(grid),
+      'the Cities page claims broader coverage than the fleet has');
+  });
+
+  check('no surface claims that a state, a region or the country is monitored', () => {
+    ['ov-intro', 'ov-headline', 'ov-subline', 'hero-monitor', 'cities-lede', 'cities-coverage',
+      'city-cards-note', 'city-detail', 'about-cities', 'about-limitations'].forEach((id) => {
+      const text = `${dom.html(id)} ${dom.text(id)}`;
+      assert.ok(!/monitoring (the )?(state|region|country)/i.test(text),
+        `${id} claims the wrong scope: ${text.slice(0, 160)}`);
+      assert.ok(!/\d+ (states|regions) (are )?(monitored|watched|covered)/i.test(text),
+        `${id} implies a state or region is monitored: ${text.slice(0, 160)}`);
+      assert.ok(!/\bis (safe|dry)\b/i.test(text), `${id} calls something safe: ${text.slice(0, 160)}`);
+    });
   });
 
   group('M10: the public email subscription form');
