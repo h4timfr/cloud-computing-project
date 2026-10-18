@@ -25,6 +25,21 @@ BUILD = REPO / "build"
 API = "https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com"
 ORIGIN = "http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com"
 
+sys.path.insert(0, str(REPO / "src"))
+from floodpulse.config import COAST_GROUPS, LIVE_ZONE_DEFINITIONS  # noqa: E402  (REPO must exist first)
+
+# M13: what the API is expected to serve is read from the project's own configuration, so this probe
+# cannot drift from the fleet the Lambda is deployed with.
+EXPECTED_CITIES = {zone["zone_id"]: zone for zone in LIVE_ZONE_DEFINITIONS}
+EXPECTED_COAST_GROUPS = sorted(COAST_GROUPS)
+# Cities that left active monitoring in M13, and the words no selection reason may use: the sources
+# document exposure, they do not rank the fleet.
+RETIRED_INLAND = ("bengaluru", "hyderabad", "delhi", "guwahati", "patna", "bhubaneswar", "pune",
+                  "ahmedabad", "jaipur", "lucknow", "thiruvananthapuram")
+UNSUPPORTED_CLAIMS = ("most flood", "flood-prone", "flood prone", "most vulnerable", "worst",
+                      "riskiest", "highest risk", "number one", "rank", "top ", "deadliest",
+                      "most at risk")
+
 results: list[tuple[str, bool, str]] = []
 
 
@@ -85,28 +100,50 @@ status, zones, elapsed, headers = get("/zones", origin=ORIGIN)
 check("GET /zones returns 200", status == 200, f"HTTP {status}")
 check("the live fleet is served", zones.get("zone_mode") == "live_weather",
       f"zone_mode={zones.get('zone_mode')!r}")
-check("the whole Indian fleet is present",
-      zones.get("zone_count") == 15 and len(zones.get("zones", [])) == 15,
+check("the whole coastal fleet is present",
+      zones.get("zone_count") == len(EXPECTED_CITIES)
+      and len(zones.get("zones", [])) == len(EXPECTED_CITIES),
       f"zone_count={zones.get('zone_count')} zones={len(zones.get('zones', []))}")
+served_ids = {zone.get("zone_id") for zone in zones.get("zones", [])}
+check("the served fleet is exactly the configured coastal fleet",
+      served_ids == set(EXPECTED_CITIES),
+      f"missing={sorted(set(EXPECTED_CITIES) - served_ids)} unexpected={sorted(served_ids - set(EXPECTED_CITIES))}")
+check("no retired inland city is still monitored",
+      not {f"city-{name}" for name in RETIRED_INLAND} & served_ids,
+      f"still served: {sorted({f'city-{name}' for name in RETIRED_INLAND} & served_ids)}")
 
 # M11: the coverage block is the API's own account of what the fleet covers, and every sentence on
 # the page is written from it - so it is checked here rather than trusted
 coverage = zones.get("coverage") or {}
-check("the coverage block counts the fleet, the states and the regions",
-      coverage.get("city_count") == 15 and coverage.get("state_count") == 14
-      and coverage.get("region_count") == 5,
-      f"coverage={json.dumps(coverage)[:160]}")
-check("the coverage block groups every city into one of the five regions",
-      sorted(entry.get("region") for entry in coverage.get("regions", []))
-      == sorted(["North", "South", "East", "West", "Northeast"]),
-      f"regions={[entry.get('region') for entry in coverage.get('regions', [])]}")
-check("a region carries counts and its cities, never a risk score of its own",
-      all(set(entry) == {"region", "city_count", "cities"} for entry in coverage.get("regions", [])),
-      f"a region carries more than its cities: {json.dumps(coverage.get('regions', [])[:1])[:160]}")
-check("every city states its own city, state, region and display name",
-      all(zone.get("city") and zone.get("state") and zone.get("region") and zone.get("display_name")
+check("the coverage block counts the fleet, the states and the coast groups",
+      coverage.get("city_count") == len(EXPECTED_CITIES)
+      and coverage.get("coast_group_count") == len(EXPECTED_COAST_GROUPS),
+      f"coverage={json.dumps(coverage)[:200]}")
+check("the coverage block groups every city into one of the three coast groups",
+      sorted(entry.get("coast_group") for entry in coverage.get("coast_groups", []))
+      == EXPECTED_COAST_GROUPS,
+      f"coast groups={[entry.get('coast_group') for entry in coverage.get('coast_groups', [])]}")
+check("a coast group carries counts and its cities, never a risk score of its own",
+      all(set(entry) == {"coast_group", "city_count", "cities"} for entry in coverage.get("coast_groups", [])),
+      f"a coast group carries more than its cities: {json.dumps(coverage.get('coast_groups', [])[:1])[:200]}")
+check("the coverage block says the fleet is selected, and not complete national coverage",
+      "selected monitoring fleet" in str(coverage.get("scope_note", ""))
+      and "not complete national coverage" in str(coverage.get("scope_note", "")),
+      str(coverage.get("scope_note", ""))[:120])
+check("every city states its own city, state, coast group and display name",
+      all(zone.get("city") and zone.get("state") and zone.get("coast_group") and zone.get("display_name")
           for zone in zones.get("zones", [])),
-      f"incomplete geography: {[zone.get('zone_id') for zone in zones.get('zones', []) if not (zone.get('city') and zone.get('state') and zone.get('region'))]}")
+      f"incomplete geography: {[zone.get('zone_id') for zone in zones.get('zones', []) if not (zone.get('city') and zone.get('state') and zone.get('coast_group') and zone.get('display_name'))]}")
+check("every served city's state and coast group match the configured fleet",
+      all(zone.get("state") == EXPECTED_CITIES[zone["zone_id"]]["state"]
+          and zone.get("coast_group") == EXPECTED_CITIES[zone["zone_id"]]["coast_group"]
+          for zone in zones.get("zones", []) if zone.get("zone_id") in EXPECTED_CITIES),
+      f"mismatched: {[zone.get('zone_id') for zone in zones.get('zones', []) if zone.get('zone_id') in EXPECTED_CITIES and (zone.get('state') != EXPECTED_CITIES[zone['zone_id']]['state'] or zone.get('coast_group') != EXPECTED_CITIES[zone['zone_id']]['coast_group'])]}")
+check("every city states why it is monitored, and no reason overstates its source",
+      all(zone.get("selection_reason")
+          and not any(bad in str(zone.get("selection_reason", "")).lower() for bad in UNSUPPORTED_CLAIMS)
+          for zone in zones.get("zones", [])),
+      f"unstated or overstated: {[zone.get('zone_id') for zone in zones.get('zones', []) if not zone.get('selection_reason') or any(bad in str(zone.get('selection_reason', '')).lower() for bad in UNSUPPORTED_CLAIMS)]}")
 check("the highest-risk city is named as a city and a state",
       bool((zones.get("highest_risk_zone") or {}).get("city"))
       and bool((zones.get("highest_risk_zone") or {}).get("state")),
@@ -128,7 +165,8 @@ check("the weather feed block is present and enabled", weather.get("enabled") is
 check("the feed reports its refresh window", weather.get("refresh_seconds") == 600)
 check("attribution is carried for CC BY", "Open-Meteo" in str(weather.get("attribution", "")))
 live_zones = weather.get("live_zones") or []
-check("all fifteen cities are covered by the feed", len(live_zones) == 15, f"{len(live_zones)} zones")
+check("every coastal city is covered by the feed", len(live_zones) == len(EXPECTED_CITIES),
+      f"{len(live_zones)} zones")
 age_map = weather.get("cache_age_seconds") or {}
 check("the per-city cache age map covers the fleet",
       set(age_map) == set(live_zones), f"{sorted(age_map)}")
@@ -166,7 +204,8 @@ for zone in zones["zones"]:
     klass = str(latest.get("risk_class") or "").upper()
     counts[klass if klass in counts else "NO_READING"] += 1
 print(f"       fleet distribution: {counts}")
-check("the fleet totals fifteen counted zones", sum(counts.values()) == 15)
+check("the fleet totals twelve counted zones",
+      sum(counts.values()) == len(EXPECTED_CITIES))
 check("the ranking leader matches the highest score",
       zones["highest_risk_zone"]["zone_id"] == max(
           zones["zones"], key=lambda z: (z.get("latest") or {}).get("risk_score", -1))["zone_id"])
