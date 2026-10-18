@@ -552,9 +552,8 @@
     return Object.prototype.hasOwnProperty.call(map, key);
   }
 
-  /* A URL that came from a payload may only be used as a link when it is https and on a host
-   * this project deals with. Anything else (javascript:, data:, another origin) falls back to
-   * the known-good address rather than being followed. */
+    /* A payload URL is only ever a link when it is https and on a host we trust. */
+
   var ALLOWED_LINK_HOSTS = ['open-meteo.com', 'www.open-meteo.com'];
 
   function safeExternalUrl(value, fallback) {
@@ -814,13 +813,12 @@
     var valuePct = scale.valuePct === null ? 0 : scale.valuePct;
     var watchPct = scale.watchPct === null ? 0 : scale.watchPct;
     var criticalPct = scale.criticalPct === null ? 0 : scale.criticalPct;
-    // The weighted contribution used to sit here as a bare number next to the value. On a list
-    // The weighted contribution used to sit here as a bare number next to the value. O: why it is the way it is - see README, "Interface notes".
+    // Bare weighted contributions used to sit here: see README, "Interface notes".
     return (
+      // Four siblings, one per column: the chip is a column, not a suffix on the label.
       '<li class="metric" data-metric="' + escapeHtml(metric) + '">' +
-      '<span class="metric-name">' + escapeHtml(METRIC_META[metric].label) +
+      '<span class="metric-name">' + escapeHtml(METRIC_META[metric].label) + '</span>' +
       '<span class="metric-source" data-f="metric-source">' + sourceChip(metricSource(zone, metric)) + '</span>' +
-      '</span>' +
       '<span class="metric-value" data-f="metric-value">' + escapeHtml(formatValueWithUnit(metric, value)) + '</span>' +
       '<span class="metric-track" aria-hidden="true">' +
       '<i class="metric-fill" data-f="metric-fill" style="--pct:' + valuePct.toFixed(1) + '"></i>' +
@@ -1008,9 +1006,8 @@
     return status.toUpperCase() === 'OPEN';
   }
 
-  /* Closed incidents carry an authoritative duration from the API. Open ones keep
-     counting in the browser (against the stored duration, so the value never jumps
-     backwards if the clocks disagree slightly). */
+    /* Closed incidents carry an authoritative duration from the API. */
+
   function incidentDurationSeconds(incident, nowMs) {
     if (!incident) return null;
     var stored = toNumber(incident.duration_seconds);
@@ -1130,9 +1127,8 @@
   }
 
   /* ============================================================== product IA === */
-  /* The public-facing layer. Everything below is still pure and DOM-free, and still
-   * invents nothing: plain-language copy is derived from the class, the dominant driver,
-   * the reading against its own threshold, and the trend the API reported. */
+    /* The public-facing layer: everything below it is pure and DOM-free. */
+
 
   var NAV_ITEMS = [
     { view: 'overview', label: 'Overview', hash: '#/overview' },
@@ -1806,8 +1802,8 @@
       '</div>';
   }
 
-  /* The four different clocks behind one number, named so they cannot be confused.
- * The four different clocks behind one number, named so they cannot be confused.: why it is the way it is - see README, "Interface notes". */
+    /* The four different clocks behind one number. */
+
   function freshnessRows(zone) {
     var latest = (zone && zone.latest) || null;
     var weather = (zone && zone.weather) || null;
@@ -2277,9 +2273,8 @@
       '</section>';
   }
 
-  /* What the browser actually knows about alert delivery, and nothing more. The API reports
-   * whether publishing is armed; it does not report subscribers, and the page can never see
-   * an inbox, so it says "published to the notification topic" and stops there. */
+    /* What the browser knows about alert delivery, and nothing more. */
+
   function alertDelivery(incident, alerting) {
     var armed = !!(alerting && alerting.enabled);
     var count = toNumber(incident && incident.alert_count);
@@ -2330,9 +2325,8 @@
       '</section>';
   }
 
-  /* A small, honest health summary for the top bar and the Alerts page. Counts only what the
-   * API reports: cities answering, how old the newest weather observation is, and whether the
-   * last poll worked. No infrastructure detail, no ARNs, no regions. */
+    /* A small health summary for the top bar and the Alerts page. */
+
   function systemHealth(payload, incidents, nowMs) {
     var zones = (payload && payload.zones) || [];
     var reporting = liveCount(zones);
@@ -2545,10 +2539,43 @@
     }).join('');
   }
 
-  function citiesResultLine(shown, total, plural) {
+  /* The sentence under the toolbar, in three states; a filtered one names its own filters. */
+  function citiesResultLine(shown, total, plural, activeLabels) {
     var noun = plural || 'cities';
-    return shown === total ? 'Showing all ' + total + ' ' + noun + '.'
-      : 'Showing ' + shown + ' of ' + total + ' ' + noun + '.';
+    if (!shown) return 'No ' + noun + ' match these filters.';
+    if (shown === total) return 'Showing all ' + total + ' ' + noun + '.';
+    // one city is one city: the count decides the noun, not the caller
+    var one = { cities: 'city', zones: 'zone' };
+    var counted = shown === 1 && hasOwn(one, noun) ? one[noun] : noun;
+    var labels = (activeLabels || []).filter(Boolean);
+    return 'Showing ' + shown + ' ' + counted + (labels.length ? ' \u00b7 ' + labels.join(' \u00b7 ') : '');
+  }
+
+  /* Which filters are in force, phrased the way their own chips are labelled. The defaults say
+   * nothing: "All" regions and "All" risk levels are the absence of a filter, not a choice. */
+  function cityFilterLabels(rules, options) {
+    var current = rules || {};
+    var list = options || {};
+    var labels = [];
+    var region = String(current.region || 'all');
+    if (region !== 'all') {
+      var regionLabel = null;
+      (list.regions || []).forEach(function (option) {
+        if (option && option.value === region) regionLabel = option.label;
+      });
+      labels.push(regionLabel || region);
+    }
+    var risk = String(current.risk || 'all');
+    if (risk !== 'all') {
+      var riskLabel = null;
+      (list.risks || []).forEach(function (option) {
+        if (option && option.value === risk) riskLabel = option.label;
+      });
+      labels.push(riskLabel || risk);
+    }
+    var query = String(current.query || '').trim();
+    if (query) labels.push('Search: ' + query);
+    return labels;
   }
 
   /* The empty state a filter combination can produce: the same shape as every other empty state
@@ -2595,8 +2622,8 @@
     return fleet + ' All are currently below the alert level.';
   }
 
-  /* City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a file beside
- * City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a: why it is the way it is - see README, "Interface notes". */
+    /* City imagery: an explicit, trusted, local mapping from a zone_id to a file. */
+
   var CITY_IMAGES = {
     'city-chennai': 'chennai-nightscape.webp',
     'city-mumbai': 'mumbai-nightscape.webp',
@@ -2626,8 +2653,8 @@
     return Object.prototype.hasOwnProperty.call(CITY_IMAGES, id) ? CITY_IMAGES[id] : null;
   }
 
-  /* One image band for every city card - the Overview grid and the Cities page both call this, so
- * One image band for every city card - the Overview grid and the Cities page both : why it is the way it is - see README, "Interface notes". */
+    /* One image band for every city card: the photograph, or the plate when there is none. */
+
   /* The region a drawn plate stands for; empty when the payload reported none, so a simulated
    * zone's plate is exactly the plate it always was. */
   function cityThumbRegion(zone) {
@@ -2673,9 +2700,8 @@
       '</span>';
   }
 
-  /* The compact alert preview on the Overview: the two newest active alerts, or the calm
-   * empty state. It reuses the real alert row, so the preview and the Alerts page can never
-   * disagree about what an incident says. */
+    /* The compact alert preview on the Overview. */
+
   function alertPreview(payload, options) {
     var opts = options || {};
     var plural = opts.plural || 'cities';
@@ -2925,6 +2951,7 @@
     visibleCities: visibleCities,
     regionOptions: regionOptions,
     citiesResultLine: citiesResultLine,
+    cityFilterLabels: cityFilterLabels,
     citiesEmptyState: citiesEmptyState,
     cityThumb: cityThumb,
     cityMeter: cityMeter,

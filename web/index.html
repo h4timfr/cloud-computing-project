@@ -157,9 +157,7 @@
     <section id="city-cards" class="city-cards" aria-labelledby="city-cards-title">
       <p class="muted" data-f="loading">waiting for data…</p>
     </section>
-    <!-- Which cities these cards are, and where the rest of the fleet is. Both lines are
-         written from the API's own totals: the Overview shows the highest-risk few, not all
-         fifteen, and says so. -->
+    <!-- What the cards are, and where the rest of the fleet is: both from the payload. -->
     <p class="city-cards-note" id="city-cards-note"></p>
     <p class="city-cards-more-row"><a class="city-cards-more ghost-link" id="city-cards-more" href="#/cities" hidden>View all cities</a></p>
 
@@ -230,24 +228,22 @@
 
     <h3 class="section-title" id="zones-title">All cities</h3>
 
-    <!-- One city out of fifteen. The controls are in the page rather than built by script, so they
-         exist before any payload arrives; only the chip groups are filled in from the payload,
-         because only the payload knows the fleet's own regions and risk classes. -->
+    <!-- The Controls: in the page, not built by script, so they work before any payload. -->
     <div class="cities-toolbar" id="cities-toolbar" role="search" aria-labelledby="cities-search-label">
       <div class="toolbar-field toolbar-field-search">
         <label class="toolbar-label" id="cities-search-label" for="cities-search">Search city or state</label>
         <input class="cities-search subscribe-input" id="cities-search" type="search" name="cities-search"
                placeholder="Search city or state" autocomplete="off" spellcheck="false" aria-controls="zones">
       </div>
-      <div class="toolbar-field" id="cities-region-field">
+      <div class="toolbar-field toolbar-field-region" id="cities-region-field">
         <span class="toolbar-label" id="cities-region-label">Region</span>
         <div class="button-group" id="cities-region" role="group" aria-labelledby="cities-region-label"></div>
       </div>
-      <div class="toolbar-field">
+      <div class="toolbar-field toolbar-field-risk">
         <span class="toolbar-label" id="cities-risk-label">Risk level</span>
         <div class="button-group" id="cities-risk" role="group" aria-labelledby="cities-risk-label"></div>
       </div>
-      <div class="toolbar-field">
+      <div class="toolbar-field toolbar-field-sort">
         <label class="toolbar-label" for="cities-sort">Sort by</label>
         <select class="cities-sort subscribe-input" id="cities-sort">
           <option value="risk" selected>Highest risk</option>

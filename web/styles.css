@@ -136,7 +136,6 @@ code { font-family: var(--mono); font-size: 0.92em; color: var(--cyan-400); }
 .small { font-size: 0.82rem; }
 
 /* Numeric columns line up: every measured value is monospaced with tabular figures. */
-.mono-num { font-variant-numeric: tabular-nums; }
 
 :focus-visible {
   outline: 2px solid var(--cyan-400);
@@ -673,15 +672,26 @@ main {
 .kv dd[data-dir="down"] { color: var(--state-live-text); }
 
 .metrics { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+/* Four declared columns - name, chip, value, bar - and four siblings to fill them. The chip used
+ * to be nested inside the name (see README, "Interface notes: one metric, one row"). */
 .metric {
   display: grid;
-  grid-template-columns: 104px 84px minmax(0, 1fr) 44px;
-  gap: 10px;
+  grid-template-columns: minmax(130px, 1fr) auto minmax(90px, auto) minmax(72px, 1.1fr);
+  gap: 2px 10px;
   align-items: center;
   font-size: 0.8rem;
 }
-.metric-name { color: var(--slate-400); }
-.metric-value { font-family: var(--mono); color: var(--slate-200); text-align: right; font-variant-numeric: tabular-nums; }
+.metric-name { min-width: 0; color: var(--slate-400); overflow-wrap: break-word; }
+.metric-value {
+  min-width: 0;
+  font-family: var(--mono);
+  color: var(--slate-200);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* Phone: two lines per metric. Name and chip above, value and bar below, so a long label has the
+ * whole width to wrap in and the number keeps its unit on the same line. */
 .metric-track { position: relative; height: 8px; border-radius: 999px; background: rgba(148, 163, 184, 0.14); overflow: hidden; }
 .metric-fill {
   display: block;
@@ -715,7 +725,6 @@ main {
 
 /* --------------------------------------------------------------- incidents --- */
 
-.incidents-panel { padding: var(--pad); display: grid; gap: 14px; }
 
 .alert-chip {
   font-family: var(--mono);
@@ -1165,7 +1174,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   font-size: 0.84rem;
   color: var(--slate-300);
 }
-.detail-drivers { color: var(--slate-400); font-size: 0.8rem; }
 .live-dot {
   width: 8px;
   height: 8px;
@@ -1183,11 +1191,14 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   border: 1px solid var(--stroke);
   background: var(--glass-flat);
 }
-.tile-head { display: flex; align-items: center; gap: 9px; }
-.tile-head h3 { margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--slate-200); }
+/* The header wraps instead of squeezing; the chip keeps the end of the line. */
+.tile-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 9px; min-width: 0; }
+.tile-head h3 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: 0.86rem; font-weight: 600;
+  color: var(--slate-200); overflow-wrap: break-word; }
 .metric-icon { flex: 0 0 auto; color: var(--cyan-400); }
-.src-chip-slot { margin-left: auto; }
-.tile-value { margin: 0; display: flex; align-items: baseline; gap: 6px; }
+.src-chip-slot { margin-left: auto; flex: 0 0 auto; }
+/* The number and its unit are one value: the unit never leaves the number's line. */
+.tile-value { margin: 0; display: flex; flex-wrap: nowrap; align-items: baseline; gap: 6px; min-width: 0; }
 .tile-value b { font-family: var(--mono); font-size: 1.42rem; font-weight: 650; color: var(--white); font-variant-numeric: tabular-nums; }
 .tile-unit { font-size: 0.78rem; color: var(--slate-400); }
 .tile-caption { margin: 0; font-size: 0.78rem; color: var(--slate-400); }
@@ -3254,32 +3265,79 @@ main, .topbar, .footer { max-width: 100%; }
 
 /* --------------------------------------------------- finding one of fifteen --- */
 
+/* One grid at every width; the tiers and their arithmetic are in README, "Interface notes". */
 .cities-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 14px 18px;
+  display: grid;
+  gap: 12px 16px;
+  align-items: end;
   margin: 0 0 6px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'search' 'region' 'risk' 'sort';
 }
 
-/* min-width: 0 on every field, so a long region name wraps the toolbar instead of widening the
- * page; the search box grows first, because it is the control people reach for. */
+/* 1320px and up: one row, the tracks the brief names. 280+360+300+170 plus three 16px gaps is
+ * 1158px, and the content box here is 1264px, so nothing is being asked for that cannot fit. */
+@media (min-width: 1320px) {
+  .cities-toolbar {
+    grid-template-columns: minmax(280px, 1.5fr) minmax(360px, 2fr) minmax(300px, 1.5fr) minmax(170px, 0.8fr);
+    grid-template-areas: 'search region risk sort';
+  }
+}
+
+/* min-width: 0 everywhere, so a long label wraps inside its track instead of widening the page. */
 .toolbar-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.toolbar-field-search { flex: 1 1 260px; max-width: 360px; }
+.toolbar-field-search { grid-area: search; }
+.toolbar-field-region { grid-area: region; }
+.toolbar-field-risk { grid-area: risk; }
+.toolbar-field-sort { grid-area: sort; }
 .toolbar-label { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--slate-400); }
-.cities-search { width: 100%; min-height: 40px; padding: 8px 12px; font-size: var(--text-sm); }
-.cities-sort { min-height: 40px; padding: 8px 12px; font-size: var(--text-sm); cursor: pointer; }
-.filter-group { display: flex; flex-wrap: wrap; gap: 8px; }
-/* 44px, the same target size as every other control on the site */
-.filter-chip { min-height: 44px; }
-.cities-count { margin: 4px 0 12px; font-size: var(--text-sm); color: var(--slate-400); }
+.cities-search { width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; font-size: var(--text-sm); }
+.cities-sort { width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; font-size: var(--text-sm); cursor: pointer; }
+/* The chips wrap rather than compress; nothing here is nowrap. */
+.cities-toolbar .button-group { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+/* 44px tall, like every other control; the label sizes the pill, never the other way round. */
+.filter-chip { min-height: 44px; max-width: 100%; padding: 0 15px; font-size: 0.82rem; }
+/* The toolbar's own result, directly under it. */
+.cities-count { margin: 6px 0 14px; font-size: var(--text-sm); color: var(--slate-400); }
 .cities-empty { margin: 4px 0 0; }
 .cities-empty[hidden] { display: none; }
 .city-cards-note { margin: 12px 0 0; font-size: var(--text-sm); color: var(--slate-400); }
 .city-cards-more-row { margin: 10px 0 0; }
 .city-cards-more[hidden] { display: none; }
 
-@media (max-width: 719px) {
-  .toolbar-field-search { max-width: none; }
-  .cities-toolbar { gap: 12px; }
+/* Same four columns, tracks that fit a 1200px viewport. */
+@media (min-width: 1200px) and (max-width: 1319px) {
+  .cities-toolbar {
+    gap: 12px 10px;
+    grid-template-columns: minmax(260px, 1.5fr) minmax(330px, 2fr) minmax(280px, 1.5fr) minmax(160px, 0.8fr);
+  }
+}
+
+/* Tablet: two rows. Search beside sort, then the two chip groups, which wrap internally. */
+@media (min-width: 768px) and (max-width: 1199px) {
+  .cities-toolbar {
+    gap: 12px 14px;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    grid-template-areas: 'search sort' 'region risk';
+  }
+}
+
+/* Phone: one column, in reading order, with each group on its own lines. No horizontal
+ * scrolling at any width: every track is `minmax(0, 1fr)` and every control is min-width: 0. */
+@media (max-width: 767px) {
+  .cities-toolbar {
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'search' 'region' 'risk' 'sort';
+  }
+  .filter-chip { padding: 0 11px; font-size: 0.77rem; }
+  .metric {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'name source' 'value track';
+    gap: 2px 10px;
+  }
+  .metric-name { grid-area: name; }
+  .metric-source { grid-area: source; }
+  .metric-value { grid-area: value; text-align: left; }
+  .metric-track { grid-area: track; }
 }

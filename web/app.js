@@ -1248,8 +1248,8 @@
     renderRecentActivity();
   }
 
-  /* How many cities the Overview puts on screen: it answers "what should I look at", and the
-   * Cities page carries the rest. Every count the page states comes from the payload. */
+    /* How many cities the Overview shows before it links to the rest. */
+
   var OVERVIEW_CITY_LIMIT = 5;
 
   /* "Is anything actually alerting?" in one compact block: the two newest active alerts, or a
@@ -1290,8 +1290,8 @@
       Date.now(), { changes: changes });
   }
 
-  /* The highest-risk few: name, state, band, score, freshness. The full detail is on the city
-   * view and the whole fleet is on the Cities page, one click away. */
+    /* The highest-risk few: name, state, band, score, freshness. */
+
   function renderCityCards(zones) {
     var host = el['city-cards'];
     if (!host) return;
@@ -1333,8 +1333,8 @@
     renderOverviewFleetNote(all, list);
   }
 
-  /* The line under the grid and the way to the other cities, both from the payload's own
-   * totals: neither can claim a fleet size the API did not report. */
+    /* The line under the grid and the way to the other cities, both from the payload. */
+
   function renderOverviewFleetNote(all, shown) {
     var plural = FP.zoneNounPlural(state.payload);
     var total = FP.toNumber(state.payload && state.payload.zone_count);
@@ -1827,8 +1827,8 @@
 
   /* ------------------------------------------------------------- incidents --- */
 
-  /* The incident log is read-only and comes straight from GET /incidents: this page
-   * never invents or edits an incident, and the SNS topic is never exposed to it. */
+    /* The incident log is read-only and comes straight from GET /incidents. */
+
   function loadIncidents() {
     if (state.incidentsInFlight) return; // one request at a time, whoever asked for it
     var seq = ++state.incidentsSeq;
@@ -2105,8 +2105,8 @@
     { value: 'CRITICAL', label: 'CRITICAL' }
   ];
 
-  /* A chip group, rebuilt only when its own options or its own pressed chip changed: a poll that
-   * changed nothing must not touch the DOM, or move the visitor's focus. */
+    /* A chip group, rebuilt only when its own options or pressed chip changed. */
+
   function renderChipGroup(host, kind, options, active) {
     if (!host) return;
     var rendered = options.map(function (option) {
@@ -2117,8 +2117,8 @@
     host.innerHTML = FP.filterChips(kind, options, active);
   }
 
-  /* Both groups, from the fleet's own regions and the API's own class names. A payload that
-   * reports no regional grouping offers no region filter. */
+    /* Both chip groups, from the fleet's own regions and the API's own class names. */
+
   function renderCityFilters(payload) {
     var rules = cityFilters();
     var regions = FP.regionOptions(payload);
@@ -2134,8 +2134,8 @@
     }
   }
 
-  /* The grid, the count and the two empty states: on every payload and every filter change, and
-   * it fetches nothing. */
+    /* The grid, the count and the empty states: on every poll, and it fetches nothing. */
+
   function renderCitiesPage() {
     var rules = cityFilters();
     var all = state.zones || [];
@@ -2165,7 +2165,8 @@
     // Rewritten only when the sentence changes: a status region that hears the same text every
     // poll would announce itself every five seconds for nothing.
     if (el['cities-count']) {
-      var line = state.payload ? FP.citiesResultLine(visible.length, all.length, plural) : '';
+      var line = state.payload ? FP.citiesResultLine(visible.length, all.length, plural,
+        FP.cityFilterLabels(rules, { regions: FP.regionOptions(state.payload), risks: RISK_FILTERS })) : '';
       if (el['cities-count'].textContent !== line) el['cities-count'].textContent = line;
     }
     renderCards(visible);
