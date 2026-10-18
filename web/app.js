@@ -162,6 +162,8 @@
       'nav-toggle', 'nav-list', 'nav-overview', 'nav-cities', 'nav-alerts', 'nav-data', 'nav-about',
       'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data', 'view-about',
       'ov-headline', 'ov-subline', 'ov-intro', 'ov-stats', 'band-strip-title',
+    // M13: the overview's scope note, filled from the payload's coverage block
+    'why-cities-note',
       'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
       // M11: the Cities page's find-and-sort controls and the Overview's coverage note
       'cities-search', 'cities-coast', 'cities-coast-label', 'cities-coast-field', 'cities-risk',
@@ -587,6 +589,9 @@
     card.classList.add('band-' + band);
     setText('ov-headline', headed);
     setText('hero-monitor', FP.monitorLine(payload, FP.fleetOverview(payload, state.incidents, Date.now())));
+    // The fleet's scope, from the API's own coverage block, and unconditional: a page must not
+    // state a wider or narrower fleet than the payload it is showing, whatever the risk is today.
+    setText('why-cities-note', FP.fleetScopeNote(payload));
     setText('hero-why', summary && summary.why ? summary.why : '');
     // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
     // not a second hero, so it never repeats the headline sentence.
@@ -602,9 +607,6 @@
     if (age !== null) facts.push('Updated ' + FP.ageLabel(age));
     if (latest) facts.push('Trend: ' + (trendWords[direction] || 'holding steady'));
     setText('hero-facts', facts.join(' · '));
-    // The fleet's scope, from the API's own coverage block: the page must not
-    // state a wider or narrower fleet than the payload it is showing.
-    setText('why-cities-note', FP.fleetScopeNote(state.payload));
     setText('hero-state', highest.name + ' · ' + FP.classLabel(highest.risk_class) + ' ' + noun + ' risk');
   }
 

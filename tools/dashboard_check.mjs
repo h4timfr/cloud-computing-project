@@ -1436,6 +1436,32 @@ check('small band text always uses the light variant, never the vivid one', () =
   });
 });
 
+  check('M13: the pages carry the selection basis, its limits and its sources', () => {
+    const why = htmlSource.slice(htmlSource.indexOf('id="why-these-cities"'));
+    assert.ok(why.length > 100, 'the overview has no "why these cities" block');
+    assert.match(why, /documented exposure to coastal flooding/,
+      'the overview does not state what the cities were selected for');
+    assert.match(why, /Selection methodology/, 'the overview does not link the methodology');
+    assert.match(htmlSource, /id="city-selection"/, 'the Data page has no City selection section');
+    assert.match(htmlSource, /not complete national coverage/,
+      'the copy never states that the fleet is not complete national coverage');
+    assert.match(htmlSource, /in coast order, not ranked/,
+      'the copy never says the fleet is listed rather than ranked');
+    ['moef.gov.in', 'rsmcnewdelhi.imd.gov.in', 'tsunami.incois.gov.in', 'documents1.worldbank.org',
+      'thinkhazard.org'].forEach((host) => assert.ok(htmlSource.includes(host),
+      `the sources list does not cite ${host}`));
+    // the approved identity, and no claim the sources do not make
+    assert.match(htmlSource, /FloodPulse Coastal India/, 'the product name is not the approved one');
+    assert.match(htmlSource, /Monitoring selected flood-exposed coastal cities across India/,
+      'the approved fleet sentence is missing');
+    assert.match(htmlSource, /academic cloud-computing prototype focused on\s+selected coastal urban flood-risk locations/,
+      'the About page does not describe the prototype in the approved words');
+    assert.ok(!/most flood-prone|most vulnerable|riskiest|number one|the deadliest/i.test(htmlSource),
+      'the copy claims a ranking no source supports');
+    assert.ok(!/\b15 cities\b|\b5 regions\b|North|South|Northeast/.test(htmlSource),
+      'the old national fleet or its region names are still in the markup');
+  });
+
 check('the stylesheet styles every class the page emits', () => {
   const emitted = new Set();
   [htmlSource, libSource, appSource].forEach((source) => {

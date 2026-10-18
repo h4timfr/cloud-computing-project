@@ -2944,6 +2944,7 @@
     coverageInfo: coverageInfo,
     coverageClause: coverageClause,
     fleetScopeNote: fleetScopeNote,
+    citySelectionNote: citySelectionNote,
     riskLevel: riskLevel,
     cityPlaceText: cityPlaceText,
     filterChips: filterChips,

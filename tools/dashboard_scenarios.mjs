@@ -1161,10 +1161,17 @@ async function main() {
     await check('a very long city name reaches the page intact', async () => {
       const long = createRuntime();
       const longName = 'Thiruvananthapuram Coastal North Extension Zone';
+      // Rename the city the payload itself ranks highest, not the first one in the array: the overview
+      // shows the five highest-risk cities, so renaming a quiet city proved nothing when that city
+      // was not on screen - which is how this scenario failed once the fleet changed.
+      const ranked = (live.payload.zones || []).slice().sort((left, right) =>
+        ((right.latest || {}).risk_score || 0) - ((left.latest || {}).risk_score || 0));
+      const targetId = (ranked[0] || {}).zone_id;
+      assert.ok(targetId, 'the payload ranks no city, so this scenario cannot run');
       long.on(zonesRoute, () => ({
         body: {
           ...live.payload,
-          zones: (live.payload.zones || []).map((zone, index) => (index === 0 ? { ...zone, name: longName } : zone))
+          zones: (live.payload.zones || []).map((zone, index) => (zone.zone_id === targetId ? { ...zone, name: longName } : zone))
         }
       }));
       long.on(incidentsRoute, () => ({ body: live.incidents }));

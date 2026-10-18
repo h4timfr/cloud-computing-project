@@ -1663,6 +1663,39 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       'changing the filters asked the API for the fleet again');
   });
 
+  await checkAsync('M13: the page states the fleet it is showing, and why this city is in it', async () => {
+    // The scope note is filled from the payload, so a page cannot promise wider coverage than the
+    // API it is reading. The static blocks that surround it are checked against index.html.
+    const overview = boot({ payload, incidents, history, overrides: {} });
+    await overview.runtime.settle();
+    assert.match(String((payload.coverage || {}).scope_note), /selected monitoring fleet/,
+      'the payload does not state what the fleet is');
+    const note = overview.dom.text('why-cities-note');
+    assert.ok(note.includes('not complete national coverage'),
+      `the overview does not state the limitation: "${note}"`);
+    // The scope note may *deny* ranking ("listed in coast order rather than ranked"), so only
+    // superlatives are banned here: a denial is exactly what this line is supposed to contain.
+    assert.ok(!/most flood-prone|most vulnerable|riskiest|number one|deadliest/i.test(note),
+      `the scope note claims a ranking: "${note}"`);
+
+    // one city's own page, in that city's own words, straight from the payload
+    const first = payload.zones.find((zone) => zone.selection_reason);
+    assert.ok(first, 'no city in this payload states why it is monitored');
+    const detail = boot({ payload, incidents, history, hash: `#/cities/${first.zone_id}` });
+    await detail.runtime.settle();
+    const markup = detail.dom.html('city-detail');
+    assert.match(markup, /Why this city is monitored/, 'the city page does not say why it is monitored');
+    assert.ok(markup.includes(first.selection_reason.split(',')[0].slice(0, 30)),
+      `the city page does not carry the payload's reason for ${first.zone_id}`);
+    assert.ok(!/most flood-prone|most vulnerable|riskiest|number one|deadliest/i.test(markup),
+      `the city page makes a ranking claim about ${first.zone_id}`);
+
+    // and the simulated fleet is untouched: a zone with no reason renders no such block
+    const demoZone = { zone_id: 'zone-old-town-canal', name: 'Old Town Canal', latest: null };
+    assert.equal(overview.dom.window.FP.citySelectionNote(demoZone), '',
+      'a zone with no selection reason renders a "why this city is monitored" block');
+  });
+
   await checkAsync('filters that exclude every city say so, and offer the way back', async () => {
     const none = await bootOnCities();
     typeSearch(none, 'zz-no-such-city');
