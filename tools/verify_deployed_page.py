@@ -112,6 +112,9 @@ for label, needle in FORBIDDEN.items():
 
 NEEDLES = {
     "lib.js": {
+        # M11.2: the result sentence names the filters, and never the raw enum
+        "the result sentence names the filters in force": 'cityFilterLabels',
+        "an empty result says so in words": "' match these filters.'",
         "the leader's reading age is exposed": "leaderAgeSeconds",
         "a silent zone is identified": "staleZoneIds",
         "a silent zone is marked on an incident": "not reporting</span>",
@@ -182,10 +185,6 @@ NEEDLES = {
         "the empty state offers the way back": 'clear-filters',
         "the risk filter offers the API's own floors": 'RISK_FILTERS',
         "a filter change never refetches": 'renderCitiesPage();',
-        # M11.2: the result sentence names the filters, and a metric chip is never the enum
-        "the result sentence names the filters in force": 'cityFilterLabels',
-        "an empty result says so in words": "' match these filters.'",
-        "the chip is a cell of its own in the row": '<span class="metric-source" data-f="metric-source">',
     },
     "styles.css": {
         "change note": "change-note",

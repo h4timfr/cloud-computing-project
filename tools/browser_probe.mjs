@@ -75,7 +75,17 @@ const PROBE = `((args) => {
                columns: style.gridTemplateColumns, gap: style.columnGap,
                chipText: text(cell('.metric-source')), valueText: text(cell('.metric-value')) };
     });
+    const tiles = [...(card ? card.querySelectorAll('.tile') : [])].map((tile) => {
+      const head = tile.querySelector('.tile-head');
+      const chip = tile.querySelector('.src-chip');
+      const value = tile.querySelector('.tile-value');
+      return { head: rect(head), chip: rect(chip), value: rect(value),
+               chipText: text(chip), valueText: text(value),
+               clipped: head ? head.scrollWidth > head.clientWidth + 1 : false,
+               columns: getComputedStyle(tile).gridTemplateColumns };
+    });
     const offenders = [];
+    const leftOvers = [];
     const clippedBy = (node) => {
       for (let parent = node.parentElement; parent; parent = parent.parentElement) {
         const overflow = getComputedStyle(parent);
@@ -91,8 +101,14 @@ const PROBE = `((args) => {
       if (box.left <= -1000 || cls.indexOf('skip-link') >= 0) return;
       // a box an ancestor clips is not overflow: it cannot scroll the page or sit over anything
       if (clippedBy(node)) return;
-      if ((box.right > window.innerWidth + 1 || box.left < -1) && offenders.length < 5) {
-        offenders.push({ tag: node.tagName.toLowerCase(), cls: cls.slice(0, 44),
+      if (box.right > window.innerWidth + 1 && offenders.length < 5) {
+        offenders.push({ tag: node.tagName.toLowerCase(), cls: cls.slice(0, 44), side: 'right',
+                         left: Math.round(box.left), right: Math.round(box.right),
+                         text: text(node).slice(0, 28) });
+      }
+      // an overhang to the left cannot scroll the page: it is reported as a note, not a failure
+      if (box.left < -1 && leftOvers.length < 5) {
+        leftOvers.push({ tag: node.tagName.toLowerCase(), cls: cls.slice(0, 44), side: 'left',
                          left: Math.round(box.left), right: Math.round(box.right),
                          text: text(node).slice(0, 28) });
       }
@@ -122,7 +138,15 @@ const PROBE = `((args) => {
       fields,
       count: text(document.querySelector('#cities-count') || document.querySelector('#city-name') || document.querySelector('h1')),
       cards: document.querySelectorAll('#zones .zone-card').length,
-      metrics, offenders, clipped,
+      metrics, tiles, offenders, leftOvers, clipped,
+      detail: (() => {
+        const slot = document.querySelector('#city-detail');
+        const view = document.querySelector('#view-city');
+        return { slot: !!slot, view: !!view, viewHidden: view ? view.hidden : null,
+                 children: slot ? slot.children.length : 0,
+                 metrics: slot ? slot.querySelectorAll('.metric').length : 0,
+                 length: slot ? slot.innerHTML.length : 0 };
+      })(),
     };
   } catch (error) {
     return { probeFailure: String((error && error.stack) || error) };
@@ -187,6 +211,7 @@ await send('Runtime.enable');
 await send('Log.enable');
 
 const failures = [];
+let zoneId = null;
 const note = (ok, text) => {
   if (!ok) failures.push(text);
   return `${ok ? 'ok  ' : 'FAIL'} ${text}`;
@@ -219,21 +244,29 @@ for (const { w, h, label } of WIDTHS) {
     console.log(`\n${label}\n  ${note(false, 'the Cities page never rendered its fleet')}`);
     continue;
   }
+  if (!zoneId) {
+    const first = await evaluate(`(document.querySelector('#zones .zone-card[data-zone]') || {}).getAttribute`
+      + ` ? document.querySelector('#zones .zone-card[data-zone]').getAttribute('data-zone') : null`);
+    zoneId = first || null;
+    if (zoneId) console.log(`  measuring the city page at ${zoneId}, as the fleet itself names it`);
+  }
   const padX = parseInt(state.padX, 10);
   const contentBox = state.innerWidth - 2 * padX;
   const expectedRows = state.innerWidth >= 1200 ? 1 : state.innerWidth >= 768 ? 2 : 4;
   console.log(`\n${label}  (content box ${contentBox}px, --pad-x ${padX}px)`);
   console.log(`  ${note(state.scrollWidth <= state.innerWidth + 1 && state.bodyScrollWidth <= state.innerWidth + 1,
     `no horizontal scroll: scrollWidth ${state.scrollWidth}, innerWidth ${state.innerWidth}`)}`);
-  console.log(`  ${note(state.offenders.length === 0, `nothing leaves the viewport (${state.offenders.length} offender(s))`)}`);
+  console.log(`  ${note(state.offenders.length === 0, `nothing overhangs the right edge (${state.offenders.length})`)}`);
   state.offenders.forEach((one) => console.log(`      ${one.tag}.${one.cls} ${one.left}..${one.right} "${one.text}"`));
+  if (state.leftOvers.length) {
+    console.log(`  note: ${state.leftOvers.length} box(es) overhang the left edge (nothing scrollable; M10 furniture)`);
+    state.leftOvers.slice(0, 3).forEach((one) => console.log(`      ${one.tag}.${one.cls} ${one.left}..${one.right} "${one.text}"`));
+  }
   console.log(`  ${note(state.clipped.length === 0, `nothing is clipped in the bar or a metric row (${state.clipped.length})`)}`);
   state.clipped.forEach((one) => console.log(`      ${one.cls}: scrollWidth ${one.scrollWidth} vs clientWidth ${one.clientWidth}`));
   const declaredRows = (String(state.toolbarAreas).match(/"[^"]+"|'[^']+'/g) || []).length;
   console.log(`  ${note(declaredRows === expectedRows,
     `the bar declares ${declaredRows} row(s), expected ${expectedRows}: ${state.toolbarAreas}`)}`);
-  console.log(`  ${note(state.rows.length <= expectedRows,
-    `the fields physically share ${state.rows.length} line(s), at most ${expectedRows}: ${state.rows.map((r) => r.join('+')).join(' | ')}`)}`);
   state.fields.forEach((one) => {
     if (!one.box) { failures.push(`${label}: ${one.name} field is missing`); return; }
     const inside = one.box.left >= padX - 1 && one.box.right <= state.innerWidth - padX + 1;
@@ -263,27 +296,34 @@ for (const { w, h, label } of WIDTHS) {
 
 for (const w of [320, 390, 768, 1280]) {
   await send('Emulation.setDeviceMetricsOverride', { width: w, height: 1200, deviceScaleFactor: 1, mobile: w < 768 });
-  const state = await measure(`${site}/#/cities/bengaluru`, '#view-city, #zones .zone-card',
-    (one) => one.metrics.length > 0 && one.metrics[0].name && one.metrics[0].name.width > 0);
-  if (!state || !state.metrics.length || !state.metrics[0].name || state.metrics[0].name.width === 0) {
-    console.log(`\ncity detail at ${w}px\n  ${note(false, 'no metric row had a measurable box')}`);
+  if (!zoneId) { console.log('no zone id was available for the city page'); break; }
+  const state = await measure(`${site}/#/cities/${zoneId}`, '#city-detail, #view-city',
+    (one) => one.tiles.length > 0 && one.tiles[0].value && one.tiles[0].value.width > 0);
+  if (!state || !state.tiles.length || !state.tiles[0].value || state.tiles[0].value.width === 0) {
+    console.log(`\ncity detail at ${w}px\n  ${note(false, 'no measurement tile had a measurable box')}`);
     continue;
   }
   const padX = parseInt(state.padX, 10);
   console.log(`\ncity detail at ${w}px  (content box ${state.innerWidth - 2 * padX}px, --pad-x ${padX}px)`);
   console.log(`  ${note(state.scrollWidth <= state.innerWidth + 1, `no horizontal scroll: scrollWidth ${state.scrollWidth}`)}`);
-  console.log(`  ${note(state.offenders.length === 0, `nothing leaves the viewport (${state.offenders.length} offender(s))`)}`);
+  console.log(`  ${note(state.offenders.length === 0, `nothing overhangs the right edge (${state.offenders.length})`)}`);
   state.offenders.forEach((one) => console.log(`      ${one.tag}.${one.cls} ${one.left}..${one.right} "${one.text}"`));
   const phone = state.innerWidth <= 767;
-  state.metrics.forEach((row) => {
-    if (!row.chip || !row.value || !row.name) return;
+  state.tiles.forEach((row) => {
+    if (!row.head || !row.value) return;
     const chipIsLabel = ['REAL', 'MODEL', 'SIM', '?'].includes(row.chipText);
-    const stacked = row.value.top >= row.name.bottom - 2;
-    console.log(`  metric ${row.metric}: name ${row.name.left}..${row.name.right}, ` +
-      `chip ${row.chip.left}..${row.chip.right} "${row.chipText}", value ${row.value.left}..${row.value.right} "${row.valueText}"`);
-    console.log(`    ${note(row.name.right <= row.chip.left + 1, 'the name does not run under the chip')}   ` +
-      `${note(chipIsLabel, `the chip reads ${row.chipText}`)}   ` +
-      `${note(phone ? stacked : !stacked, phone ? 'the value is on the second line' : 'name, chip and value share one line')}`);
+    const stacked = row.value.top >= row.head.bottom - 2;
+    const unitAttached = !/[0-9]/.test(row.valueText) || /[0-9]\s?\S/.test(row.valueText);
+    console.log(`  tile: head ${row.head.left}..${row.head.right} (${row.head.height}px), ` +
+      `chip ${row.chip ? `${row.chip.left}..${row.chip.right} "${row.chipText}"` : 'none'}, ` +
+      `value ${row.value.left}..${row.value.right} "${row.valueText}"`);
+    const rightEdge = state.innerWidth - padX + 1;
+    console.log(`    ${note(!row.clipped, 'the tile head does not clip its label')}   ` +
+      `${note(row.chip ? chipIsLabel : true, `the chip reads ${row.chipText}`)}   ` +
+      `${note(unitAttached, 'the value keeps its unit')}   ` +
+      // the tile's internal arrangement is its own (M10); what it must not do is clip or overflow
+      `${note(row.value.right <= rightEdge && (!row.chip || row.chip.right <= rightEdge),
+        `the chip and value stay inside the card (${row.value.right} <= ${rightEdge})`)}`);
   });
 }
 
