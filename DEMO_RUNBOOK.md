@@ -368,40 +368,55 @@ it from memory.
 * Do not read a city that stopped reporting as a calm city: its score is an old one, and the board
   says exactly that next to it.
 
-## M11 demo path - the fifteen-city fleet
+## M13 demo path - the coastal fleet
 
 **On a phone (or a narrow window).** Open the Cities page and drag the window narrow: the
-control bar folds from one row to two and then to a stack, with the chips wrapping rather than
-squishing, and the result sentence stays directly under the controls. Open any city: the metric
-rows put the name, its REAL/MODEL/SIM chip and its value in three aligned columns on a wide
-screen, and on a phone each row becomes two lines - the number keeps its unit either way.
+control bar folds from one row to two and then to a stack, with the Search, Coast, Risk and
+Sort controls wrapping rather than squishing, and the result sentence stays directly under
+the controls. Open any city: the metric rows put the name, its REAL/MODEL/SIM chip and its
+value in three aligned columns on a wide screen, and on a phone each row becomes two lines -
+the number keeps its unit either way.
 
+The M13 changes are the identity, the Coast filter, the two explanation blocks and the City
+selection section. The seven minutes below cover them without changing the rest of the demo.
 
-The M11 additions are all on the Cities page and in the geography the sentences name. The seven
-minutes below cover them without changing the existing demo, which still works as written.
-
-1. **Overview first.** Point at the fleet totals and the reporting count, then at the cards: they
-   are the highest-risk few, and the note next to them says how many cities the fleet monitors and
+1. **Overview first.** The product is FloodPulse Coastal India, and the sentence under the
+   headline is the scope: monitoring *selected* flood-exposed coastal cities across India.
+   Point at the fleet totals and the reporting count, then at the cards: they are the
+   highest-risk few, and the note next to them says how many cities the fleet monitors and
    links to the rest. Say plainly that the Overview shows part of the fleet on purpose.
-2. **"View all cities".** The Cities page lists all fifteen. Read two or three place lines aloud -
-   *Kochi, Kerala · South*, *Guwahati, Assam · Northeast* - and say that the state and region come
-   from the payload, not from the page.
-3. **Search.** Type `kol` and watch the list narrow to Kolkata; then type `Kerala` to show that the
-   search covers the state as well as the city. Say the thing that matters for the architecture:
-   *no request was made* - the page already had all fifteen cities, and the filters work on what it
-   has.
-4. **Filters and order.** Pick the East region, then CRITICAL+ to show the empty state and its way
-   back, then reset to All and switch the order to A-Z and back to highest risk. The count line
-   reads out what is on screen.
-5. **One city.** Open a city whose region has one monitored city (Guwahati) and read the scope
-   line: the fleet monitors cities, not states, and a city says nothing about the rest of its
-   region. This is the sentence to slow down on.
-6. **Alerts.** Open the alerts page. Every row and every email names the city *and* the state, and
-   the delivery line still says what AWS has actually done rather than promising a delivery.
-7. **The weather panel.** Say that the whole fleet is refreshed by one provider request every ten
-   minutes, that each city keeps its own cache, and that a city the provider misses keeps its last
-   reading and is shown as not reporting rather than silently scored.
+   Then point at **"Why these cities?"** below the hero: what the cities were selected for,
+   the limitation line under it, and the **Selection methodology** link. If you have ten
+   seconds, read that limitation line aloud - it comes from the API's own coverage block,
+   so the page cannot claim a wider fleet than the payload it is showing.
+2. **"View all cities".** The Cities page lists all twelve. Read two or three place lines
+   aloud - *Kochi, Kerala - West Coast*, *Puri, Odisha - East Coast* - and say that the
+   state and the coast group come from the payload, not from the page. The city table lives
+   in one place in the backend: `src/floodpulse/config.py`.
+3. **Search.** Type `kol` and watch the list narrow to Kolkata; then type `Kerala` to show
+   that the search covers the state as well as the city, and `West Coast` to show that it
+   covers the coast group too. Say the thing that matters for the architecture: *no request
+   was made* - the page already had all twelve cities, and the filters work on what it has.
+4. **Filters and order.** Pick **West Coast** in the Coast control (five cities), then add
+   **CRITICAL+** to show the empty state and its way back, then reset both to All and switch
+   the order from highest risk to A-Z and back. The count line reads out what is on screen,
+   and it names the coast group it is filtering by.
+5. **One city.** Open a city and scroll to **"Why this city is monitored"** - the reason it
+   is in the fleet, worded to a published source. Then read the scope line: the fleet
+   monitors cities, not states and not a coast, and a city says nothing about the rest of
+   its coast group. This is the sentence to slow down on. If someone asks where a reason
+   came from, the Data page's **City selection** section lists the five sources with links.
+6. **Alerts.** Open the alerts page. Every row and every email names the city *and* the
+   state, and the delivery line still says what AWS has actually done rather than promising
+   a delivery.
+7. **The weather panel.** Say that the whole fleet is refreshed by *one* batched provider
+   request every ten minutes, that each of the twelve cities keeps its own cache, and that a
+   city the provider misses keeps its last reading and is shown as not reporting rather than
+   silently scored.
 
-If someone asks about coverage in general, the honest answer is the one the product gives: fifteen
-monitored cities, each of them a city, with no state, regional or national risk score anywhere in
-the system.
+If someone asks about coverage in general, the honest answer is the one the product gives: a
+*selected* monitoring fleet of twelve coastal cities, individual cities rather than states or
+coasts, with no coast-wide and no national risk score anywhere in the system, and the Data
+page's City selection section saying so. Do not accept the framing that these are "the most
+flood-prone cities in India": the sources document exposure for each city, and none of them
+ranks the fleet.

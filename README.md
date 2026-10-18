@@ -1991,19 +1991,20 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (509 tests, no AWS calls, no network)
+# full test suite (597 tests and 2096 subtests, no AWS calls, no network)
 python -m unittest discover -s tests -t .
 
 # the demo story, rehearsed end to end: drives the arc, verifies it, exports what the API served
 python tools/storm_demo.py --export build/story
 node tools/story_check.mjs --dir build/story
 
-# live weather probe: one real Open-Meteo request for all five cities, read-only
+# live weather probe: one real Open-Meteo request for the whole coastal fleet, read-only
 python tools/weather_probe.py
 
 # dashboard static checks: pure helpers, rendering from a real payload, provenance, site safety,
 # the asset budget, and the information architecture (five sections, router, phone menu, icons,
-# empty states, touch targets, methodology vs config.py): 105 checks per mode
+# empty states, touch targets, methodology vs config.py, the coastal fleet and its copy):
+# 130 checks
 node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
 node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
@@ -2017,8 +2018,8 @@ node tools/dashboard_scenarios.mjs
 # way a person does — clicking all five sections, opening each city, the alerts split and its empty
 # states, the About page, the retry button, the skeleton, the phone menu, a failed poll, recovery,
 # and the plain-language check: with a real payload, no primary view may show a snake_case variable,
-# the formula or the model's own output line (58 checks live, 56 for the demo fleet), on top of the
-# 108 static checks per mode from dashboard_check.mjs.
+# the formula or the model's own output line (80 checks live, 78 for the demo fleet), on top of the
+# 130 static checks from dashboard_check.mjs.
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
@@ -3007,6 +3008,10 @@ API sends is never the visible label outside the technical details.
 
 ## M11 - India coverage: fifteen monitored cities, five regions, no new architecture
 
+> **Superseded by M13.** The fleet, the region names and the coverage wording described below were
+> replaced: M13 monitors twelve selected coastal cities grouped as West Coast, East Coast and Island.
+> The section is kept as the record of what M11 did and why.
+
 FloodPulse monitored five Indian cities. It now monitors **fifteen**, across **fourteen states or
 union territories** and five regions used for navigation (North 3, South 5, East 3, West 3,
 Northeast 1). Nothing else changed: same Lambda, same HTTP API, same DynamoDB table, same S3 site,
@@ -3156,3 +3161,237 @@ minified, no build step was added, and no new file was added to `web/`.
   placed from the coordinates the API already publishes) is recorded in the M11 report; it was not
   built, because it is not needed to find a city and the milestone's rule was to change as little
   as possible.
+
+## M13 - coastal India: a selected coastal fleet, and the copy that explains it
+
+FloodPulse is now **FloodPulse Coastal India**: a deliberately scoped monitoring prototype for a *selected*
+fleet of coastal cities, not a national service. The fifteen-city fleet of M11 is replaced by twelve coastal
+cities; the architecture, the cost posture, the risk algorithm, the alerting path and the subscription flow
+are untouched.
+
+Two sentences carry the scope, and they are the only ones used:
+
+* "Monitoring selected flood-exposed coastal cities across India."
+* "Selected for documented exposure to coastal flooding, extreme rainfall, cyclone/storm-surge hazards, or
+  related urban flood vulnerability."
+
+Neither says the fleet is the most exposed, the worst, or complete. The copy states instead that this is
+"a selected monitoring fleet, not complete national coverage", and that the cities are "listed in coast order
+rather than ranked".
+
+### The twelve cities, and what each one rests on
+
+Coast groups are navigation, in this order: West Coast, East Coast, Island.
+
+| City | State / UT | Coast group | Latitude | Longitude | What it rests on | Source |
+| --- | --- | --- | --- | --- | --- | --- |
+| Mumbai | Maharashtra | West Coast | 19.0760 | 72.8777 | Named among coastal megacities in an era of sea level rise; coastal-flood hazard rated high for its district; a coastal station recorded 944.2 mm | S1, S8, S2 |
+| Surat | Gujarat | West Coast | 21.1702 | 72.8311 | A World Bank project document records exposure to sea level rise, urban flooding and saltwater intrusion; coastal-flood hazard rated high | S6, S8 |
+| Kochi | Kerala | West Coast | 9.9312 | 76.2673 | Named among coastal megacities; urban and river flood hazard rated high for its district; a coastal station recorded 253.2 mm | S1, S8, S2 |
+| Mangaluru | Karnataka | West Coast | 12.9141 | 74.8560 | A coastal station recorded 360.9 mm, the city's documented extreme | S2 |
+| Kozhikode | Kerala | West Coast | 11.2588 | 75.7804 | Urban and river flood hazard rated high for its district; cyclone hazard rated high; a coastal station recorded 283.2 mm | S8, S2 |
+| Kolkata | West Bengal | East Coast | 22.5726 | 88.3639 | Named among coastal megacities and studied in a World Bank coastal-city report | S1, S5 |
+| Puri | Odisha | East Coast | 19.8135 | 85.8312 | District coastal-flood hazard rated high; named in World Bank project documents for cyclone exposure and for local resilience planning; a coastal station recorded 394 mm | S8, S7, S2 |
+| Paradip | Odisha | East Coast | 20.3164 | 86.6115 | A very high risk storm-surge zone of roughly 5-7 m is recorded for the Paradip-Balasore stretch; a coastal station recorded 412 mm | S4, S2 |
+| Visakhapatnam | Andhra Pradesh | East Coast | 17.6868 | 83.2185 | Named among coastal megacities; coastal and urban flood hazard rated medium, cyclone hazard rated high; a coastal station recorded 400.6 mm | S1, S8, S2 |
+| Chennai | Tamil Nadu | East Coast | 13.0827 | 80.2707 | Named among coastal megacities; coastal-flood hazard rated medium, cyclone hazard rated high; ten coastal stations with extreme rainfall records | S1, S8, S2 |
+| Puducherry | Puducherry | East Coast | 11.9416 | 79.8083 | A coastal station recorded 538.1 mm, the city's documented extreme | S2 |
+| Port Blair | Andaman and Nicobar Islands | Island | 11.6234 | 92.7265 | An island capital on an island group with a documented extreme-rainfall record of 374.3 mm | S2 |
+
+### The sources, with what each one actually says
+
+Every source below was fetched and read for this milestone. The per-city `selection_reason` in
+`src/floodpulse/config.py` is worded to the source it cites; no reason says more than its source does.
+
+* **S1 - Ministry of Environment and Forests, *Final Frontier* (Swaminathan Committee report on coastal
+  regulation, 16 July 2009).**
+  <https://moef.gov.in/uploads/2018/04/cmz_report_2.pdf>
+  Names, in one sentence, "megacities along the coast like Mumbai, Kolkata, Chennai, Kochi, Vishakapatnam,
+  etc in an era of sea level rise."
+* **S2 - India Meteorological Department, *Rainfall Extremes over Coastal Stations*.**
+  <https://rsmcnewdelhi.imd.gov.in/uploads/climatology/RainfallExtremesoverCoastalStations.pdf>
+  A station table of record 24-hour rainfall. Rows read for this project include Mumbai/Santacruz 944.2 mm
+  (27-7-2005), Surat 459.2 mm (2/7/1941), Kochi Fort 253.2 mm (28-5-1933), Visakhapatnam AP 400.6 mm
+  (13-10-2014), Puri 394 mm (7/8/2018), Mangalore 360.9 mm (8/5/1909), Puducherry 538.1 mm (5/10/1991),
+  Paradeep CWR 412 mm (6/9/2018), Port Blair 374.3 mm (31-12-1976), Kozhikode 283.2 mm (17-7-2009).
+  **A rainfall record is not a flood record**, and no reason in this project treats one as the other.
+  Kolkata is not in the fetched text of this table, so Kolkata's basis is S1 and S5 and says so.
+* **S3 - World Bank Documents & Reports API** (`search.worldbank.org/api/v3/wds`), used to find and confirm
+  document metadata for S5, S6 and S7.
+* **S4 - Indian National Centre for Ocean Information Services (INCOIS), *About Storm Surge*.**
+  <https://tsunami.incois.gov.in/TEWS/AboutStormSurge.jsp>
+  Records a very high risk zone, "East coast of India between Paradip and Balasore in Orissa (~5-7m)".
+  This is why Paradip is in the fleet: the source names Paradip itself.
+* **S5 - The World Bank (with ADB and JICA), *Climate Risks and Adaptation in Asian Coastal Megacities: A
+  Synthesis Report*, September 2010.**
+  <https://documents1.worldbank.org/curated/en/866821468339644916/pdf/571100WP0REPLA1egacities01019110web.pdf>
+  A multi-city coastal statement that names Indian cities alongside others, and a World Bank-led Kolkata
+  coastal city case study in Annex A. The report's main body covers Bangkok, Manila and Ho Chi Minh City, so
+  it is **not** used as an Indian city ranking, and the "top ten cities exposed to flooding" line sometimes
+  attributed to it is not in it.
+* **S6 - The World Bank, *Gujarat Resilient Cities Partnership: Surat Resilience Enhancement Project*,
+  Project Information Document (Concept Stage), Report No. PIDC33801, 1 August 2022.**
+  <https://documents1.worldbank.org/curated/en/099650108022233180/pdf/P1777991d64d3b7e155e11420d18711110619a142700.pdf>
+  Documents Surat as a coastal city exposed to sea level rise, urban flooding and saltwater intrusion.
+* **S7 - The World Bank, *NLTA to Support Implementation of Orissa State Climate Change Action Plan -
+  Summary Report*, Report No. ACS15742, 27 June 2017, and *Odisha Disaster Recovery Project (P148868)
+  Implementation Completion and Results Report*, Report No. ICR00005567, 15 January 2021.**
+  <https://documents1.worldbank.org/curated/en/765331498601425141/pdf/P147522-Output-NLTA-Odisha-State-Climate-Change-Action-Plan.pdf>
+  and
+  <https://documents1.worldbank.org/curated/en/437771643051341119/pdf/India-Odisha-Disaster-Recovery-Project.pdf>
+  The first names Puri among three Odisha cities with local resilience action plans; the second names Puri
+  district as a coastal area severely affected by Cyclone Phailin in 2013.
+* **S8 - ThinkHazard!, a Global Facility for Disaster Reduction and Recovery / World Bank product.**
+  <https://thinkhazard.org/>
+  Hazard levels for the district or city a monitored place falls in, read for this milestone: Mumbai coastal
+  flood high, Surat high, Puri district coastal flood high, Kozhikode urban and river flood high with cyclone
+  high, Ernakulam (the district Kochi is in) urban and river flood high, Visakhapatnam coastal and urban
+  medium with cyclone high, Chennai coastal medium with cyclone high, Thiruvananthapuram coastal flood very
+  low. ThinkHazard reports at district level, which is recorded here rather than smoothed over.
+
+### Selection methodology (city selection only)
+
+This is a method for deciding which cities to monitor. It is not a risk algorithm, not a vulnerability
+score, and not a state-level rating; the risk score on the dashboard is unchanged and knows nothing about
+it.
+
+1. Candidate places must be on the coast or on an estuary immediately behind it, so that coastal and
+   storm-surge hazards apply to them.
+2. A place is only selected if at least one authoritative, non-commercial source documents a hazard for that
+   place or its district: a national ministry report, the meteorological department, the ocean information
+   service, a World Bank project or study document, or a GFDRR/World Bank hazard product.
+3. Sources must be fetched and read, not recalled. Where a source rates a hazard at district level, the
+   reason says district.
+4. The fleet keeps a balance across the coast groups, at least two cities in the largest states that face the
+   sea, and only one city per hazard cluster where two cities would duplicate the same evidence.
+5. Where a place's evidence is weaker than another place's in the same region, the weaker place is replaced
+   and both the replacement and the reason are recorded.
+6. Twelve cities: enough to be a real fleet on one screen, few enough that one batched weather request covers
+   the whole fleet inside the unchanged provider budget.
+
+What this method deliberately does not do: it does not rank cities against each other, does not compute a
+coast-wide or national score, does not average anything per coast, and does not claim that a monitored city
+is safer or less safe than an unmonitored one.
+
+### What left active monitoring, and why
+
+Ten cities that M11 monitored are no longer in the fleet: Bengaluru, Hyderabad, Delhi, Guwahati, Patna,
+Bhubaneswar, Pune, Ahmedabad, Jaipur and Lucknow. Each is inland, so coastal and storm-surge hazards do not
+apply to it, and none of them had a source of the kind the method above requires for a coastal fleet.
+
+Two swaps are worth stating plainly:
+
+* **Bhubaneswar -> Puri.** Bhubaneswar is about 30 km inland. Puri is the Odisha coast, its district coastal
+  flood hazard is rated high, and it is named in World Bank project documents. Odisha keeps one monitored
+  city, on the coast.
+* **Thiruvananthapuram -> Kozhikode.** ThinkHazard rates Thiruvananthapuram's coastal flood hazard *very
+  low* - the weakest rating of any candidate. Kozhikode is rated high for urban and river flooding and high
+  for cyclone. Kerala keeps two monitored cities either way, and the fleet stays at twelve.
+
+Paradip was kept rather than dropped, even though it sits in the same coastal stretch as Puri: INCOIS names
+Paradip itself for a 5-7 m storm-surge zone, which is stronger evidence for that place than a district-level
+hazard level.
+
+The image files for the retired cities stay in `web/` (they cost nothing, they are not deleted, and the
+deploy manifest is unchanged). The page references only the fleet's own imagery.
+
+### Coast groups are navigation, not a score
+
+`region` is gone from the API, the frontend and the copy. `COAST_GROUPS` is `("West Coast", "East Coast",
+"Island")` in `src/floodpulse/config.py`, and each city carries its `coast_group`, `display_name` and
+`selection_reason` in that same table, which remains the single source of truth: the frontend holds no city
+data of its own and builds the Coast filter from the payload's own grouping.
+
+A coast group carries a name, a city count and its cities. It carries no risk score, no average, and no
+safety claim - the runtime and live checks assert the exact key set, so a score cannot creep in. Incidents
+are stamped `zone_coast_group`; readers still fall back to the pre-M13 `zone_region` column so an incident
+recorded before this milestone keeps its geography.
+
+### What the pages say now
+
+* **Overview**: "Why these cities?" under the hero, with the approved exposure sentence and a "Selection
+  methodology" link - deliberately *not* repeating the five highest-risk cities the page already shows. The
+  block's limitation line is filled from the API's own coverage scope note, so a cached payload cannot widen
+  the claim.
+* **Cities**: the control bar is Search city or state / Coast: All, West Coast, East Coast, Island / Risk:
+  All, WATCH+, WARNING+, CRITICAL / Sort. Cards name the city, state/UT, coast group, band, score, rainfall,
+  freshness, main factor and the way in.
+* **City page**: "Why this city is monitored", rendered from that city's own `selection_reason`. A zone with
+  no reason - the simulated demo fleet - renders no block at all.
+* **Data & Methodology**: a "City selection" section: what a city is selected on, that this is a selected
+  monitoring fleet and not complete national coverage, that selection is separate from the live risk score,
+  and the five sources with links.
+* **About**: "FloodPulse Coastal India is an academic cloud-computing prototype focused on selected coastal
+  urban flood-risk locations", with the AWS architecture, provenance and the disclaimer unchanged.
+* **Alerts**: unchanged and still city-specific, on the same SNS topic.
+
+### Bytes, and the ceiling that did not move
+
+The shipped-source ceiling stays 409,600 B and was never raised.
+
+| | bytes |
+| --- | --- |
+| M11.3 baseline | 405,444 |
+| after M13 | 409,073 |
+| headroom | 527 |
+
+The reclaim was looked for before anything was added, and came up short in a way worth recording: the dead
+CSS scan's thirteen candidates are all class names composed at runtime (`'conn-' + state` and friends), so
+real dead CSS was zero bytes; the only byte-identical duplicate rules sit in different scoping contexts and
+were left alone. The bill was paid out of this milestone's own prose instead - a shorter source list, two
+paragraphs where three were drafted, and four-line comments on two-line helpers cut to one line - and every
+claim, source and URL survived.
+
+### The harness, and the one number that changed
+
+| check | before M13 | after M13 |
+| --- | --- | --- |
+| `tools/dashboard_check.mjs` (static) | 129 | 130, 0 failed |
+| `tools/dashboard_run.mjs` (real page in a fake browser) | 82 | 80, 0 failed |
+| `tools/dashboard_scenarios.mjs` | 49 | 49, 0 failed |
+| pytest | 593 passed / 2099 subtests | 597 passed / 2096 subtests |
+
+The runtime count moved from 82 to 80 because incident-rendering checks are conditional on the live payload
+having an open incident, and the coastal fleet served by the API currently has none (4 closed). Nothing was
+removed.
+
+One check's *number* changed: the cap on how many external sites the page may link to rose from 3 to 8, so
+the five cited sources fit. The five hosts were added to the explicit allowlist by name, and the rule that
+matters is untouched - an external host may still appear only as an `<a href>` destination with
+`rel`/`target`/`https`, never as something the browser loads.
+
+Two tests were found to be passing on a live Open-Meteo call rather than on the code: measured while the
+provider was throttling, they failed with `http_429` and no reading. They now inject a provider stub that
+answers for exactly the coordinates it is asked about, so they test provenance rather than connectivity.
+
+### Verification (commands, and what they reported)
+
+```
+node tools/dashboard_check.mjs                  -> 130 checks passed, 0 failed
+node tools/dashboard_run.mjs --site <local> --api <endpoint>
+                                                -> 80 runtime checks passed, 0 failed
+node tools/dashboard_scenarios.mjs              -> 49 scenario checks passed, 0 failed
+python -m pytest tests -q                       -> 597 passed, 2096 subtests passed
+python tools/live_acceptance.py                 -> 62 checks passed, 0 failed
+node tools/dashboard_run.mjs --site <deployed>  -> 80 runtime checks passed, 0 failed
+python tools/verify_deployed_page.py            -> all deployed page contracts hold
+node tools/browser_probe.mjs <deployed>         -> 351 check lines, 0 failures, 0 script errors,
+                                                   0 requests that 404'd, 11 widths, 5 routes
+```
+
+The deployed API reports `zone_mode: live_weather`, `zone_count: 12`, coverage 12 cities / 10 states and
+union territories / 3 coast groups (5 West Coast, 6 East Coast, 1 Island), every city carrying a
+`coast_group`, a `display_name` and a `selection_reason`, and each coast group carrying exactly
+`{coast_group, city_count, cities}`.
+
+### What M13 does not claim
+
+* Not complete national coverage, and not a ranking. The cities are listed in coast order and the reason each
+  one is monitored is stated; no city is called the most flood-prone, the most vulnerable or the worst.
+* No coast-wide and no national risk score, and no average per coast.
+* No government affiliation. INCOIS, the India Meteorological Department and the Ministry of Environment and
+  Forests are cited as sources, not as partners, and the site still says it issues no official warnings.
+* Rainfall records are not flood records, ThinkHazard levels are district-level where noted, and the
+  hydraulic measurements remain simulated for every monitored city.
+* The World Bank 2010 synthesis is not used as an Indian city ranking, and the "top ten cities exposed to
+  flooding" line sometimes attributed to it is not in the document.
