@@ -874,7 +874,18 @@ async function main() {
       return zone;
     });
     const openIncidents = JSON.parse(JSON.stringify(live.incidents));
-    const open = (openIncidents.incidents || []).find((incident) => incident.current_status === 'OPEN');
+    // The state under test is an open incident on a silent city. The recording is of a calm fleet, so
+    // every incident in it has closed; rather than depend on the fixture happening to contain an open
+    // one - which would let this check quietly stop covering the branch - the scenario opens the first
+    // incident itself, here, where it is visible.
+    const open = (openIncidents.incidents || []).find((incident) => incident.current_status === 'OPEN')
+      || (openIncidents.incidents || [])[0];
+    if (open && open.current_status !== 'OPEN') {
+      open.current_status = 'OPEN';
+      open.is_open = true;
+      open.closed_at = null;
+      open.closed_ts_epoch = null;
+    }
     if (open) {
       open.zone_id = staleId;
       open.zone_name = staleName;
@@ -924,7 +935,7 @@ async function main() {
       assert.ok(!/not reporting recently/.test(stats),
         'the marker appears on a healthy fleet, so it means nothing');
       const rows = dom.html('alerts-active');
-      assert.ok(!/zone not reporting/.test(rows),
+      assert.ok(!/not reporting/.test(rows),
         'the silent-zone marker appears on a healthy fleet');
     });
   })();

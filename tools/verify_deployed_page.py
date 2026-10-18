@@ -60,6 +60,13 @@ EXPECTED = {
     "the unsubscribe instruction is deployed": "Amazon SNS includes its own unsubscribe link",
     # the model left the header and lives in the folded technical panel instead
     "the model is in the folded technical panel": '<b id="summary-model">heuristic-v1</b>',
+    # M11: fifteen cities, and the three things that make finding one of them possible
+    "the search box is labelled for what it searches": 'id="cities-search-label"',
+    "the toolbar is a search landmark": 'class="cities-toolbar" id="cities-toolbar" role="search"',
+    "the result count is a polite status region": 'id="cities-count" role="status" aria-live="polite"',
+    "the empty state has its own element": 'id="cities-empty"',
+    "the way to the rest of the fleet leads to the Cities page": 'id="city-cards-more" href="#/cities"',
+    "the sort control offers the three orders": '<option value="fresh">Freshness</option>',
 }
 
 FORBIDDEN = {
@@ -85,13 +92,6 @@ FORBIDDEN = {
     "the model name is back in the primary header": 'meta-item">model <b id="summary-model"',
     "an AWS resource name is on the page": "arn:aws",
     "the notification topic is named": "floodpulse-alerts",
-# M11: fifteen cities, and the three things that make finding one of them possible
-    "the search box is labelled for what it searches": 'id="cities-search-label"',
-    "the toolbar is a search landmark": 'class="cities-toolbar" id="cities-toolbar" role="search"',
-    "the result count is a polite status region": 'id="cities-count" role="status" aria-live="polite"',
-    "the empty state has its own element": 'id="cities-empty"',
-    "the way to the rest of the fleet leads to the Cities page": 'id="city-cards-more" href="#/cities"',
-    "the sort control offers the three orders": '<option value="fresh">Freshness</option>',
     "the account id is on the page": "725934295966",
     # and no view ever claims a subscription that SNS has not confirmed
     "a subscription claim SNS has not confirmed": "You are subscribed",
@@ -114,7 +114,7 @@ NEEDLES = {
     "lib.js": {
         "the leader's reading age is exposed": "leaderAgeSeconds",
         "a silent zone is identified": "staleZoneIds",
-        "a silent zone is marked on an incident": "zone not reporting",
+        "a silent zone is marked on an incident": "not reporting</span>",
         "the incident rows carry table roles": 'role="row"',
         # M9: the parts a reader meets on every page
         "the icon set is deployed": "ICON_PATHS",
@@ -291,8 +291,23 @@ for asset, forbidden in FORBIDDEN_ASSETS.items():
 # This is the one place the two can be compared directly: fetch the six objects the page loads and
 # compare each response with the file in web/ by length and MD5, and with the content type the
 # upload claimed. A 404, a stale copy or a mislabelled type would each show up here as itself.
-IMAGES = ["bg-storm.webp", "chennai-nightscape.webp", "mumbai-nightscape.webp",
-          "bengaluru-nightscape.webp", "hyderabad-nightscape.webp", "kochi-nightscape.webp"]
+IMAGES = ["bg-storm.webp",
+          "chennai-nightscape.webp",
+          "mumbai-nightscape.webp",
+          "bengaluru-nightscape.webp",
+          "hyderabad-nightscape.webp",
+          "kochi-nightscape.webp",
+          # M11: the photographs that came with the expanded fleet
+          "delhi.webp",
+          "kolkata.webp",
+          "guwahati.webp",
+          "patna.webp",
+          "bhubaneshwar.webp",
+          "visakhapatnam.webp",
+          "pune.webp",
+          "ahmedabad.webp",
+          "jaipur.webp",
+          "lucknow.webp",]
 print("\n  the six images the page loads, against web/")
 for name in IMAGES:
     local = (WEB / name).read_bytes()

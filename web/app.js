@@ -1469,7 +1469,8 @@
       // Every incident row states what happened to its alert, using the API's own alert log
       // count: "published to the notification topic" is only claimed where a publish is on
       // the record, and delivery to a person is never claimed at all.
-      var rowOptions = { silentZoneIds: silentZones, alerting: payload ? payload.alerting : null };
+      var rowOptions = { silentZoneIds: silentZones, alerting: payload ? payload.alerting : null,
+        noun: FP.zoneNoun(payload) };
       if (el['alerts-active']) {
         el['alerts-active'].innerHTML = loading
           ? FP.alertRowsSkeleton(2)

@@ -1082,7 +1082,8 @@
         '<span class="incident-duration" role="cell" data-f="duration">' + escapeHtml(formatDuration(duration)) +
           (open ? ' and counting' : '') +
           (open && silent.indexOf(incident.zone_id) >= 0
-            ? ' <span class="muted" data-f="zone-silent">· zone not reporting</span>'
+            ? ' <span class="muted" data-f="zone-silent">· ' +
+              escapeHtml((options && options.noun) || 'zone') + ' not reporting</span>'
             : '') + '</span>' +
         '<span class="incident-detail" role="cell" data-f="detail">' +
           'score at open ' + escapeHtml(formatScore(incident.risk_score_at_open)) +
@@ -1894,7 +1895,8 @@
         '</ul>' +
         (open && silent.indexOf(incident.zone_id) >= 0
           ? '<p class="alert-warning">' + icon('warning', 15) +
-            '<span>This city has stopped reporting, so the score above may be out of date.</span></p>'
+            '<span>This ' + escapeHtml((options && options.noun) || 'zone') +
+            ' has stopped reporting, so the score above may be out of date.</span></p>'
           : '') +
         '<p class="alert-meta small">' + escapeHtml(alertReason(incident)) + '</p>' +
         '<p class="alert-delivery is-' + escapeHtml(delivery.tone) + '" data-f="delivery">' +
@@ -2600,7 +2602,20 @@
     'city-mumbai': 'mumbai-nightscape.webp',
     'city-bengaluru': 'bengaluru-nightscape.webp',
     'city-hyderabad': 'hyderabad-nightscape.webp',
-    'city-kochi': 'kochi-nightscape.webp'
+    'city-kochi': 'kochi-nightscape.webp',
+    // M11: a photograph for each of the ten cities the milestone added, so every monitored city
+    // has one. A zone id that is not a key here has none, which is what draws the plate instead
+    // of a broken request - that is the demo fleet now, not the live one.
+    'city-delhi': 'delhi.webp',
+    'city-kolkata': 'kolkata.webp',
+    'city-guwahati': 'guwahati.webp',
+    'city-patna': 'patna.webp',
+    'city-bhubaneswar': 'bhubaneshwar.webp',
+    'city-visakhapatnam': 'visakhapatnam.webp',
+    'city-pune': 'pune.webp',
+    'city-ahmedabad': 'ahmedabad.webp',
+    'city-jaipur': 'jaipur.webp',
+    'city-lucknow': 'lucknow.webp'
   };
 
   /* The image for a zone, or null when this zone has none. Exported so a check can assert both the

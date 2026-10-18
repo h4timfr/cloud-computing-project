@@ -442,6 +442,16 @@ function Get-DashboardAssets {
         @{ File = 'bengaluru-nightscape.webp';    Type = 'image/webp';                            Cache = 'public, max-age=86400' },
         @{ File = 'hyderabad-nightscape.webp';    Type = 'image/webp';                            Cache = 'public, max-age=86400' },
         @{ File = 'kochi-nightscape.webp';        Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'delhi.webp';                   Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'kolkata.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'guwahati.webp';                Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'patna.webp';                   Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'bhubaneshwar.webp';            Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'visakhapatnam.webp';           Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'pune.webp';                    Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'ahmedabad.webp';               Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'jaipur.webp';                  Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'lucknow.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
     )
 }
 

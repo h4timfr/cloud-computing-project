@@ -1111,7 +1111,17 @@ check('local assets referenced by the page exist and the site stays small', () =
   // because they are the ones a wide desktop shows). Reported here so the two numbers are never
   // confused for one another.
   const cards = ['chennai-nightscape.webp', 'mumbai-nightscape.webp', 'bengaluru-nightscape.webp',
-    'hyderabad-nightscape.webp', 'kochi-nightscape.webp'];
+    'hyderabad-nightscape.webp', 'kochi-nightscape.webp',
+    'delhi.webp',
+    'kolkata.webp',
+    'guwahati.webp',
+    'patna.webp',
+    'bhubaneshwar.webp',
+    'visakhapatnam.webp',
+    'pune.webp',
+    'ahmedabad.webp',
+    'jaipur.webp',
+    'lucknow.webp'];
   const cardBytes = cards.map((file) => fs.statSync(path.join(webDir, file)).size);
   console.log(`         ${'card imagery'.padEnd(16)} ${(cardBytes.reduce((a, b) => a + b, 0) / 1024).toFixed(1)} KB for ${cards.length} images (4 eager with the cards, 1 lazy)`);
   console.log(`         ${'web/ TOTAL'.padEnd(16)} ${(directoryTotal / 1024).toFixed(1)} KB  (ceiling 1024 KB)`);
@@ -2449,6 +2459,17 @@ check('M9: the front-end budget still holds', () => {
     'alert-icon.svg', 'bengaluru-nightscape.webp', 'building-icon.svg', 'check-icon.svg',
     'chennai-nightscape.webp', 'chevron-right.svg', 'city-icon.svg', 'clock-icon.svg',
     'hyderabad-nightscape.webp', 'kochi-nightscape.webp', 'mumbai-nightscape.webp',
+    // M11: the photographs the expanded fleet ships, declared rather than tolerated
+    'ahmedabad.webp',
+    'bhubaneshwar.webp',
+    'delhi.webp',
+    'guwahati.webp',
+    'jaipur.webp',
+    'kolkata.webp',
+    'lucknow.webp',
+    'patna.webp',
+    'pune.webp',
+    'visakhapatnam.webp',
     'weather-rain.svg',
   ];
   const files = fs.readdirSync(webDir).sort();
@@ -2830,7 +2851,17 @@ check('M10.1: the zone -> image mapping is explicit, complete and closed', () =>
     'city-mumbai': 'mumbai-nightscape.webp',
     'city-bengaluru': 'bengaluru-nightscape.webp',
     'city-hyderabad': 'hyderabad-nightscape.webp',
-    'city-kochi': 'kochi-nightscape.webp'
+    'city-kochi': 'kochi-nightscape.webp',
+    'city-delhi': 'delhi.webp',
+    'city-kolkata': 'kolkata.webp',
+    'city-guwahati': 'guwahati.webp',
+    'city-patna': 'patna.webp',
+    'city-bhubaneswar': 'bhubaneshwar.webp',
+    'city-visakhapatnam': 'visakhapatnam.webp',
+    'city-pune': 'pune.webp',
+    'city-ahmedabad': 'ahmedabad.webp',
+    'city-jaipur': 'jaipur.webp',
+    'city-lucknow': 'lucknow.webp'
   };
   // copied into this realm before comparing: the sandbox's objects have another prototype
   const table = Object.fromEntries(Object.entries(FP.CITY_IMAGES));

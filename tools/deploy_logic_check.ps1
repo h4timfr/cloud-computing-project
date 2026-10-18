@@ -209,7 +209,7 @@ $webDir = Join-Path $repoRoot 'web'
 $DashboardBucket = 'floodpulse-dashboard-probe'
 $DryRun = $true
 $assets = @(Get-DashboardAssets)
-Assert-True ($assets.Count -eq 10) "the dashboard table lists ten objects (got $($assets.Count))"
+Assert-True ($assets.Count -eq 20) "the dashboard table lists twenty objects - the M10 ten (four code files, the backdrop and five nightscapes) plus the ten photographs M11 added (got $($assets.Count))"
 foreach ($asset in $assets) {
     Assert-True (Test-Path (Join-Path $webDir $asset.File)) "web/$($asset.File) exists"
     Assert-False ($asset.Cache -match 'immutable') "web/$($asset.File) is not marked immutable"
