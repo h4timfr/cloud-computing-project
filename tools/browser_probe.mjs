@@ -20,6 +20,10 @@
 
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
 const site = (process.argv[2] || '').replace(/\/$/, '');
 if (!site) {
   console.error('usage: node tools/browser_probe.mjs <site-url> [--port 9222]');
@@ -216,6 +220,8 @@ const note = (ok, text) => {
   if (!ok) failures.push(text);
   return `${ok ? 'ok  ' : 'FAIL'} ${text}`;
 };
+const scrollWidth_text = (state) => `no horizontal scroll: scrollWidth ${state.scrollWidth}, innerWidth ${state.innerWidth}`;
+
 const measure = async (url, selector, ready) => {
   await send('Page.navigate', { url });
   const deadline = Date.now() + 30000;
@@ -326,6 +332,214 @@ for (const w of [320, 390, 768, 1280]) {
         `the chip and value stay inside the card (${row.value.right} <= ${rightEdge})`)}`);
   });
 }
+
+
+const ROUTE_PROBE = `((args) => {
+  try {
+    const visible = (node) => !!node && !node.hasAttribute('hidden') && getComputedStyle(node).display !== 'none';
+    const box = (node) => (node ? node.getBoundingClientRect() : null);
+    const padX = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pad-x')) || 0;
+    const state = {
+      hash: location.hash,
+      innerWidth: window.innerWidth,
+      scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      padX,
+      views: [...document.querySelectorAll('.view')].map((view) => ({ id: view.id, visible: visible(view) })),
+      viewVisible: visible(document.querySelector(args.view)),
+      needs: args.needs.map((sel) => {
+        const node = document.querySelector(sel);
+        const rect = box(node);
+        return { sel, present: !!node, visible: visible(node), width: rect ? Math.round(rect.width) : 0 };
+      }),
+      styles: args.styles.map((sel) => {
+        const node = document.querySelector(sel);
+        if (!node) return { sel, present: false };
+        const style = getComputedStyle(node);
+        return { sel, present: true, display: style.display, gap: style.gap,
+                 columns: style.gridTemplateColumns, radius: style.borderRadius,
+                 border: style.borderLeftColor, colour: style.color, background: style.backgroundColor };
+      }),
+      sheetRules: [...document.styleSheets].reduce((sum, sheet) => {
+        try { return sum + sheet.cssRules.length; } catch (error) { return sum; }
+      }, 0),
+      navLinks: [...document.querySelectorAll('.nav-list a')].map((link) => ({
+        text: link.textContent.trim(), href: link.getAttribute('href'), current: link.getAttribute('aria-current') || '',
+      })),
+      offenders: [],
+    };
+    const clippedByAncestor = (node) => {
+      for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        if (['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX)) return true;
+      }
+      return false;
+    };
+    [...document.querySelectorAll('body *')].forEach((node) => {
+      if (node.closest('.sr-only') || node.getClientRects().length === 0) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0) return;
+      // a full-bleed element ends exactly at the viewport edge; that is not an overhang
+      if (rect.width >= window.innerWidth - 1) return;
+      if (rect.right > window.innerWidth + 1 && !clippedByAncestor(node)) {
+        state.offenders.push({ tag: node.tagName.toLowerCase(),
+          cls: String(node.className || '').slice(0, 34), right: Math.round(rect.right) });
+      }
+    });
+    state.offenders = state.offenders.slice(0, 4);
+    return state;
+  } catch (error) { return { probeFailure: String((error && error.message) || error) }; }
+})`;
+
+const ROUTES = [
+  { hash: '#/cities', label: 'Cities', view: '#view-cities',
+    needs: ['#cities-toolbar', '.cities-search', '.filter-chip'], styles: ['.cities-toolbar', '.city-cards'] },
+  { hash: '#/', label: 'Overview', view: '#view-overview',
+    needs: ['.hero', '.stat-row'], styles: ['.hero', '.stat-row'] },
+  { hash: '#/alerts', label: 'Alerts', view: '#view-alerts',
+    needs: ['.alert-section', '.alert-list'], styles: ['.alert-section', '.alert-list'] },
+  { hash: '#/data', label: 'Data', view: '#view-data',
+    needs: ['.legend-grid', '.legend-card'], styles: ['.legend-grid', '.legend-card'] },
+  { hash: '#/about', label: 'About', view: '#view-about',
+    needs: ['.about-grid', '.about-card'], styles: ['.about-grid', '.about-card'] },
+];
+
+const shipped = ['index.html', 'styles.css', 'lib.js', 'app.js'];
+const localHash = (name) => crypto.createHash('sha256')
+  .update(fs.readFileSync(path.join('web', name))).digest('hex').slice(0, 32);
+
+console.log('\ndeployed files, hashed by the browser against web/');
+for (const name of shipped) {
+  const response = await fetch(`${site}/${name}`);
+  const fetched = await response.text();
+  const digest = crypto.createHash('sha256').update(Buffer.from(fetched, 'utf8')).digest('hex').slice(0, 32);
+  const local = localHash(name);
+  console.log(`  ${note(digest === local, `${name}: deployed ${digest} ${digest === local ? '==' : '!='} local ${local}`)}`);
+}
+
+const routeWidths = [1280, 390];
+for (const w of routeWidths) {
+  await send('Emulation.setDeviceMetricsOverride', { width: w, height: 1200, deviceScaleFactor: 1, mobile: w < 767 });
+  console.log(`\nroutes at ${w}px`);
+  const routes = ROUTES.slice();
+  if (zoneId) routes.splice(1, 0, { hash: `#/cities/${zoneId}`, label: 'City detail', view: '#view-city',
+    needs: ['.city-detail-slot', '.tile-grid'], styles: ['.city-detail', '.tile-grid'] });
+  for (const route of routes) {
+    await send('Page.navigate', { url: `${site}/${route.hash}` });
+    let state = null;
+    const deadline = Date.now() + 25000;
+    while (Date.now() < deadline) {
+      await sleep(350);
+      try { state = await evaluate(`${ROUTE_PROBE}(${JSON.stringify({ view: route.view, needs: route.needs, styles: route.styles })})`); }
+      catch (error) { state = null; break; }
+      if (state && state.viewVisible) break;
+    }
+    if (!state || !state.viewVisible) {
+      console.log(`  ${note(false, `${route.label}: the view never became visible (${route.hash})`)}`);
+      continue;
+    }
+    const shown = state.views.filter((one) => one.visible).map((one) => one.id);
+    const scrollOk = state.scrollWidth <= state.innerWidth + 1;
+    const needs = state.needs.filter((one) => !one.present || one.width === 0);
+    const missingStyles = state.styles.filter((one) => !one.present);
+    console.log(`  ${route.label.padEnd(11)} ${note(shown.length === 1, `one view visible (${shown.join(', ') || 'none'})`)}   ` +
+      `${note(scrollOk, scrollWidth_text(state))}   ` +
+      `${note(state.offenders.length === 0, `nothing overhangs the right edge (${state.offenders.length})`)}   ` +
+      `${note(needs.length === 0, `content is present and sized: ${route.needs.join(', ')}`)}   ` +
+      `${note(missingStyles.length === 0, `the elements this route styles exist: ${route.styles.join(', ')}`)}   ` +
+      `${note(state.sheetRules > 700, `${state.sheetRules} stylesheet rules loaded`)}`);
+    state.offenders.forEach((one) => console.log(`      ${one.tag}.${one.cls} right ${one.right}`));
+    needs.forEach((one) => console.log(`      missing or zero-width: ${one.sel}`));
+    missingStyles.forEach((one) => console.log(`      not on this route: ${one.sel}`));
+    if (route.hash === '#/cities') {
+      const navOk = state.navLinks.length >= 4;
+      console.log(`      ${note(navOk, `the nav offers ${state.navLinks.length} route(s): ${state.navLinks.map((one) => one.text).join(', ')}`)}`);
+    }
+    if (route.hash === '#/') {
+      const merges = await evaluate(`(() => {
+        const read = (sel, prop) => { const node = document.querySelector(sel);
+          return node ? getComputedStyle(node)[prop] : null; };
+        return {
+          summaryGap: read('.health-summary', 'gap'),
+          figuresGap: read('.city-figures', 'gap'),
+          statColumns: read('.stat-row', 'gridTemplateColumns'),
+          bandName: read('.band-tile.is-zero .band-name', 'color'),
+          bandCount: read('.band-tile.is-zero .band-count', 'color'),
+        };
+      })()`);
+      if (merges.statColumns) {
+        const tracks = merges.statColumns.split(' ').length;
+        // the merge lives in the phone tier; above it the top-level .stat-row rule is the one that applies
+        if (w <= 767) {
+          console.log(`      ${note(tracks === 1, `.stat-row (merged with .city-cards) has ${tracks} column(s) at ${w}px: ${merges.statColumns}`)}`);
+        } else {
+          console.log(`      note: above the phone tier .stat-row lays out ${tracks} track(s) as its own rule says: ${merges.statColumns}`);
+        }
+      }
+      if (merges.bandName && merges.bandCount) {
+        console.log(`      ${note(merges.bandName === merges.bandCount,
+          `the merged zero-count band rule reaches both cells: name ${merges.bandName}, count ${merges.bandCount}`)}`);
+      } else {
+        console.log('      note: no zero-count band tile in this reading, so that merge has no element to check');
+      }
+      if (merges.summaryGap && merges.figuresGap) {
+        if (w <= 767) {
+          console.log(`      ${note(merges.summaryGap === '6px',
+            `the phone-tier merge applies to .health-summary: gap ${merges.summaryGap} (from .health-summary, .city-figures)`)}`);
+          console.log(`      note: .city-figures computes gap ${merges.figuresGap}: a later rule in the same tier sets 8px, ` +
+            'before and after the merge');
+        } else {
+          console.log(`      note: above the phone tier .health-summary is ${merges.summaryGap} and .city-figures ${merges.figuresGap}, ` +
+            'as the top-level rules say');
+        }
+      }
+    }
+    if (route.hash.startsWith('#/cities/')) {
+      const merges = await evaluate(`(() => {
+        const read = (sel, prop) => { const node = document.querySelector(sel);
+          return node ? getComputedStyle(node)[prop] : null; };
+        const slot = document.querySelector('.city-detail-slot'), detail = document.querySelector('.city-detail');
+        return {
+          slotDisplay: slot ? getComputedStyle(slot).display : null,
+          detailDisplay: detail ? getComputedStyle(detail).display : null,
+          detailGap: detail ? getComputedStyle(detail).gap : null,
+          criticalIcon: read('.metric-tile[data-state="critical"] .metric-icon', 'color'),
+          criticalValue: read('.metric-tile[data-state="critical"] .tile-value', 'color'),
+          states: [...document.querySelectorAll('.metric-tile[data-state]')].map((one) => one.getAttribute('data-state')),
+        };
+      })()`);
+      if (merges.detailDisplay && merges.slotDisplay) {
+        console.log(`      ${note(merges.detailDisplay === merges.slotDisplay && merges.detailDisplay === 'grid',
+          `the merged .city-detail-slot / .city-detail rule applies to both: display ${merges.slotDisplay} and ${merges.detailDisplay}, gap ${merges.detailGap}`)}`);
+      }
+      if (merges.criticalIcon && merges.criticalValue) {
+        console.log(`      ${note(merges.criticalIcon === merges.criticalValue,
+          `the merged critical-tile rule reaches both cells: ${merges.criticalIcon}`)}`);
+      } else {
+        console.log(`      note: no critical metric tile in this reading (states: ${merges.states.join(', ') || 'none'}), ` +
+          'so that merge has no element to check');
+      }
+    }
+  }
+}
+
+// one real navigation, clicked rather than typed
+await send('Page.navigate', { url: `${site}/#/cities` });
+await sleep(2500);
+const clicked = await evaluate(`(() => {
+  const link = [...document.querySelectorAll('.nav-list a')].find((one) => (one.getAttribute('href') || '').includes('/alerts'));
+  if (!link) return { found: false };
+  link.click();
+  return { found: true, href: link.getAttribute('href') };
+})()`);
+await sleep(2500);
+const afterClick = await evaluate(`({
+  hash: location.hash,
+  alertsVisible: (() => { const view = document.querySelector('#view-alerts');
+    return !!view && !view.hasAttribute('hidden') && getComputedStyle(view).display !== 'none'; })(),
+  errors: window.__probeErrors ? window.__probeErrors.length : 0,
+})`);
+console.log(`\nnavigation by click\n  ${note(clicked.found && afterClick.alertsVisible && afterClick.hash.includes('alerts'),
+  `clicking the Alerts nav link reached ${afterClick.hash} and the view is visible`)}`);
 
 await send('Page.navigate', { url: 'about:blank' });
 console.log(`\nscript errors during the whole run: ${scriptErrors.length}`);
