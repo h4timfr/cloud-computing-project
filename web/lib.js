@@ -26,7 +26,7 @@
   };
 
   /* Plain-language explanation per metric, shown as a help tooltip in the city page. A visitor
- * Plain-language explanation per metric, shown as a help tooltip in the city page.: why it is the way it is - see README, "Interface notes". */
+ * can read what a number means without knowing the API's field names. */
   var METRIC_HELP = {
     rainfall_mm_per_hr: 'How hard it is raining right now, in millimetres per hour.',
     soil_saturation_pct: 'How wet the ground is. Saturated ground cannot absorb more rain, so water runs off instead.',
@@ -179,7 +179,7 @@
   }
 
   /* What moved between two polls, in words.
- * What moved between two polls, in words.: why it is the way it is - see README, "Interface notes". */
+ * Escalations, easings, and zones that joined or left since the previous poll. */
   function fleetChange(beforeClasses, payload) {
     var change = { escalated: [], eased: [], started: [], stopped: [], tone: '', text: '' };
     if (!beforeClasses || !payload || !payload.zones) return change;
@@ -343,7 +343,7 @@
     var contributions = (latest && latest.contributions) || [];
     var map = {};
     // The API names this field `variable`; an earlier fixture (and the harness built on it)
-    // The API names this field `variable`; an earlier fixture (and the harness built o: why it is the way it is - see README, "Interface notes".
+    // calls the field `variable` and later code calls it `metric`, so both are read.
     contributions.forEach(function (entry) {
       if (!entry) return;
       var key = entry.variable || entry.metric;
@@ -366,7 +366,6 @@
     var feed = payload ? feedStatus(payload, nowMs, opts.ageOffsetSeconds) : null;
     if (lastSuccessMs === null || lastSuccessMs === undefined) {
       // A page that has never reached the API is CONNECTING, and says why it is still waiting.
-      // A page that has never reached the API is CONNECTING, and says why it is still wa: why it is the way it is - see README, "Interface notes".
       return {
         state: 'connecting',
         label: 'CONNECTING',
@@ -655,7 +654,7 @@
   /* ------------------------------------------------------------ feed health --- */
 
   // Everything the page knows about the external weather feed, derived only from the
-  // Everything the page knows about the external weather feed, derived only from the: why it is the way it is - see README, "Interface notes".
+  // payload, never from a second call: the feed is only ever as fresh as the poll.
   function feedStatus(payload, nowMs, ageOffsetSeconds) {
     var data = payload || {};
     var weather = data.weather || {};
@@ -904,7 +903,7 @@
           '<span class="spark-label">session trend from this page\'s polls</span>' +
           '</div>' +
           // The plain-language reason, not the model's own output string. The raw line
-          // The plain-language reason, not the model's own output string. The raw line: why it is the way it is - see README, "Interface notes".
+          // lives in the technical details instead, where a visitor has asked for it.
           '<p class="explain" data-f="why">' + escapeHtml(plainRiskSummary(zone).why) + '</p>' +
           '<p class="muted small">Weights, thresholds and the raw model output for this reading are on the ' +
           '<a class="zone-link" href="#/cities/' + escapeHtml(zone.zone_id) + '">' + escapeHtml(zone.name) +
@@ -1167,7 +1166,7 @@
   /* ------------------------------------------------------------------ names --- */
 
   /* Every engineering identifier the API can send, in words a visitor can read.
- * Every engineering identifier the API can send, in words a visitor can read.: why it is the way it is - see README, "Interface notes". */
+   * UNIT_SUFFIXES trims a unit off a field name, so `rainfall_mm_per_hr` reads `rainfall`. */
   var UNIT_SUFFIXES = ['_mm_per_hr', '_mm_per_hour', '_m3_per_s', '_m3_s', '_pct', '_percent', '_mm', '_m'];
 
   function humaniseVariable(value) {
@@ -1214,7 +1213,7 @@
   }
 
   /* ------------------------------------------------------------------ icons ---
- * icons: why it is the way it is - see README, "Interface notes". */
+  /* Icons: inline path data per metric key, so a reading is recognisable at a glance. */
   var ICON_PATHS = {
     // weather and water
     rain: 'M7 15a4.2 4.2 0 0 1 .5-8.3 5.6 5.6 0 0 1 10.6 1.4A3.6 3.6 0 0 1 17.4 15Z|M8.5 18.4l-1 2.2|M12 18.4l-1 2.2|M15.5 18.4l-1 2.2',
@@ -1304,7 +1303,7 @@
   }
 
   /* One plain sentence explaining *why* the city is in its band, plus one line of advice.
- * One plain sentence explaining *why* the city is in its band, plus one line of ad: why it is the way it is - see README, "Interface notes". */
+   * Both are written for a visitor, not for an engineer. */
   function reasonSentence(zone) {
     var latest = zone && zone.latest;
     if (!latest) return '';
@@ -1336,7 +1335,7 @@
     text += '.';
 
     // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one that
-    // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one : why it is the way it is - see README, "Interface notes".
+    // decides whether that delta means worse or better, and by how much.
     var direction = trendDirection(latest.trend);
     if (direction === 'up') text += ' Conditions are getting worse.';
     else if (direction === 'down') text += ' Conditions are easing.';
@@ -1387,7 +1386,7 @@
   /* ---------------------------------------------------------- routing --- */
 
   /* '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknown ->
- * '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknow: why it is the way it is - see README, "Interface notes". */
+   * the overview, so a mistyped link lands somewhere useful instead of nowhere. */
   function routeFromHash(hash) {
     var raw = String(hash === null || hash === undefined ? '' : hash).replace(/^#\/?/, '');
     var parts = raw.split('/').filter(function (part) { return part.length > 0; });
@@ -1514,7 +1513,7 @@
   }
 
   /* One sentence for the top of the page, written for a non-technical reader. The noun comes
- * One sentence for the top of the page, written for a non-technical reader. The no: why it is the way it is - see README, "Interface notes". */
+   * from the payload, so it says 'zone' or 'city' to match what is being watched. */
   function fleetHeadline(worst, counts, zoneCount, plural) {
     var noun = plural || 'cities';
     var singular = noun === 'cities' ? 'city' : 'zone';
@@ -1556,7 +1555,7 @@
   }
 
   /* Overview card: visual navigation, not a mini technical dashboard.
- * Overview card: visual navigation, not a mini technical dashboard.: why it is the way it is - see README, "Interface notes". */
+   * It is navigation: the numbers belong to the city page it links to. */
   function cityStatusCard(zone, options) {
     // Same rule as cityDetail: a missing or malformed entry renders nothing instead of
     // throwing, so one bad element cannot stop the fleet grid from being drawn.
@@ -1655,9 +1654,6 @@
     var summary = plainRiskSummary(zone);
     var feed = opts.feed || null;
     var sources = zoneSources(zone);
-    var driverList = (latest && latest.top_drivers ? latest.top_drivers : []).map(function (metric) {
-      return (METRIC_META[metric] || { label: metric }).label;
-    });
     return (
       '<article class="city-detail band-' + band + '" data-zone="' + escapeHtml(zone.zone_id) + '">' +
       '<header class="detail-head">' +
@@ -1687,7 +1683,7 @@
       (latest && trendDirection(latest.trend) !== 'flat' ? trendIcon(latest.trend, 'detail-trend') : '') +
       '</div>' +
       // The reading order a visitor needs: what is happening (above), the measurements, then why
-      // The reading order a visitor needs: what is happening (above), the measurements, : why it is the way it is - see README, "Interface notes".
+      // it is in this state, and only then the raw model, folded away.
       (opts.scopeNote ? '<p class="detail-scope">' + escapeHtml(opts.scopeNote) + '</p>' : '') +
       '<h3 class="block-title">Measurements</h3>' +
       '<div class="tile-grid" data-f="tiles">' + metricTiles(zone) + '</div>' +
@@ -1704,7 +1700,7 @@
   }
 
   /* The raw model, folded away by default: native <details>, keyboard accessible, no JS.
- * The raw model, folded away by default: native <details>, keyboard accessible, no: why it is the way it is - see README, "Interface notes". */
+   * The model's own field names never appear outside it. */
   function technicalDetails(zone) {
     var latest = (zone && zone.latest) || null;
     var grouped = sourceCounts(zone);
@@ -1770,7 +1766,7 @@
   }
 
   /* The arithmetic behind one reading, written out. Every number is the API's own: the weighted
- * The arithmetic behind one reading, written out. Every number is the API's own: t: why it is the way it is - see README, "Interface notes". */
+   * Shares come from the contributions the API sends, not from a recomputation. */
   function scoreBreakdown(zone) {
     var latest = (zone && zone.latest) || null;
     if (!latest) return '';
@@ -2053,8 +2049,7 @@
     };
   }
 
-  /* -------------------------------------------------------- loading states ---
- * loading states: why it is the way it is - see README, "Interface notes". */
+  /* Loading states: skeleton shapes, sized to the rows they stand in for. */
   function skeletonLines(count, className) {
     var n = toNumber(count);
     var lines = n === null ? 2 : Math.max(1, Math.round(n));
@@ -2380,8 +2375,7 @@
     };
   }
 
-  /* ================================================================== M10 ===
- * M10: why it is the way it is - see README, "Interface notes". */
+  /* =========================== M10: the premium pass, described in README "Interface notes". */
 
   /* The band boundaries, as numbers, in one place: the history chart shades them, the city
    * meter ticks them, and both must agree with the documented heuristic-v1 boundaries. */
@@ -2392,8 +2386,7 @@
     return (payload && payload.zone_mode === 'live_weather') ? 'Indian cities' : 'simulated zones';
   }
 
-  /* ====================================================================== M11 ===
- * M11: why it is the way it is - see README, "Interface notes". */
+  /* ========================= M11: the fifteen-city fleet, described in README "Interface notes". */
 
   function coverageInfo(payload) {
     var block = payload && payload.coverage;
@@ -2734,8 +2727,7 @@
     return '<ul class="alert-list preview-list">' + rows + '</ul>' + more + button;
   }
 
-  /* ------------------------------------------------- email alert subscriptions ---
- * email alert subscriptions: why it is the way it is - see README, "Interface notes". */
+  /* ---------------- email alert subscriptions: the form, and what AWS confirms back. */
 
   var SUBSCRIBE_MAX_LENGTH = 254;
   var SUBSCRIBE_ADDRESS = /^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;

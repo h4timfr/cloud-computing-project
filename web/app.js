@@ -12,7 +12,7 @@
   var params = new URLSearchParams(window.location.search);
 
   /* The page states its own API base in a data attribute, not in a script tag: the deployed
- * The page states its own API base in a data attribute, not in a script tag: the d: why it is the way it is - see README, "Interface notes". */
+   * page carries it in a data attribute, so the same file runs locally and deployed. */
   function configuredApiBase() {
     var fromPage = '';
     try {
@@ -26,7 +26,7 @@
   var API_BASE = configuredApiBase().replace(/\/+$/, '');
 
   /* An API base may be overridden with ?api=<origin> for testing, which means it can also be
- * An API base may be overridden with ?api=<origin> for testing, which means it can: why it is the way it is - see README, "Interface notes". */
+   * be wrong, so it is only accepted when it is a plain http(s) origin. */
   function isHttpOrigin(value) {
     return typeof value === 'string' && /^https?:\/\/[^\s"'<>]+$/i.test(value);
   }
@@ -301,7 +301,7 @@
   }
 
   /* A payload element that is not an object (null, a string, a number) is not a zone and not an
- * A payload element that is not an object (null, a string, a number) is not a zone: why it is the way it is - see README, "Interface notes". */
+   * incident, so it is dropped before anything tries to read a field from it. */
   function usableEntries(list) {
     return (Array.isArray(list) ? list : []).filter(function (entry) {
       return entry && typeof entry === 'object';
@@ -529,7 +529,7 @@
     // the feed countdown ticks here, once per second, on the panel row only
     if (state.payload) renderFreshness(state.payload);
     // Before the first successful poll the hero holds the copy index.html ships with. Once the
-    // Before the first successful poll the hero holds the copy index.html ships with. : why it is the way it is - see README, "Interface notes".
+    // first poll fails, the hero says so in the page's own words.
     if (!state.payload && state.lastError) {
       setText('ov-headline', 'Awaiting live data');
       setText('hero-monitor', 'The FloodPulse API has not answered this page yet, so no reading ' +
@@ -547,7 +547,7 @@
   /* ------------------------------------------------------------------- hero --- */
 
   /* The hero: the fleet's answer, then the reason behind the highest-risk city.
- * The hero: the fleet's answer, then the reason behind the highest-risk city.: why it is the way it is - see README, "Interface notes". */
+   * It is one section in index.html, patched in place rather than rebuilt. */
   function renderHero(payload) {
     var highest = payload.highest_risk_zone;
     var feed = FP.feedStatus(payload, Date.now());
@@ -587,7 +587,7 @@
     setText('hero-monitor', FP.monitorLine(payload, FP.fleetOverview(payload, state.incidents, Date.now())));
     setText('hero-why', summary && summary.why ? summary.why : '');
     // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
-    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: why it is the way it is - see README, "Interface notes".
+    // not a second hero, so it never repeats the headline sentence.
     var direction = latest ? FP.trendDirection(latest.trend) : 'flat';
     var trendWords = { up: 'getting worse', down: 'easing', flat: 'holding steady' };
     var score = highest.risk_score !== undefined && highest.risk_score !== null
@@ -694,7 +694,7 @@
     setText('sensor_node_id', latest.sensor_node_id);
     setText('age', FP.ageLabel(latest.age_seconds));
     // The plain-language reason is patched like every other value on this card: the card is only
-    // The plain-language reason is patched like every other value on this card: the ca: why it is the way it is - see README, "Interface notes".
+    // rebuilt when the zone changes, so every field is patched, never replaced.
     setText('why', FP.plainRiskSummary(zone).why);
 
     var trend = card.querySelector('[data-f="trend"]');
@@ -749,7 +749,7 @@
     var ctx = canvas.getContext('2d');
     var dpr = window.devicePixelRatio || 1;
     // Size the backing store from the laid-out width, like the history chart does. The old
-    // Size the backing store from the laid-out width, like the history chart does. The: why it is the way it is - see README, "Interface notes".
+    // fallback below covers a canvas that has not been laid out yet.
     var width = Math.round(canvas.clientWidth || 0) || Math.round(canvas.width / dpr) || 280;
     var height = SPARK_CSS_HEIGHT;
     var pixelWidth = Math.round(width * dpr);
@@ -1194,7 +1194,7 @@
   /* ------------------------------------------------------------------ overview --- */
 
   /* ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an inline
- * ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an: why it is the way it is - see README, "Interface notes". */
+   * icon), so the caller escapes anything that came from the API. */
   function statCard(label, value, metaHtml, tone, iconName) {
     return '<article class="stat' + (tone ? ' band-' + tone : '') + '">' +
       (iconName ? '<span class="stat-icon" aria-hidden="true">' + FP.icon(iconName, 20) + '</span>' : '') +
@@ -1365,7 +1365,6 @@
     if (!zone) {
       var waiting = !state.payload;
       var noun = FP.zoneNoun(state.payload);
-      var nounTitle = noun.charAt(0).toUpperCase() + noun.slice(1);
       var pluralTitle = FP.zoneNounPlural(state.payload);
       pluralTitle = pluralTitle.charAt(0).toUpperCase() + pluralTitle.slice(1);
       var signature = 'missing|' + String(zoneId) + '|' + (waiting ? 'loading' : 'known') + '|' + noun;
@@ -1555,7 +1554,7 @@
   /* ------------------------------------------------- email alert subscriptions --- */
 
   /* One public form: an address, a button, and a result that never claims more than AWS has
- * One public form: an address, a button, and a result that never claims more than : why it is the way it is - see README, "Interface notes". */
+   * actually confirmed back to the page. */
   function setSubscriptionState(kind, address) {
     var copy = FP.subscriptionResult(kind);
     var node = el['subscribe-result'];
