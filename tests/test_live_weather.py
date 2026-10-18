@@ -30,7 +30,7 @@ from floodpulse.config import (
     WEATHER_TIMEOUT_ENV,
     WEATHER_TIMEOUT_MAX_SECONDS,
     WEATHER_TIMEOUT_MIN_SECONDS,
-    REGIONS,
+    COAST_GROUPS,
     WEATHER_TIMEOUT_SECONDS,
     ZONE_MODE_LIVE,
     ZONE_MODE_ENV,
@@ -118,29 +118,26 @@ class ZoneModeTest(unittest.TestCase):
         self.assertEqual(len(zone_ids_for_mode("simulated")), 3)
 
     def test_live_city_coordinates_match_the_documented_cities(self):
-        # The first five are the original fleet and keep their published coordinates; the
-        # rest are the M11 expansion. Every one is checked, so a typo in a coordinate, a
-        # copy-paste that repeats a city and a city that loses its position all fail here.
+        # The coastal fleet, west coast then east coast then island. Every city is checked,
+        # so a typo in a coordinate, a copy-paste that repeats a city and a city that loses
+        # its position all fail here.
         expected = {
-            "city-chennai": (13.0827, 80.2707),
             "city-mumbai": (19.0760, 72.8777),
-            "city-bengaluru": (12.9716, 77.5946),
-            "city-hyderabad": (17.3850, 78.4867),
+            "city-surat": (21.1702, 72.8311),
             "city-kochi": (9.9312, 76.2673),
-            "city-delhi": (28.6139, 77.2090),
+            "city-mangaluru": (12.9141, 74.8560),
+            "city-kozhikode": (11.2588, 75.7804),
             "city-kolkata": (22.5726, 88.3639),
-            "city-guwahati": (26.1445, 91.7362),
-            "city-patna": (25.5941, 85.1376),
-            "city-bhubaneswar": (20.2961, 85.8245),
+            "city-puri": (19.8135, 85.8312),
+            "city-paradip": (20.3164, 86.6115),
             "city-visakhapatnam": (17.6868, 83.2185),
-            "city-pune": (18.5204, 73.8567),
-            "city-ahmedabad": (23.0225, 72.5714),
-            "city-jaipur": (26.9124, 75.7873),
-            "city-lucknow": (26.8467, 80.9462),
+            "city-chennai": (13.0827, 80.2707),
+            "city-puducherry": (11.9416, 79.8083),
+            "city-port-blair": (11.6234, 92.7265),
         }
         actual = {zone["zone_id"]: (zone["latitude"], zone["longitude"]) for zone in LIVE_ZONE_DEFINITIONS}
         self.assertEqual(actual, expected)
-        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), 15)
+        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), 12)
 
     def test_threshold_overrides_are_valid_for_the_live_cities(self):
         from floodpulse.config import thresholds_for
@@ -424,7 +421,7 @@ class RefreshTest(unittest.TestCase):
             self.store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=later,
             ingest=self.ingest, client=failing,
         )
-        self.assertEqual(outcome.failed[0], CITY)
+        self.assertIn(CITY, outcome.failed)
         cache = self.store.get_weather_cache(CITY)
         # the values survive untouched, with their true age, and the failure is visible
         self.assertEqual(cache["rainfall_mm_per_hr"], good["rainfall_mm_per_hr"])
@@ -571,7 +568,7 @@ class LiveZonesEndpointTest(unittest.TestCase):
     def test_live_mode_serves_every_configured_indian_city(self):
         payload = self.zones()
         self.assertEqual(payload["zone_count"], len(LIVE_ZONE_DEFINITIONS))
-        self.assertEqual(payload["zone_count"], 15)
+        self.assertEqual(payload["zone_count"], LIVE_FLEET)
         self.assertEqual(payload["zone_mode"], "live_weather")
         self.assertEqual(payload["data_classification"], DATA_CLASSIFICATION_MIXED)
         self.assertFalse(payload["simulated"])
@@ -584,9 +581,10 @@ class LiveZonesEndpointTest(unittest.TestCase):
             self.assertEqual(zone["name"], definition["name"])
             self.assertEqual(zone["city"], definition["name"])
             self.assertEqual(zone["state"], definition["state"])
-            self.assertEqual(zone["region"], definition["region"])
+            self.assertEqual(zone["coast_group"], definition["coast_group"])
             self.assertEqual(zone["display_name"], f"{definition['name']}, {definition['state']}")
-            self.assertIn(zone["region"], REGIONS)
+            self.assertIn(zone["coast_group"], COAST_GROUPS)
+            self.assertTrue(str(zone.get("selection_reason") or "").strip())
         self.assertEqual(names[CITY], "Chennai")
 
     def test_every_zone_reports_its_mode_and_metric_sources(self):

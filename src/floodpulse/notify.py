@@ -217,12 +217,13 @@ def zone_geography(incident: Mapping[str, Any]) -> dict[str, Any]:
     """
     scope = city_scope_for(str(incident.get("zone_id") or ""))
     state = incident.get("zone_state", scope["state"])
-    region = incident.get("zone_region", scope["region"])
+    # ``zone_region`` was the pre-M13 column; it is read so an older incident still resolves.
+    coast_group = incident.get("zone_coast_group", incident.get("zone_region", scope.get("coast_group")))
     name = incident.get("zone_name") or scope["city"] or incident.get("zone_id")
     display = incident.get("zone_display_name") or (
         f"{name}, {state}" if state else (str(name) if name else None)
     )
-    return {"name": name, "state": state, "region": region, "display_name": display}
+    return {"name": name, "state": state, "coast_group": coast_group, "display_name": display}
 
 
 def alert_subject(kind: str, zone_label: str, severity: str, *, simulated: bool = True) -> str:
@@ -273,7 +274,7 @@ def build_alert_message(kind: str, incident: Mapping[str, Any]) -> str:
             # Which monitored city this is, and where it is. A subscriber who asked to hear
             # about Indian cities should not have to know what a zone id is.
             "state": geography["state"],
-            "region": geography["region"],
+            "coast_group": geography["coast_group"],
             "display_name": geography["display_name"],
         },
         "incident": {

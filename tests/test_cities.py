@@ -1,11 +1,12 @@
-"""M11 tests: the fifteen-city fleet, its metadata, and how it fails.
+"""M13 tests: the twelve-city coastal fleet, its metadata, and how it fails.
 
 Three groups:
 
-* **the city table** - fifteen unique cities, each with a state and a region, valid and
-  distinct coordinates, no city/state mismatch, and a coverage summary that agrees with
-  the list it summarises. These are data-quality tests: they fail on a typo, a duplicate
-  or a half-filled row, not on a missing feature.
+* **the city table** - twelve unique coastal cities, each with a state or union territory and
+  a coast group, each with a stated selection reason, valid and distinct coordinates, no
+  city/state mismatch, and a coverage summary that agrees with the list it summarises. These
+  are data-quality tests: they fail on a typo, a duplicate, a half-filled row or a city that
+  claims more for itself than its sources do.
 * **the API** - every configured city is exposed by ``GET /zones`` and by the history and
   incidents routes that already existed, an unknown zone is still rejected, and the demo
   fleet is still isolated from the live one.
@@ -37,7 +38,7 @@ from floodpulse.config import (
     HYDRAULICS_RAIN_REFERENCE_MM_PER_HR,
     LIVE_ZONE_DEFINITIONS,
     METRICS,
-    REGIONS,
+    COAST_GROUPS,
     SOURCE_MODEL_DERIVED,
     SOURCE_REAL,
     SOURCE_SIMULATED,
@@ -62,26 +63,30 @@ NOW = 1_792_088_400.0
 LIVE_ENV = {ZONE_MODE_ENV: "live", WEATHER_MODE_ENV: WEATHER_MODE_LIVE}
 
 EXPECTED_CITIES = {
-    "city-chennai": ("Chennai", "Tamil Nadu", "South"),
-    "city-mumbai": ("Mumbai", "Maharashtra", "West"),
-    "city-bengaluru": ("Bengaluru", "Karnataka", "South"),
-    "city-hyderabad": ("Hyderabad", "Telangana", "South"),
-    "city-kochi": ("Kochi", "Kerala", "South"),
-    "city-delhi": ("Delhi", "Delhi", "North"),
-    "city-kolkata": ("Kolkata", "West Bengal", "East"),
-    "city-guwahati": ("Guwahati", "Assam", "Northeast"),
-    "city-patna": ("Patna", "Bihar", "East"),
-    "city-bhubaneswar": ("Bhubaneswar", "Odisha", "East"),
-    "city-visakhapatnam": ("Visakhapatnam", "Andhra Pradesh", "South"),
-    "city-pune": ("Pune", "Maharashtra", "West"),
-    "city-ahmedabad": ("Ahmedabad", "Gujarat", "West"),
-    "city-jaipur": ("Jaipur", "Rajasthan", "North"),
-    "city-lucknow": ("Lucknow", "Uttar Pradesh", "North"),
+    "city-mumbai": ("Mumbai", "Maharashtra", "West Coast"),
+    "city-surat": ("Surat", "Gujarat", "West Coast"),
+    "city-kochi": ("Kochi", "Kerala", "West Coast"),
+    "city-mangaluru": ("Mangaluru", "Karnataka", "West Coast"),
+    "city-kozhikode": ("Kozhikode", "Kerala", "West Coast"),
+    "city-kolkata": ("Kolkata", "West Bengal", "East Coast"),
+    "city-puri": ("Puri", "Odisha", "East Coast"),
+    "city-paradip": ("Paradip", "Odisha", "East Coast"),
+    "city-visakhapatnam": ("Visakhapatnam", "Andhra Pradesh", "East Coast"),
+    "city-chennai": ("Chennai", "Tamil Nadu", "East Coast"),
+    "city-puducherry": ("Puducherry", "Puducherry", "East Coast"),
+    "city-port-blair": ("Port Blair", "Andaman and Nicobar Islands", "Island"),
 }
 
-NEW_CITIES = tuple(sorted(set(EXPECTED_CITIES) - {
-    "city-chennai", "city-mumbai", "city-bengaluru", "city-hyderabad", "city-kochi",
-}))
+# The cities that arrived with the coastal fleet. The five-city fleet this grew from is gone
+# from active monitoring entirely, Bengaluru and Hyderabad included.
+NEW_CITIES = tuple(sorted(set(EXPECTED_CITIES) - {"city-chennai", "city-mumbai", "city-kochi"}))
+
+# The ten cities that were monitored until M13 and are not monitored now. They left because
+# they are inland: monitoring a coastal fleet means these coordinates stop being polled.
+RETIRED_INLAND_CITIES = (
+    "city-bengaluru", "city-hyderabad", "city-delhi", "city-guwahati", "city-patna",
+    "city-bhubaneswar", "city-pune", "city-ahmedabad", "city-jaipur", "city-lucknow",
+)
 
 
 # --------------------------------------------------------------------------- helpers ---
@@ -177,9 +182,9 @@ def incidents(store, *, now_epoch=NOW, zone_id=None, limit=None, env=None):
 class CityTableTest(unittest.TestCase):
     """Fifteen cities, complete and consistent metadata, one row each."""
 
-    def test_the_live_fleet_is_fifteen_cities(self):
-        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), 15)
-        self.assertEqual(len(zone_ids_for_mode("live")), 15)
+    def test_the_live_fleet_is_twelve_coastal_cities(self):
+        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), len(EXPECTED_CITIES))
+        self.assertEqual(len(zone_ids_for_mode("live")), 12)
         self.assertEqual(set(zone_ids_for_mode("live")), set(EXPECTED_CITIES))
 
     def test_every_zone_id_is_unique_and_namespaced(self):
@@ -194,27 +199,58 @@ class CityTableTest(unittest.TestCase):
         names = [str(zone["name"]) for zone in LIVE_ZONE_DEFINITIONS]
         self.assertEqual(len(names), len(set(names)), "two rows describe the same city")
 
-    def test_every_city_has_a_state_and_a_region(self):
+    def test_every_city_has_a_state_and_a_coast_group(self):
         for zone in LIVE_ZONE_DEFINITIONS:
             zone_id = str(zone["zone_id"])
             self.assertTrue(str(zone.get("state") or "").strip(), f"{zone_id} has no state")
-            self.assertTrue(str(zone.get("region") or "").strip(), f"{zone_id} has no region")
-            self.assertIn(zone["region"], REGIONS, f"{zone_id} is in no known region")
+            self.assertTrue(str(zone.get("coast_group") or "").strip(), f"{zone_id} has no coast group")
+            self.assertIn(zone["coast_group"], COAST_GROUPS, f"{zone_id} is in no known coast group")
             self.assertEqual(zone.get("country"), "IN", f"{zone_id} has no country")
 
-    def test_city_state_and_region_match_the_documented_table(self):
+    def test_city_state_and_coast_group_match_the_documented_table(self):
         actual = {
-            str(zone["zone_id"]): (str(zone["name"]), str(zone["state"]), str(zone["region"]))
+            str(zone["zone_id"]): (str(zone["name"]), str(zone["state"]), str(zone["coast_group"]))
             for zone in LIVE_ZONE_DEFINITIONS
         }
         self.assertEqual(actual, EXPECTED_CITIES)
 
+    def test_every_city_states_why_it_is_monitored(self):
+        for zone in LIVE_ZONE_DEFINITIONS:
+            zone_id = str(zone["zone_id"])
+            reason = str(zone.get("selection_reason") or "").strip()
+            self.assertTrue(reason, f"{zone_id} does not say why it is monitored")
+            self.assertGreaterEqual(len(reason), 20, f"{zone_id}'s reason says nothing: {reason!r}")
+            self.assertEqual(zone["display_name"], f"{zone['name']}, {zone['state']}")
+
+    def test_no_reason_claims_more_than_a_source_supports(self):
+        # The product may say a hazard is documented for a place. It may not say the place is
+        # the most exposed, the worst, or ranked, because no source fetched in M13 ranks
+        # Indian coastal cities against each other at all.
+        forbidden = (
+            "most flood", "flood-prone", "flood prone", "most vulnerable", "worst", "riskiest",
+            "highest risk", "number one", "rank", "top ", "deadliest", "most at risk",
+        )
+        for zone in LIVE_ZONE_DEFINITIONS:
+            reason = str(zone["selection_reason"]).lower()
+            for phrase in forbidden:
+                self.assertNotIn(phrase, reason,
+                                 f"{zone['zone_id']} claims more than its sources: {reason!r}")
+
+    def test_the_inland_cities_that_left_the_fleet_are_not_monitored(self):
+        fleet = set(zone_ids_for_mode("live"))
+        for zone_id in RETIRED_INLAND_CITIES:
+            self.assertNotIn(zone_id, fleet, f"{zone_id} is still being polled")
+            self.assertIsNone(city_scope_for(zone_id)["state"],
+                              f"{zone_id} still resolves to a state without a definition")
+        self.assertEqual(fleet, set(EXPECTED_CITIES))
+        self.assertEqual(len(fleet), 12)
+
     def test_no_state_is_split_across_two_spellings(self):
         states = {}
         for zone in LIVE_ZONE_DEFINITIONS:
-            states.setdefault(str(zone["state"]), set()).add(str(zone["region"]))
-        for state, regions in states.items():
-            self.assertEqual(len(regions), 1, f"{state} is filed under {sorted(regions)}")
+            states.setdefault(str(zone["state"]), set()).add(str(zone["coast_group"]))
+        for state, groups in states.items():
+            self.assertEqual(len(groups), 1, f"{state} is filed under {sorted(groups)}")
 
     def test_coordinates_are_valid_inside_india(self):
         for zone in LIVE_ZONE_DEFINITIONS:
@@ -269,17 +305,19 @@ class CityTableTest(unittest.TestCase):
                           [DEFAULT_THRESHOLDS["rainfall_mm_per_hr"]["watch"]])
 
     def test_city_scope_labels_are_derived_and_safe(self):
-        for zone_id, (name, state, region) in EXPECTED_CITIES.items():
+        for zone_id, (name, state, coast_group) in EXPECTED_CITIES.items():
             scope = city_scope_for(zone_id)
             self.assertEqual(scope["city"], name)
             self.assertEqual(scope["state"], state)
-            self.assertEqual(scope["region"], region)
+            self.assertEqual(scope["coast_group"], coast_group)
             self.assertEqual(scope["display_name"], f"{name}, {state}")
+            self.assertTrue(str(scope["selection_reason"] or "").strip(),
+                            f"{zone_id} loses its selection reason on the way to an alert")
         # An id with no definition degrades to itself: no invented state, no exception.
         ghost = city_scope_for("city-atlantis")
         self.assertEqual(ghost["display_name"], "city-atlantis")
         self.assertIsNone(ghost["state"])
-        self.assertIsNone(ghost["region"])
+        self.assertIsNone(ghost["coast_group"])
         self.assertEqual(notify.zone_geography({"zone_id": "city-atlantis"})["display_name"],
                          "city-atlantis")
 
@@ -287,33 +325,46 @@ class CityTableTest(unittest.TestCase):
         coverage = coverage_summary("live")
         self.assertEqual(coverage["fleet_kind"], "cities")
         self.assertEqual(coverage["city_count"], len(LIVE_ZONE_DEFINITIONS))
-        self.assertEqual(sum(region["city_count"] for region in coverage["regions"]),
+        self.assertEqual(sum(group["city_count"] for group in coverage["coast_groups"]),
                          coverage["city_count"])
-        self.assertEqual([region["region"] for region in coverage["regions"]],
-                         [region for region in REGIONS if any(
-                             zone["region"] == region for zone in LIVE_ZONE_DEFINITIONS)])
+        self.assertEqual([group["coast_group"] for group in coverage["coast_groups"]],
+                         [group for group in COAST_GROUPS if any(
+                             zone["coast_group"] == group for zone in LIVE_ZONE_DEFINITIONS)])
         self.assertEqual(coverage["state_count"], len(coverage["states"]))
         self.assertEqual(coverage["states"], sorted(coverage["states"]))
         self.assertEqual(set(coverage["states"]),
                          {str(zone["state"]) for zone in LIVE_ZONE_DEFINITIONS})
         self.assertEqual(coverage["scope_note"], COVERAGE_SCOPE_NOTE)
-        self.assertIn("not states, regions or the country", coverage["scope_note"])
+        # The scope note has to carry both halves of the claim: what is monitored, and what
+        # is not. A note that only listed cities could be read as national coverage.
+        self.assertIn("selected coastal cities", coverage["scope_note"])
+        self.assertIn("a selected monitoring fleet, not complete national coverage",
+                      coverage["scope_note"])
+        self.assertIn("no coast-wide or national risk score", coverage["scope_note"])
 
-    def test_the_regions_split_the_fleet_the_documented_way(self):
+    def test_a_coast_group_carries_no_score_of_its_own(self):
         coverage = coverage_summary("live")
-        grouped = {region["region"]: region["cities"] for region in coverage["regions"]}
-        self.assertEqual(grouped["North"], ["Delhi", "Jaipur", "Lucknow"])
-        self.assertEqual(grouped["South"],
-                         ["Chennai", "Bengaluru", "Hyderabad", "Kochi", "Visakhapatnam"])
-        self.assertEqual(grouped["East"], ["Kolkata", "Patna", "Bhubaneswar"])
-        self.assertEqual(grouped["West"], ["Mumbai", "Pune", "Ahmedabad"])
-        self.assertEqual(grouped["Northeast"], ["Guwahati"])
+        for group in coverage["coast_groups"]:
+            self.assertEqual(set(group), {"coast_group", "city_count", "cities"})
+            self.assertNotIn("risk", json.dumps(group).lower())
+            self.assertNotIn("score", json.dumps(group).lower())
+
+    def test_the_coast_groups_split_the_fleet_the_documented_way(self):
+        coverage = coverage_summary("live")
+        grouped = {group["coast_group"]: group["cities"] for group in coverage["coast_groups"]}
+        self.assertEqual(grouped["West Coast"],
+                         ["Mumbai", "Surat", "Kochi", "Mangaluru", "Kozhikode"])
+        self.assertEqual(grouped["East Coast"],
+                         ["Kolkata", "Puri", "Paradip", "Visakhapatnam", "Chennai", "Puducherry"])
+        self.assertEqual(grouped["Island"], ["Port Blair"])
+        self.assertEqual(list(grouped), list(COAST_GROUPS))
+        self.assertEqual(len(coverage["coast_groups"]), 3)
 
     def test_the_demo_fleet_is_untouched_and_carries_no_geography(self):
         self.assertEqual(len(DEMO_ZONE_DEFINITIONS), 3)
         for zone in DEMO_ZONE_DEFINITIONS:
             self.assertNotIn("state", zone)
-            self.assertNotIn("region", zone)
+            self.assertNotIn("coast_group", zone)
             scope = city_scope_for(str(zone["zone_id"]))
             self.assertIsNone(scope["state"])
             self.assertEqual(scope["display_name"], zone["name"])
@@ -321,7 +372,7 @@ class CityTableTest(unittest.TestCase):
         self.assertEqual(demo["fleet_kind"], "zones")
         self.assertEqual(demo["city_count"], 3)
         self.assertEqual(demo["state_count"], 0)
-        self.assertEqual(demo["regions"], [])
+        self.assertEqual(demo["coast_groups"], [])
         self.assertFalse(set(zone_ids_for_mode("demo")) & set(EXPECTED_CITIES))
 
 
@@ -337,15 +388,19 @@ class CityApiTest(unittest.TestCase):
 
     def test_zones_exposes_every_city_with_its_geography(self):
         payload = zones(self.store, client=self.client)
-        self.assertEqual(payload["zone_count"], 15)
-        self.assertEqual(len(payload["zones"]), 15)
+        self.assertEqual(payload["zone_count"], len(EXPECTED_CITIES))
+        self.assertEqual(len(payload["zones"]), len(EXPECTED_CITIES))
         for zone in payload["zones"]:
-            name, state, region = EXPECTED_CITIES[zone["zone_id"]]
+            name, state, coast_group = EXPECTED_CITIES[zone["zone_id"]]
             self.assertEqual(zone["name"], name)
             self.assertEqual(zone["city"], name)
             self.assertEqual(zone["state"], state)
-            self.assertEqual(zone["region"], region)
+            self.assertEqual(zone["coast_group"], coast_group)
             self.assertEqual(zone["display_name"], f"{name}, {state}")
+            # The city page's "why this city is monitored" block reads this from the API,
+            # so the fleet's reasons have to survive the trip.
+            self.assertTrue(str(zone.get("selection_reason") or "").strip(),
+                            f"{zone['zone_id']} reaches the API without a selection reason")
             self.assertEqual(zone["status"], "live")
             self.assertIn(zone["latest"]["risk_class"], ("NORMAL", "WATCH", "WARNING", "CRITICAL"))
 
@@ -415,7 +470,7 @@ class CityApiTest(unittest.TestCase):
         self.assertFalse(ids & set(EXPECTED_CITIES))
         for zone in payload["zones"]:
             self.assertNotIn("state", zone)
-            self.assertNotIn("region", zone)
+            self.assertNotIn("coast_group", zone)
         self.assertEqual(payload["coverage"]["fleet_kind"], "zones")
 
     def test_the_weather_block_names_every_city_and_no_demo_zone(self):
@@ -442,8 +497,8 @@ class CityFailureIsolationTest(unittest.TestCase):
     def last_good(self, payload, zone_id):
         return next(zone for zone in payload["zones"] if zone["zone_id"] == zone_id)
 
-    def test_one_city_failing_keeps_the_other_fourteen_updating(self):
-        failing = "city-lucknow"
+    def test_one_city_failing_keeps_the_other_eleven_updating(self):
+        failing = "city-port-blair"
         later = NOW + WEATHER_REFRESH_SECONDS + 1
         payload = zones(self.store, now_epoch=later,
                         client=client_for(LIVE_ZONE_DEFINITIONS, drop={failing}, rain=30.0))
@@ -451,9 +506,9 @@ class CityFailureIsolationTest(unittest.TestCase):
         refreshed = payload["weather"]["last_refresh"]["refreshed"]
         self.assertEqual(set(refreshed), set(EXPECTED_CITIES) - {failing})
         self.assertEqual(payload["weather"]["last_refresh"]["failed"], [failing])
-        self.assertEqual(payload["zone_count"], 15)
+        self.assertEqual(payload["zone_count"], len(EXPECTED_CITIES))
 
-        # the fourteen that answered moved to the new rainfall
+        # the eleven that answered moved to the new rainfall
         for zone_id in refreshed:
             self.assertEqual(self.last_good(payload, zone_id)["latest"]["readings"]["rainfall_mm_per_hr"], 30.0)
         # the failed one still serves its earlier real observation, with an older age
@@ -469,7 +524,7 @@ class CityFailureIsolationTest(unittest.TestCase):
                            payload["weather"]["cache_age_seconds"][refreshed[0]])
 
     def test_several_cities_failing_at_once(self):
-        failing = {"city-delhi", "city-kolkata", "city-guwahati", "city-patna"}
+        failing = {"city-kolkata", "city-puri", "city-paradip", "city-chennai"}
         later = NOW + WEATHER_REFRESH_SECONDS + 1
         payload = zones(self.store, now_epoch=later,
                         client=client_for(LIVE_ZONE_DEFINITIONS, drop=failing, rain=25.0))
@@ -487,13 +542,14 @@ class CityFailureIsolationTest(unittest.TestCase):
         # reports the missing ones as failed rather than mislabelling their neighbours
         later = NOW + WEATHER_REFRESH_SECONDS + 1
         payload = zones(self.store, now_epoch=later,
-                        client=client_for(LIVE_ZONE_DEFINITIONS, drop={"city-jaipur"}, rain=18.0))
-        self.assertIn("no_provider_entry", str(payload["weather"]["last_attempt_error"]["city-jaipur"]))
-        self.assertEqual(payload["weather"]["last_refresh"]["failed"], ["city-jaipur"])
-        self.assertEqual(len(payload["weather"]["last_refresh"]["refreshed"]), 14)
+                        client=client_for(LIVE_ZONE_DEFINITIONS, drop={"city-puducherry"}, rain=18.0))
+        self.assertIn("no_provider_entry", str(payload["weather"]["last_attempt_error"]["city-puducherry"]))
+        self.assertEqual(payload["weather"]["last_refresh"]["failed"], ["city-puducherry"])
+        self.assertEqual(len(payload["weather"]["last_refresh"]["refreshed"]),
+                         len(EXPECTED_CITIES) - 1)
         # no neighbour was relabelled with the missing entry's data
-        self.assertEqual(self.last_good(payload, "city-jaipur")["latest"]["readings"]["rainfall_mm_per_hr"], 11.0)
-        self.assertEqual(self.last_good(payload, "city-pune")["latest"]["readings"]["rainfall_mm_per_hr"], 18.0)
+        self.assertEqual(self.last_good(payload, "city-puducherry")["latest"]["readings"]["rainfall_mm_per_hr"], 11.0)
+        self.assertEqual(self.last_good(payload, "city-mangaluru")["latest"]["readings"]["rainfall_mm_per_hr"], 18.0)
 
     def test_one_malformed_entry_does_not_poison_the_fleet(self):
         later = NOW + WEATHER_REFRESH_SECONDS + 1
@@ -501,7 +557,8 @@ class CityFailureIsolationTest(unittest.TestCase):
                         client=client_for(LIVE_ZONE_DEFINITIONS, broken={"city-visakhapatnam"}, rain=21.0))
         self.assertEqual(payload["weather"]["last_refresh"]["failed"], ["city-visakhapatnam"])
         self.assertIn("current", str(payload["weather"]["last_attempt_error"]["city-visakhapatnam"]))
-        self.assertEqual(len(payload["weather"]["last_refresh"]["refreshed"]), 14)
+        self.assertEqual(len(payload["weather"]["last_refresh"]["refreshed"]),
+                         len(EXPECTED_CITIES) - 1)
         self.assertEqual(self.last_good(payload, "city-visakhapatnam")["latest"]["readings"]["rainfall_mm_per_hr"], 11.0)
 
     def test_a_provider_timeout_keeps_the_whole_fleet_on_its_last_good_values(self):
@@ -513,7 +570,7 @@ class CityFailureIsolationTest(unittest.TestCase):
         self.assertEqual(refresh["refreshed"], [])
         self.assertEqual(set(refresh["failed"]), set(EXPECTED_CITIES))
         self.assertIn("timed out", str(refresh["error"]))
-        self.assertEqual(payload["zone_count"], 15)
+        self.assertEqual(payload["zone_count"], len(EXPECTED_CITIES))
         for zone in payload["zones"]:
             self.assertEqual(zone["status"], "live")
             self.assertEqual(zone["latest"]["readings"]["rainfall_mm_per_hr"], 11.0)
@@ -525,15 +582,15 @@ class CityFailureIsolationTest(unittest.TestCase):
                         client=client_for(LIVE_ZONE_DEFINITIONS, status=503))
         refresh = payload["weather"]["last_refresh"]
         self.assertEqual(refresh["refreshed"], [])
-        self.assertEqual(len(refresh["failed"]), 15)
+        self.assertEqual(len(refresh["failed"]), len(EXPECTED_CITIES))
         self.assertIn("503", str(refresh["error"]))
-        self.assertEqual(len(payload["zones"]), 15)
+        self.assertEqual(len(payload["zones"]), len(EXPECTED_CITIES))
         for zone in payload["zones"]:
             self.assertTrue(zone["latest"]["readings"], zone["zone_id"])
 
     def test_an_outage_on_a_cold_start_serves_every_city_without_data(self):
         payload = zones(LocalStore(), client=client_for(LIVE_ZONE_DEFINITIONS, status=503))
-        self.assertEqual(payload["zone_count"], 15)
+        self.assertEqual(payload["zone_count"], len(EXPECTED_CITIES))
         for zone in payload["zones"]:
             self.assertEqual(zone["status"], "no_data")
             self.assertIsNone(zone["latest"])
@@ -556,7 +613,7 @@ class CityFailureIsolationTest(unittest.TestCase):
 
 
 class CityCacheTest(unittest.TestCase):
-    """Fifteen cities still cost one provider call per refresh window, not fifteen."""
+    """Twelve cities still cost one provider call per refresh window, not twelve."""
 
     def test_one_refresh_serves_every_poll_for_the_whole_fleet(self):
         store = LocalStore()
@@ -565,13 +622,13 @@ class CityCacheTest(unittest.TestCase):
         self.assertEqual(first.calls, 1)
 
         # the dashboard polls every five seconds: every poll inside the window is answered
-        # from the cache, for all fifteen cities, without another provider request
+        # from the cache, for all twelve cities, without another provider request
         for step in range(1, 120):
             payload = zones(store, now_epoch=NOW + step * 5, client=None)
             self.assertFalse(payload["weather"]["last_refresh"]["attempted"],
                              f"poll {step} called the provider again")
             self.assertEqual(payload["weather"]["last_refresh"]["reason"], "cache_fresh")
-            self.assertEqual(len(payload["weather"]["last_refresh"]["already_fresh"]), 15)
+            self.assertEqual(len(payload["weather"]["last_refresh"]["already_fresh"]), len(EXPECTED_CITIES))
 
         self.assertEqual(first.calls, 1)
 
@@ -588,7 +645,7 @@ class CityCacheTest(unittest.TestCase):
         second = client_for(LIVE_ZONE_DEFINITIONS, rain=40.0)
         payload = zones(store, now_epoch=NOW + WEATHER_REFRESH_SECONDS + 1, client=second)
         self.assertEqual(second.calls, 1)
-        self.assertEqual(len(payload["weather"]["last_refresh"]["refreshed"]), 15)
+        self.assertEqual(len(payload["weather"]["last_refresh"]["refreshed"]), len(EXPECTED_CITIES))
         self.assertEqual(WEATHER_REFRESH_SECONDS, 600)
 
     def test_every_city_benefits_from_the_cache(self):
@@ -608,7 +665,7 @@ class CityCacheTest(unittest.TestCase):
 
 
 class CityIncidentTest(unittest.TestCase):
-    """Incidents stay zone-specific when fifteen cities are scored together."""
+    """Incidents stay zone-specific when twelve coastal cities are scored together."""
 
     def setUp(self):
         self.store = LocalStore()
@@ -635,7 +692,7 @@ class CityIncidentTest(unittest.TestCase):
         for incident in body["incidents"]:
             by_zone[incident["zone_id"]] = by_zone.get(incident["zone_id"], 0) + 1
             self.assertIn(incident["zone_id"], EXPECTED_CITIES)
-            name, state, _region = EXPECTED_CITIES[incident["zone_id"]]
+            name, state, _coast_group = EXPECTED_CITIES[incident["zone_id"]]
             self.assertEqual(incident["zone_name"], name)
             self.assertEqual(incident["zone_display_name"], f"{name}, {state}")
             self.assertEqual(incident["zone_state"], state)
@@ -643,14 +700,14 @@ class CityIncidentTest(unittest.TestCase):
         for zone_id, count in by_zone.items():
             self.assertEqual(count, 1, f"{zone_id} opened {count} incidents for one crossing")
         self.assertEqual(len(by_zone), len(payload["zones"]), "a city's reading opened nothing")
-        self.assertEqual(body["open_count"], 15)
+        self.assertEqual(body["open_count"], len(EXPECTED_CITIES))
 
     def test_one_city_escalating_does_not_move_another_city(self):
         # Two identical fleets on two identical clocks, differing in exactly one coordinate:
-        # one city reports an extreme reading, the other fourteen report nothing. The storm
+        # one city reports an extreme reading, the other eleven report nothing. The storm
         # city must escalate on its own, and every other city must sit exactly where the
         # calm fleet sat at the same step - same score, same class, no incident.
-        storm = "city-bhubaneswar"
+        storm = "city-paradip"
         calm_store, storm_store = LocalStore(), LocalStore()
 
         def calm_client():
@@ -713,7 +770,7 @@ class CityIncidentTest(unittest.TestCase):
         step_seconds = WEATHER_REFRESH_SECONDS + 1
         stage_fraction = 1.0 - math.exp(-step_seconds / HYDRAULICS_DRAIN_TAU_SECONDS)
 
-        for storm in ("city-bhubaneswar", "city-lucknow"):
+        for storm in ("city-paradip", "city-port-blair"):
             with self.subTest(storm=storm):
                 store = LocalStore()
                 zones(store, client=client_for(LIVE_ZONE_DEFINITIONS, rain=0.0, soil=0.10))
@@ -755,15 +812,15 @@ class CityIncidentTest(unittest.TestCase):
         zones(self.store, client=client_for(LIVE_ZONE_DEFINITIONS, rain=60.0, soil=0.48))
         status, first = incidents(self.store, limit=50)
         self.assertEqual(status, 200)
-        self.assertEqual(first["open_count"], 15)
-        self.assertEqual(len(first["incidents"]), 15)
+        self.assertEqual(first["open_count"], len(EXPECTED_CITIES))
+        self.assertEqual(len(first["incidents"]), len(EXPECTED_CITIES))
 
         # the poll that follows sees no new provider data and must re-ingest nothing
         payload = zones(self.store, now_epoch=NOW + 5, client=None)
         self.assertFalse(payload["weather"]["last_refresh"]["attempted"])
         status, second = incidents(self.store, now_epoch=NOW + 5, limit=50)
         self.assertEqual(second["count"], first["count"])
-        self.assertEqual(second["open_count"], 15)
+        self.assertEqual(second["open_count"], len(EXPECTED_CITIES))
 
     def test_each_city_alerts_with_its_own_name_and_state(self):
         notifier = _RecordingNotifier()
@@ -772,10 +829,10 @@ class CityIncidentTest(unittest.TestCase):
                                    env=dict(LIVE_ENV), notifier=notifier, cooldown_seconds=600,
                                    weather_client=client)
         self.assertEqual(status, 200)
-        self.assertEqual(payload["zone_count"], 15)
+        self.assertEqual(payload["zone_count"], len(EXPECTED_CITIES))
         subjects = [entry["subject"] for entry in notifier.published]
-        self.assertEqual(len(subjects), 15, subjects)
-        for name, state, _region in EXPECTED_CITIES.values():
+        self.assertEqual(len(subjects), len(EXPECTED_CITIES), subjects)
+        for name, state, _coast_group in EXPECTED_CITIES.values():
             self.assertTrue(any(f"{name}, {state}" in subject for subject in subjects),
                             f"no alert named {name}, {state}")
         severities = {subject.split(":")[0].split()[-1] for subject in subjects}
@@ -785,10 +842,10 @@ class CityIncidentTest(unittest.TestCase):
         for entry in notifier.published:
             body = json.loads(entry["message"])
             zone_id = body["zone"]["zone_id"]
-            name, state, region = EXPECTED_CITIES[zone_id]
+            name, state, coast_group = EXPECTED_CITIES[zone_id]
             self.assertEqual(body["zone"]["name"], name)
             self.assertEqual(body["zone"]["state"], state)
-            self.assertEqual(body["zone"]["region"], region)
+            self.assertEqual(body["zone"]["coast_group"], coast_group)
             self.assertEqual(body["zone"]["display_name"], f"{name}, {state}")
             self.assertIn(f"{name}, {state}", entry["subject"])
 
@@ -823,27 +880,27 @@ class AlertGeographyTest(unittest.TestCase):
 
     def test_the_message_body_carries_the_geography(self):
         incident = {
-            "zone_id": "city-patna", "zone_name": "Patna", "severity": "WARNING",
+            "zone_id": "city-kochi", "zone_name": "Kochi", "severity": "WARNING",
             "current_status": "OPEN", "opened_at": "2026-10-15T18:15:00Z",
             "data_classification": "mixed", "model": "heuristic-v1",
         }
         body = json.loads(notify.build_alert_message(notify.ALERT_KIND_OPENED, incident))
         self.assertEqual(body["zone"], {
-            "zone_id": "city-patna", "name": "Patna", "state": "Bihar",
-            "region": "East", "display_name": "Patna, Bihar",
+            "zone_id": "city-kochi", "name": "Kochi", "state": "Kerala",
+            "coast_group": "West Coast", "display_name": "Kochi, Kerala",
         })
 
     def test_a_record_without_stored_labels_is_labelled_from_the_city_table(self):
-        geography = notify.zone_geography({"zone_id": "city-guwahati", "zone_name": "Guwahati"})
-        self.assertEqual(geography["state"], "Assam")
-        self.assertEqual(geography["region"], "Northeast")
-        self.assertEqual(geography["display_name"], "Guwahati, Assam")
+        geography = notify.zone_geography({"zone_id": "city-mangaluru", "zone_name": "Mangaluru"})
+        self.assertEqual(geography["state"], "Karnataka")
+        self.assertEqual(geography["coast_group"], "West Coast")
+        self.assertEqual(geography["display_name"], "Mangaluru, Karnataka")
 
     def test_an_unknown_zone_id_gets_no_geography_and_no_crash(self):
         geography = notify.zone_geography({"zone_id": "city-atlantis", "zone_name": "Atlantis"})
         self.assertEqual(geography["display_name"], "Atlantis")
         self.assertIsNone(geography["state"])
-        self.assertIsNone(geography["region"])
+        self.assertIsNone(geography["coast_group"])
 
 
 class TimestampGuardTest(unittest.TestCase):

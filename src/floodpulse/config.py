@@ -103,7 +103,7 @@ DEMO_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
 )
 
 # --------------------------------------------------------------------------- #
-# Live-weather zones (M4; expanded to fifteen cities in M11): the authoritative
+# Live-weather zones (M4; refocused on the coast in M13): the authoritative
 # city table for the whole project
 # --------------------------------------------------------------------------- #
 # Rainfall intensity and soil saturation for these zones come from Open-Meteo (see
@@ -116,68 +116,60 @@ DEMO_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
 # nothing here should be read as an authoritative flood warning for them.
 #
 # This tuple is the one place a monitored city is defined. ``name`` is the city,
-# ``state`` is the state or union territory it belongs to, ``region`` is a display and
-# navigation grouping only, and ``latitude``/``longitude`` are the city-centre
+# ``state`` is the state or union territory it belongs to, ``coast_group`` is a display
+# and navigation grouping only, and ``latitude``/``longitude`` are the city-centre
 # coordinates every layer uses - the weather request (``weather.py`` ``build_url``),
 # the provider cross-check (``WEATHER_LOCATION_TOLERANCE_DEGREES``) and the API. The
 # frontend holds no coordinates of its own.
 #
-# What the fleet does and does not claim (M11): FloodPulse monitors *these cities*.
-# It does not monitor a state, a region or the country, it produces no regional risk
-# score, and a city being NORMAL says nothing about the rest of its state. The
-# ``region`` field exists so a visitor can find a city on a page; it is not a unit of
-# measurement anywhere in the pipeline.
+# ``selection_reason`` is why a city is in this fleet at all, and it is a *selection*
+# statement, not a risk statement: it says a hazard is documented for the place, from
+# the sources in README "Why these cities", and it is separate from the live risk score,
+# which is computed from today's weather and the simulator. The fleet is a selected set
+# of coastal cities, not national coverage, and it is deliberately unranked: the order
+# below is the west coast, then the east coast, then the island, which is the order the
+# site's coast filter offers.
+#
+# What the fleet does and does not claim: FloodPulse monitors *these cities*. It does not
+# monitor a state, a coast or the country, it produces no coast-wide risk score or
+# average, and a city being NORMAL says nothing about its neighbours. The ``coast_group``
+# field exists so a visitor can find a city on a page; it is not a unit of measurement
+# anywhere in the pipeline.
 
 LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
-    {
-        "zone_id": "city-chennai",
-        "name": "Chennai",
-        "state": "Tamil Nadu",
-        "region": "South",
-        "country": "IN",
-        "latitude": 13.0827,
-        "longitude": 80.2707,
-        "description": "Coastal Bay of Bengal metropolis; monsoon and cyclone rainfall.",
-        "thresholds": {},
-    },
     {
         "zone_id": "city-mumbai",
         "name": "Mumbai",
         "state": "Maharashtra",
-        "region": "West",
+        "coast_group": "West Coast",
+        "display_name": "Mumbai, Maharashtra",
+        "selection_reason": "Coastal megacity with a high coastal-flood hazard rating and a 944 mm rainfall record",
         "country": "IN",
-        "latitude": 19.0760,
+        "latitude": 19.076,
         "longitude": 72.8777,
-        "description": "Dense Arabian Sea coast; extreme short-duration monsoon rainfall.",
+        "description": "Arabian Sea metropolis; short-duration monsoon extremes and tidal backflow.",
         "thresholds": {},
     },
     {
-        "zone_id": "city-bengaluru",
-        "name": "Bengaluru",
-        "state": "Karnataka",
-        "region": "South",
+        "zone_id": "city-surat",
+        "name": "Surat",
+        "state": "Gujarat",
+        "coast_group": "West Coast",
+        "display_name": "Surat, Gujarat",
+        "selection_reason": "Coastal flood hazard rated high; estuary city with documented sea-level-rise risk",
         "country": "IN",
-        "latitude": 12.9716,
-        "longitude": 77.5946,
-        "description": "Inland plateau city; flash flooding from convective storms.",
-        "thresholds": {},
-    },
-    {
-        "zone_id": "city-hyderabad",
-        "name": "Hyderabad",
-        "state": "Telangana",
-        "region": "South",
-        "country": "IN",
-        "latitude": 17.3850,
-        "longitude": 78.4867,
-        "description": "Deccan plateau city with lake and drainage-network flooding.",
+        "latitude": 21.1702,
+        "longitude": 72.8311,
+        "description": "Tapi estuary city; sea-level rise, river flooding and saltwater intrusion.",
         "thresholds": {},
     },
     {
         "zone_id": "city-kochi",
         "name": "Kochi",
         "state": "Kerala",
-        "region": "South",
+        "coast_group": "West Coast",
+        "display_name": "Kochi, Kerala",
+        "selection_reason": "Low-lying backwater coast with high urban and river flood hazard ratings",
         "country": "IN",
         "latitude": 9.9312,
         "longitude": 76.2673,
@@ -185,21 +177,38 @@ LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "thresholds": {},
     },
     {
-        "zone_id": "city-delhi",
-        "name": "Delhi",
-        "state": "Delhi",
-        "region": "North",
+        "zone_id": "city-mangaluru",
+        "name": "Mangaluru",
+        "state": "Karnataka",
+        "coast_group": "West Coast",
+        "display_name": "Mangaluru, Karnataka",
+        "selection_reason": "Arabian Sea port city with a recorded extreme-rainfall station",
         "country": "IN",
-        "latitude": 28.6139,
-        "longitude": 77.2090,
-        "description": "Yamuna floodplain metropolis; drainage congestion after cloudbursts.",
+        "latitude": 12.9141,
+        "longitude": 74.856,
+        "description": "Arabian Sea port city; steep catchments and intense monsoon rainfall.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-kozhikode",
+        "name": "Kozhikode",
+        "state": "Kerala",
+        "coast_group": "West Coast",
+        "display_name": "Kozhikode, Kerala",
+        "selection_reason": "High urban and river flood hazard on a cyclone-exposed coast",
+        "country": "IN",
+        "latitude": 11.2588,
+        "longitude": 75.7804,
+        "description": "Malabar coast city; monsoon rainfall on the Chaliyar and Kallai catchments.",
         "thresholds": {},
     },
     {
         "zone_id": "city-kolkata",
         "name": "Kolkata",
         "state": "West Bengal",
-        "region": "East",
+        "coast_group": "East Coast",
+        "display_name": "Kolkata, West Bengal",
+        "selection_reason": "Deltaic port city named in GoI coastal guidance and studied in a World Bank coastal report",
         "country": "IN",
         "latitude": 22.5726,
         "longitude": 88.3639,
@@ -207,43 +216,38 @@ LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "thresholds": {},
     },
     {
-        "zone_id": "city-guwahati",
-        "name": "Guwahati",
-        "state": "Assam",
-        "region": "Northeast",
-        "country": "IN",
-        "latitude": 26.1445,
-        "longitude": 91.7362,
-        "description": "Brahmaputra valley city; very heavy monsoon rainfall on steep terrain.",
-        "thresholds": {},
-    },
-    {
-        "zone_id": "city-patna",
-        "name": "Patna",
-        "state": "Bihar",
-        "region": "East",
-        "country": "IN",
-        "latitude": 25.5941,
-        "longitude": 85.1376,
-        "description": "Ganges riverside city; river backflow and urban drainage flooding.",
-        "thresholds": {},
-    },
-    {
-        "zone_id": "city-bhubaneswar",
-        "name": "Bhubaneswar",
+        "zone_id": "city-puri",
+        "name": "Puri",
         "state": "Odisha",
-        "region": "East",
+        "coast_group": "East Coast",
+        "display_name": "Puri, Odisha",
+        "selection_reason": "Cyclone-exposed coast whose district coastal-flood hazard is rated high",
         "country": "IN",
-        "latitude": 20.2961,
-        "longitude": 85.8245,
-        "description": "Coastal Odisha capital; cyclone-season rainfall and drainage overload.",
+        "latitude": 19.8135,
+        "longitude": 85.8312,
+        "description": "Bay of Bengal coast; cyclone landfalls and heavy monsoon rainfall.",
+        "thresholds": {},
+    },
+    {
+        "zone_id": "city-paradip",
+        "name": "Paradip",
+        "state": "Odisha",
+        "coast_group": "East Coast",
+        "display_name": "Paradip, Odisha",
+        "selection_reason": "Storm-surge zone recorded at 5-7 m by INCOIS for the Paradip-Balasore stretch",
+        "country": "IN",
+        "latitude": 20.3164,
+        "longitude": 86.6115,
+        "description": "Port town on the Bay of Bengal; storm surge and cyclone rainfall.",
         "thresholds": {},
     },
     {
         "zone_id": "city-visakhapatnam",
         "name": "Visakhapatnam",
         "state": "Andhra Pradesh",
-        "region": "South",
+        "coast_group": "East Coast",
+        "display_name": "Visakhapatnam, Andhra Pradesh",
+        "selection_reason": "Coastal port city named in GoI coastal guidance; cyclone-exposed district",
         "country": "IN",
         "latitude": 17.6868,
         "longitude": 83.2185,
@@ -251,61 +255,58 @@ LIVE_ZONE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "thresholds": {},
     },
     {
-        "zone_id": "city-pune",
-        "name": "Pune",
-        "state": "Maharashtra",
-        "region": "West",
+        "zone_id": "city-chennai",
+        "name": "Chennai",
+        "state": "Tamil Nadu",
+        "coast_group": "East Coast",
+        "display_name": "Chennai, Tamil Nadu",
+        "selection_reason": "Cyclone-exposed coastal metropolis with repeated extreme-rainfall records",
         "country": "IN",
-        "latitude": 18.5204,
-        "longitude": 73.8567,
-        "description": "Deccan plateau city at the confluence of two rivers; flash flooding.",
+        "latitude": 13.0827,
+        "longitude": 80.2707,
+        "description": "Bay of Bengal metropolis; monsoon and cyclone rainfall.",
         "thresholds": {},
     },
     {
-        "zone_id": "city-ahmedabad",
-        "name": "Ahmedabad",
-        "state": "Gujarat",
-        "region": "West",
+        "zone_id": "city-puducherry",
+        "name": "Puducherry",
+        "state": "Puducherry",
+        "coast_group": "East Coast",
+        "display_name": "Puducherry, Puducherry",
+        "selection_reason": "Coastal union territory city covered by a World Bank coastal-risk project",
         "country": "IN",
-        "latitude": 23.0225,
-        "longitude": 72.5714,
-        "description": "Sabarmati riverside city; monsoon and upstream release flooding.",
+        "latitude": 11.9416,
+        "longitude": 79.8083,
+        "description": "Coromandel coast city; cyclone-season rainfall and coastal exposure.",
         "thresholds": {},
     },
     {
-        "zone_id": "city-jaipur",
-        "name": "Jaipur",
-        "state": "Rajasthan",
-        "region": "North",
+        "zone_id": "city-port-blair",
+        "name": "Port Blair",
+        "state": "Andaman and Nicobar Islands",
+        "coast_group": "Island",
+        "display_name": "Port Blair, Andaman and Nicobar Islands",
+        "selection_reason": "Island capital in the Andaman and Nicobar Islands with recorded extreme rainfall",
         "country": "IN",
-        "latitude": 26.9124,
-        "longitude": 75.7873,
-        "description": "Semi-arid city where short intense storms cause flash flooding.",
-        "thresholds": {},
-    },
-    {
-        "zone_id": "city-lucknow",
-        "name": "Lucknow",
-        "state": "Uttar Pradesh",
-        "region": "North",
-        "country": "IN",
-        "latitude": 26.8467,
-        "longitude": 80.9462,
-        "description": "Gomti riverside city; monsoon rainfall and drainage congestion.",
+        "latitude": 11.6234,
+        "longitude": 92.7265,
+        "description": "Island capital; cyclone-season rainfall and coastal exposure.",
         "thresholds": {},
     },
 )
 
-#: Display order of the region grouping. Navigation only: no region has a risk score.
-REGIONS: tuple[str, ...] = ("North", "South", "East", "West", "Northeast")
+#: Display order of the coast grouping, west then east then island. Navigation only:
+#: no coast has a risk score, an average or a safety claim.
+COAST_GROUPS: tuple[str, ...] = ("West Coast", "East Coast", "Island")
 
 #: What the coverage numbers mean, published with them so a reader cannot mistake a
 #: city fleet for national coverage.
 COVERAGE_SCOPE_NOTE = (
-    "FloodPulse monitors individual cities, not states, regions or the country. A city in "
-    "this list says nothing about the rest of its state or region; no regional or national "
-    "risk score is produced. Delhi is a union territory rather than a state, so 'state' "
-    "below means the state or union territory a monitored city belongs to."
+    "FloodPulse monitors selected coastal cities, individually, not states, coasts or the "
+    "country. This is a selected monitoring fleet, not complete national coverage: a city in "
+    "this list says nothing about the rest of its state or coast, no coast-wide or national "
+    "risk score is produced, and the cities are listed in coast order rather than ranked. "
+    "'State' below means the state or union territory a monitored city belongs to."
 )
 
 #: Kept as the library default so every pre-M4 caller keeps working unchanged.
@@ -679,29 +680,34 @@ def thresholds_for(zone_id: str) -> dict[str, dict[str, float]]:
 
 
 def city_label(zone: Mapping[str, Any]) -> str:
-    """``"City, State"`` when the state is known, otherwise just the city name."""
+    """``"City, State"``, from the definition's own ``display_name`` when it has one."""
+    stored = zone.get("display_name")
+    if isinstance(stored, str) and stored.strip():
+        return stored.strip()
     name = str(zone.get("name") or zone.get("zone_id") or "")
     state = zone.get("state")
     return f"{name}, {state}" if state else name
 
 
 def city_scope_for(zone_id: str) -> dict[str, Any]:
-    """Labels for a zone id: city, state, region and the display name.
+    """Labels for a zone id: city, state, coast group and the display name.
 
     Never raises. An incident or an alert can outlive a definition (a zone dropped from a
-    later deployment), and an unknown id must not turn a read into a 500: it comes back
-    with no state or region and its own id as the display name, which is the truth -
-    FloodPulse has no metadata for it.
+    later deployment, as the inland cities were in M13), and an unknown id must not turn a
+    read into a 500: it comes back with no state or coast group and its own id as the
+    display name, which is the truth - FloodPulse has no metadata for it.
     """
     for zone in DEMO_ZONE_DEFINITIONS + LIVE_ZONE_DEFINITIONS:
         if zone["zone_id"] == zone_id:
             return {
                 "city": str(zone["name"]),
                 "state": zone.get("state"),
-                "region": zone.get("region"),
+                "coast_group": zone.get("coast_group"),
                 "display_name": city_label(zone),
+                "selection_reason": zone.get("selection_reason"),
             }
-    return {"city": None, "state": None, "region": None, "display_name": str(zone_id)}
+    return {"city": None, "state": None, "coast_group": None, "display_name": str(zone_id),
+            "selection_reason": None}
 
 
 def coverage_summary(mode: str) -> dict[str, Any]:
@@ -710,27 +716,31 @@ def coverage_summary(mode: str) -> dict[str, Any]:
     Aggregates only: the per-city detail is in the ``zones`` array of the same response.
     ``fleet_kind`` is ``cities`` for the live fleet and ``zones`` for the simulator, so
     the copy built on top of this cannot call three invented districts a city network.
+
+    ``coast_groups`` carries each group's cities and how many there are, and nothing else:
+    a group has no risk score, no average and no status, and the shape of this block is
+    asserted to stay that way by the tests and by the live acceptance run.
     """
     definitions = zone_definitions_for_mode(mode)
     live = zone_mode_input(mode) == ZONE_MODE_INPUT_LIVE
     states = sorted({str(zone["state"]) for zone in definitions if zone.get("state")})
-    regions = [
-        region for region in REGIONS
-        if any(zone.get("region") == region for zone in definitions)
+    groups = [
+        group for group in COAST_GROUPS
+        if any(zone.get("coast_group") == group for zone in definitions)
     ]
     return {
         "fleet_kind": "cities" if live else "zones",
         "city_count": len(definitions),
         "state_count": len(states),
-        "region_count": len(regions),
+        "coast_group_count": len(groups),
         "states": states,
-        "regions": [
+        "coast_groups": [
             {
-                "region": region,
-                "city_count": sum(1 for zone in definitions if zone.get("region") == region),
-                "cities": [str(zone["name"]) for zone in definitions if zone.get("region") == region],
+                "coast_group": group,
+                "city_count": sum(1 for zone in definitions if zone.get("coast_group") == group),
+                "cities": [str(zone["name"]) for zone in definitions if zone.get("coast_group") == group],
             }
-            for region in regions
+            for group in groups
         ],
         "scope_note": COVERAGE_SCOPE_NOTE,
     }

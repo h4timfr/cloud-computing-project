@@ -248,6 +248,40 @@ class OutOfOrderTest(AdversarialCase):
 class ModeIsolationTest(AdversarialCase):
     LIVE_ENV = {"FLOODPULSE_STORE": "local", "FLOODPULSE_ZONE_MODE": "live_weather"}
 
+    def stub_provider(self):
+        """Answer for exactly the coordinates asked about, without calling Open-Meteo.
+
+        The live path builds its own client, so this patches the transport that client falls back
+        to. Without it these tests depend on the provider answering, which makes them a
+        connectivity test rather than a provenance test (measured: http_429 when it throttles).
+        """
+        import urllib.parse
+
+        from floodpulse import weather as weather_module
+
+        def transport(url, timeout):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            latitudes = query["latitude"][0].split(",")
+            longitudes = query["longitude"][0].split(",")
+            payload = [
+                {
+                    "latitude": float(latitude),
+                    "longitude": float(longitude),
+                    "current": {"time": "2026-10-15T18:15", "precipitation": 12.5, "rain": 12.5},
+                    "hourly": {
+                        "time": ["2026-10-15T17:00", "2026-10-15T18:00"],
+                        "precipitation": [0.0, 12.5],
+                        "soil_moisture_0_to_7cm": [0.21, 0.24],
+                    },
+                }
+                for latitude, longitude in zip(latitudes, longitudes)
+            ]
+            return 200, json.dumps(payload).encode("utf-8")
+
+        original = weather_module.default_transport
+        weather_module.default_transport = transport
+        self.addCleanup(lambda: setattr(weather_module, "default_transport", original))
+
     def test_a_demo_reading_is_refused_while_the_live_fleet_is_served(self) -> None:
         status, payload = self.post(body(zone_id=DEMO_ZONE), env=self.LIVE_ENV)
 
@@ -265,6 +299,7 @@ class ModeIsolationTest(AdversarialCase):
         """
         from floodpulse.handler import dispatch as dispatch_fn
 
+        self.stub_provider()
         # fill the provider cache first, so the posted reading stays the newest one
         dispatch_fn("GET", "/zones", None, self.store, BASE_EPOCH, {}, None, env=self.LIVE_ENV)
         status, _posted = self.post(
@@ -302,6 +337,7 @@ class ModeIsolationTest(AdversarialCase):
         """The rule above must not be a blanket downgrade: real data keeps its REAL tag."""
         from floodpulse.handler import dispatch as dispatch_fn
 
+        self.stub_provider()
         dispatch_fn("GET", "/zones", None, self.store, BASE_EPOCH, {}, None, env=self.LIVE_ENV)
         _status, view = self.get("/zones", now_epoch=BASE_EPOCH + 1, env=self.LIVE_ENV)
         city = next(zone for zone in view["zones"] if zone["zone_id"] == LIVE_ZONE)

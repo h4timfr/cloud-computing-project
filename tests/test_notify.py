@@ -199,7 +199,7 @@ class MessageTest(unittest.TestCase):
             "zone_id": "zone-riverside-north",
             "name": "Riverside North",
             "state": None,
-            "region": None,
+            "coast_group": None,
             "display_name": "Riverside North",
         })
         self.assertEqual(payload["incident"]["incident_id"], INCIDENT["incident_id"])

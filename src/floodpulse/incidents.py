@@ -108,11 +108,11 @@ def build_incident_item(
         "incident_id": incident_id_for(zone_id, opened_ts_epoch),
         "zone_id": zone_id,
         "zone_name": zone["name"],
-        # The incident is stamped with the city's state and region as the city table knew
-        # them when it opened, so an alert can name "Patna, Bihar" without a second lookup
-        # and a later edit to the table cannot silently rewrite the historical record.
+        # The incident is stamped with the city's state and coast group as the city table
+        # knew them when it opened, so an alert can name "Kochi, Kerala" without a second
+        # lookup and a later edit to the table cannot silently rewrite the historical record.
         "zone_state": scope["state"],
-        "zone_region": scope["region"],
+        "zone_coast_group": scope.get("coast_group"),
         "zone_display_name": scope["display_name"],
         "severity": severity,
         "severity_at_open": severity,
@@ -352,7 +352,12 @@ def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
         # the same city table, so the label is derived rather than missing. An id with no
         # definition at all comes back with ``None`` - never with a guessed state.
         "zone_state": item.get("zone_state", scope["state"]),
-        "zone_region": item.get("zone_region", scope["region"]),
+        # ``zone_region`` is the pre-M13 spelling of this column: incidents opened then are read
+        # with it rather than losing their geography, and its value was a region name, which
+        # nothing displays as a coast group.
+        "zone_coast_group": item.get(
+            "zone_coast_group", item.get("zone_region", scope.get("coast_group"))
+        ),
         "zone_display_name": item.get("zone_display_name") or scope["display_name"],
         "severity": item.get("severity"),
         "severity_at_open": item.get("severity_at_open"),

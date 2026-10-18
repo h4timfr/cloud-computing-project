@@ -851,12 +851,16 @@ def _zone_view(
     }
     if zone.get("country"):
         view["country"] = zone["country"]
-    # A demo zone has no state or region: the keys are omitted rather than sent empty, so a
-    # reader can tell "this zone has no geography" from "this city's state is unknown".
+    # A demo zone has no state or coast group: the keys are omitted rather than sent empty, so
+    # a reader can tell "this zone has no geography" from "this city's state is unknown".
     if scope["state"] is not None:
         view["state"] = scope["state"]
-    if scope["region"] is not None:
-        view["region"] = scope["region"]
+    if scope["coast_group"] is not None:
+        view["coast_group"] = scope["coast_group"]
+    # Why this city is in the fleet at all. A selection statement from the city table, not a
+    # risk statement: the live score is computed elsewhere and says nothing about it.
+    if scope.get("selection_reason") is not None:
+        view["selection_reason"] = scope["selection_reason"]
     if weather_cache is not None:
         age = cache_age_seconds(weather_cache, now_epoch)
         attempt = attempt_age_seconds(weather_cache, now_epoch)
@@ -1145,7 +1149,7 @@ def _handle_zones(
             "age_seconds": leader_age,
             "stale": leader_age > STALE_READING_SECONDS,
         }
-        for key in ("state", "region"):
+        for key in ("state", "coast_group"):
             if top.get(key) is not None:
                 highest[key] = top[key]
 

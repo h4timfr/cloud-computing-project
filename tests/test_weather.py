@@ -17,6 +17,14 @@ from floodpulse import weather
 from floodpulse.config import LIVE_ZONE_DEFINITIONS, WEATHER_TIMEOUT_SECONDS
 
 
+#: The first three requested cities, by position. The tests that use these are about how
+#: the parser handles position and mismatch, so they read the ids from the fleet instead of
+#: naming a city: which cities are monitored is asserted in test_cities.py.
+FIRST = LIVE_ZONE_DEFINITIONS[0]["zone_id"]
+SECOND = LIVE_ZONE_DEFINITIONS[1]["zone_id"]
+THIRD = LIVE_ZONE_DEFINITIONS[2]["zone_id"]
+
+
 def entry(latitude: float, longitude: float, *, stamps=None, rain=None, soil=None, current="2026-10-15T18:15"):
     hours = stamps if stamps is not None else [
         "2026-10-15T17:00",
@@ -48,13 +56,16 @@ class BuildUrlTest(unittest.TestCase):
         self.assertTrue(url.startswith(weather.WEATHER_API_URL if hasattr(weather, "WEATHER_API_URL")
                                        else "https://api.open-meteo.com/v1/forecast"))
         # every configured coordinate, in the configured order, in this one URL: the
-        # fleet travels in a single request however many cities it holds (M11: 15)
+        # fleet travels in a single request however many cities it holds (M13: 12)
         expected_latitudes = ",".join(f"{float(zone['latitude']):.4f}" for zone in LIVE_ZONE_DEFINITIONS)
         expected_longitudes = ",".join(f"{float(zone['longitude']):.4f}" for zone in LIVE_ZONE_DEFINITIONS)
         self.assertIn("latitude=" + expected_latitudes.replace(",", "%2C"), url)
         self.assertIn("longitude=" + expected_longitudes.replace(",", "%2C"), url)
         self.assertEqual(url.count("latitude="), 1, "the fleet must travel in one request")
-        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), 15)
+        self.assertEqual(len(LIVE_ZONE_DEFINITIONS), 12)
+        self.assertEqual(set(LIVE_ZONE_DEFINITIONS[0]) & {"coast_group", "selection_reason"},
+                         {"coast_group", "selection_reason"},
+                         "a monitored city without a coast group or a selection reason")
 
     def test_requests_the_fields_we_actually_use(self):
         url = weather.build_url(LIVE_ZONE_DEFINITIONS)
@@ -139,46 +150,46 @@ class ParseResponseTest(unittest.TestCase):
 
     def test_coordinate_mismatch_is_rejected_not_mislabeled(self):
         payload = response_for(LIVE_ZONE_DEFINITIONS)
-        payload[2]["latitude"], payload[2]["longitude"] = 51.5, -0.12  # London instead of Bengaluru
+        payload[2]["latitude"], payload[2]["longitude"] = 51.5, -0.12  # London instead of the third city
         observations = weather.parse_response(payload, LIVE_ZONE_DEFINITIONS)
-        self.assertFalse(observations["city-bengaluru"].ok)
-        self.assertIn("does not match", str(observations["city-bengaluru"].error))
-        self.assertIsNone(observations["city-bengaluru"].rainfall_mm_per_hr)
-        self.assertTrue(observations["city-chennai"].ok)
+        self.assertFalse(observations[THIRD].ok)
+        self.assertIn("does not match", str(observations[THIRD].error))
+        self.assertIsNone(observations[THIRD].rainfall_mm_per_hr)
+        self.assertTrue(observations[FIRST].ok)
 
     def test_missing_hourly_field_is_rejected(self):
         payload = response_for(LIVE_ZONE_DEFINITIONS[:1])
         del payload[0]["hourly"]["soil_moisture_0_to_7cm"]
         observation = weather.parse_response(payload, LIVE_ZONE_DEFINITIONS[:1])
-        self.assertFalse(observation["city-chennai"].ok)
-        self.assertIsNone(observation["city-chennai"].soil_saturation_pct)
+        self.assertFalse(observation[FIRST].ok)
+        self.assertIsNone(observation[FIRST].soil_saturation_pct)
 
     def test_missing_current_block_is_rejected(self):
         payload = response_for(LIVE_ZONE_DEFINITIONS[:1])
         del payload[0]["current"]
         observation = weather.parse_response(payload, LIVE_ZONE_DEFINITIONS[:1])
-        self.assertFalse(observation["city-chennai"].ok)
+        self.assertFalse(observation[FIRST].ok)
 
     def test_fewer_entries_than_zones_marks_the_rest_unknown(self):
         payload = response_for(LIVE_ZONE_DEFINITIONS[:2])
         observations = weather.parse_response(payload, LIVE_ZONE_DEFINITIONS)
-        self.assertTrue(observations["city-chennai"].ok)
-        self.assertTrue(observations["city-mumbai"].ok)
-        self.assertFalse(observations["city-bengaluru"].ok)
-        self.assertEqual(observations["city-bengaluru"].error, "no_provider_entry")
+        self.assertTrue(observations[FIRST].ok)
+        self.assertTrue(observations[SECOND].ok)
+        self.assertFalse(observations[THIRD].ok)
+        self.assertEqual(observations[THIRD].error, "no_provider_entry")
 
     def test_absurd_rainfall_is_rejected_rather_than_clamped(self):
         payload = response_for(LIVE_ZONE_DEFINITIONS[:1])
         payload[0]["hourly"]["precipitation"] = [0.0, 9000.0, 0.0]
         observation = weather.parse_response(payload, LIVE_ZONE_DEFINITIONS[:1])
-        self.assertFalse(observation["city-chennai"].ok)
-        self.assertIn("outside the valid range", str(observation["city-chennai"].error))
+        self.assertFalse(observation[FIRST].ok)
+        self.assertIn("outside the valid range", str(observation[FIRST].error))
 
     def test_soil_moisture_outside_physical_range_is_rejected(self):
         payload = response_for(LIVE_ZONE_DEFINITIONS[:1])
         payload[0]["hourly"]["soil_moisture_0_to_7cm"] = [0.2, 7.5, 0.2]
         observation = weather.parse_response(payload, LIVE_ZONE_DEFINITIONS[:1])
-        self.assertFalse(observation["city-chennai"].ok)
+        self.assertFalse(observation[FIRST].ok)
 
     def test_non_object_payload_is_an_error(self):
         with self.assertRaises(weather.WeatherError):
@@ -252,8 +263,8 @@ class ClientTest(unittest.TestCase):
         self.body = json.dumps(payload).encode("utf-8")
         result = self.client.fetch(LIVE_ZONE_DEFINITIONS)
         self.assertTrue(result.ok)
-        self.assertFalse(result.observations["city-chennai"].ok)
-        self.assertTrue(result.observations["city-mumbai"].ok)
+        self.assertFalse(result.observations[FIRST].ok)
+        self.assertTrue(result.observations[SECOND].ok)
 
     def test_no_zones_never_calls_the_provider(self):
         result = self.client.fetch([])
