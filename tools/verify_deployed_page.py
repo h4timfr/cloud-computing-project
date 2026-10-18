@@ -60,7 +60,7 @@ EXPECTED = {
     "the unsubscribe instruction is deployed": "Amazon SNS includes its own unsubscribe link",
     # the model left the header and lives in the folded technical panel instead
     "the model is in the folded technical panel": '<b id="summary-model">heuristic-v1</b>',
-    # M11: fifteen cities, and the three things that make finding one of them possible
+    # M13: twelve coastal cities, and the three things that make finding one of them possible
     "the search box is labelled for what it searches": 'id="cities-search-label"',
     "the toolbar is a search landmark": 'class="cities-toolbar" id="cities-toolbar" role="search"',
     "the result count is a polite status region": 'id="cities-count" role="status" aria-live="polite"',
@@ -151,12 +151,12 @@ NEEDLES = {
         "a card image is decorative and reserves its box": 'alt="" width="800" height="450"',
         "every card image below the first row is lazy": 'loading="lazy"',
         "the image is decoded off the main thread": 'decoding="async"',
-        # M11: the fifteen-city fleet
+        # M13: the coastal fleet
         "the chips are built beside the other renderers": 'function filterChips(kind, options, active)',
         "a chip says whether it is pressed": 'aria-pressed=',
         "the fleet's scope is stated, not implied": 'function fleetScopeNote(payload)',
-        "the drawn plate names the region of its city": 'city-thumb-region',
-        "a city card names its state and region": 'data-f="city_state"',
+        "the drawn plate names the coast of its city": 'city-thumb-coast',
+        "a city card names its state and coast group": 'data-f="city_state"',
         "an alert row names the city and the state": 'function incidentZoneLabel(incident)',
         "a city card says how to open it": 'function openCityLabel(noun)',
     },
@@ -179,7 +179,7 @@ NEEDLES = {
         "the hero is patched field by field": "setText('hero-monitor'",
         "the band edges have one definition": "FP.SCORE_BAND_EDGES",
         "the alert preview reads the same incidents as the alerts page": "renderAlertPreview",
-        # M11: the fifteen-city fleet
+        # M13: the coastal fleet
         "the Overview shows a named limit, not the fleet": 'OVERVIEW_CITY_LIMIT = 5',
         "the Overview counts the fleet from the payload": 'payload.zone_count',
         "the empty state offers the way back": 'clear-filters',
@@ -196,9 +196,9 @@ NEEDLES = {
         "a placeholder has its own shape": ".skel-card",
         "the touch target rule is deployed": "min-height: 44px",
         # M11.2: the control bar is a grid with a tier per width, and a metric row is four columns
-        "the desktop bar is one row": "grid-template-areas: 'search region risk sort';",
-        "the tablet bar is two rows": "grid-template-areas: 'search sort' 'region risk';",
-        "the phone bar is one column": "grid-template-areas: 'search' 'region' 'risk' 'sort';",
+        "the desktop bar is one row": "grid-template-areas: 'search coast risk sort';",
+        "the tablet bar is two rows": "grid-template-areas: 'search sort' 'coast risk';",
+        "the phone bar is one column": "grid-template-areas: 'search' 'coast' 'risk' 'sort';",
         "a metric row declares four columns": "grid-template-columns: minmax(130px, 1fr) auto minmax(90px, auto)",
         "the phone metric row is two lines": "grid-template-areas: 'name source' 'value track';",
         # M10: the spotlight sentence is set as prose, and the model's own words are set apart
@@ -225,9 +225,9 @@ NEEDLES = {
         "the ordinary card surface is deployed": "--surface-card",
         "the header surface is deployed": "--topbar-surface",
         "the hero keeps its cool edge": "--hero-edge",
-        # M11: the fifteen-city fleet
+        # M13: the coastal fleet
         "a chip reuses the button style and keeps its target size": '.filter-chip',
-        "the drawn plate's region label is styled": '.city-thumb-region',
+        "the drawn plate's coast label is styled": '.city-thumb-coast',
         "the empty state is styled": '.cities-empty',
     },
 }

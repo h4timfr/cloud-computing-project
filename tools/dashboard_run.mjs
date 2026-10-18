@@ -560,7 +560,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     .map((entry) => entry.id);
 
   check('the overview shows the highest-risk few, and a way to the rest', () => {
-    // M11: fifteen cities are more than an overview should carry. The cards are the highest-risk
+    // M13: twelve coastal cities are more than an overview should carry. The cards are the highest-risk
     // few, in the fleet's own order; the page says how many cities there are; and the rest are
     // one click away. The set has to be exactly right in both directions - no card outside the
     // top few, and none of the top few missing.
@@ -1474,7 +1474,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     // Exact in both directions, over the cards that are actually on this page: an image for
     // every mapped city it shows, and none at all for a city with no prepared nightscape - of
     // which the live fleet has ten, and the demo fleet's invented zones have all of theirs.
-    // The whole fleet's imagery is pinned on the Cities page, where all fifteen cities are.
+    // The whole fleet's imagery is pinned on the Cities page, where every city is.
     const shownMapped = cards.filter((card) => FP.cityImageFor({ zone_id: /data-zone="([^"]+)"/.exec(card)[1] }));
     assert.equal(images, shownMapped.length,
       `the page loaded ${images} images for the ${shownMapped.length} mapped cities it shows`);
@@ -1522,12 +1522,12 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.ok(!/heuristic|weighted base/.test(html), 'the preview shows model vocabulary');
   });
 
-  group('M11: fifteen cities on one page, and no request to filter them');
+  group('M13: twelve coastal cities on one page, and no request to filter them');
 
   /* The controls are driven the way a browser drives them: the search box with an input event,
    * a chip with a click resolved to that chip (target.closest), the select with a change. Every
    * one of them must filter the list already in memory - the whole point of doing this on the
-   * client is that finding one city of fifteen costs the API nothing. */
+   * client is that finding one city of the fleet costs the API nothing. */
   const typeSearch = (source, value) => source.dom.fire(source.dom.node('cities-search'), 'input', { target: { value } });
   const clickChip = (source, group, attribute, value) => source.dom.fire(source.dom.node(group), 'click', {
     target: source.dom.targetWith(`[data-${attribute}]`, `data-${attribute}`, value)
@@ -1604,48 +1604,59 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.equal(find.dom.html('cities-empty'), '', 'the empty state stayed after clearing the search');
   });
 
-  await checkAsync('the region and risk chips filter the whole fleet, and promise what they deliver', async () => {
+  await checkAsync('the coast and risk chips filter the whole fleet, and promise what they deliver', async () => {
     const filter = await bootOnCities();
     const before = filter.runtime.countMatching('/zones');
-    const regions = payload.coverage.regions;
+    const coasts = payload.coverage.coast_groups;
+    const west = coasts.find((entry) => entry.coast_group === 'West Coast');
+    // M13: assert the grouping before using it, so a payload without this coast fails here rather
+    // than quietly comparing a rendered count against undefined.
+    assert.ok(west && west.city_count > 0,
+      `the payload groups no West Coast cities: ${JSON.stringify(coasts.map((c) => c.coast_group))}`);
 
-    // one chip per region the API grouped the fleet into, plus All - nothing invented, nothing missing
-    const regionGroup = filter.dom.html('cities-region');
-    assert.equal((regionGroup.match(/data-region="/g) || []).length, regions.length + 1,
-      `the region filter offers ${(regionGroup.match(/data-region="/g) || []).length} chips for ${regions.length} regions`);
-    regions.forEach((entry) => assert.ok(regionGroup.includes(`data-region="${entry.region}"`),
-      `no chip for the ${entry.region} region`));
+    // M13: the status strip names the product, the fleet size and the coast groups it is showing,
+    // all three read from this payload rather than hard-coded here.
+    const stripCount = payload.zone_count || payload.zones.length;
+    assert.match(filter.dom.text('brand-subtitle'),
+      new RegExp(`^FloodPulse Coastal India · ${stripCount} coastal cities in ${coasts.length} coast group`),
+      `the status strip reads "${filter.dom.text('brand-subtitle')}"`);
 
-    const south = regions.find((entry) => entry.region === 'South');
-    clickChip(filter, 'cities-region', 'region', 'South');
-    assert.equal(gridCards(filter), south.city_count,
-      `the South chip shows ${gridCards(filter)} cities; the API reported ${south.city_count}`);
-    assert.match(filter.dom.html('cities-region'), /data-region="South" aria-pressed="true"/,
-      'the active region chip is not marked pressed for assistive tech');
-    assert.match(filter.dom.html('cities-region'), /data-region="all" aria-pressed="false"/,
-      'the All region chip is still marked pressed');
+    // one chip per coast group the API grouped the fleet into, plus All - nothing invented, nothing missing
+    const coastGroup = filter.dom.html('cities-coast');
+    assert.equal((coastGroup.match(/data-coast="/g) || []).length, coasts.length + 1,
+      `the coast filter offers ${(coastGroup.match(/data-coast="/g) || []).length} chips for ${coasts.length} coast groups`);
+    coasts.forEach((entry) => assert.ok(coastGroup.includes(`data-coast="${entry.coast_group}"`),
+      `no chip for the ${entry.coast_group} coast group`));
 
-    // a risk floor stacks on top of the region, and the count line follows every change
-    const both = payload.zones.filter((zone) => zone.region === 'South' && zone.latest
+    clickChip(filter, 'cities-coast', 'coast', 'West Coast');
+    assert.equal(gridCards(filter), west.city_count,
+      `the West Coast chip shows ${gridCards(filter)} cities; the API reported ${west.city_count}`);
+    assert.match(filter.dom.html('cities-coast'), /data-coast="West Coast" aria-pressed="true"/,
+      'the active coast chip is not marked pressed for assistive tech');
+    assert.match(filter.dom.html('cities-coast'), /data-coast="all" aria-pressed="false"/,
+      'the All coast chip is still marked pressed');
+
+    // a risk floor stacks on top of the coast, and the count line follows every change
+    const both = payload.zones.filter((zone) => zone.coast_group === 'West Coast' && zone.latest
       && zone.latest.risk_class !== 'NORMAL' && zone.latest.risk_class !== 'WATCH');
     clickChip(filter, 'cities-risk', 'risk', 'WARNING');
     assert.equal(gridCards(filter), both.length,
-      `South + WARNING+ shows ${gridCards(filter)} cities, expected ${both.length}`);
+      `West Coast + WARNING+ shows ${gridCards(filter)} cities, expected ${both.length}`);
     // The sentence follows the payload: the recorded fleet is calm, so a WARNING floor matches
     // nothing and the sentence says so. Either way it names what is in force.
     if (both.length) {
       assert.equal(filter.dom.text('cities-count'),
-        `Showing ${both.length} ${both.length === 1 ? 'city' : 'cities'} · South · WARNING+`,
+        `Showing ${both.length} ${both.length === 1 ? 'city' : 'cities'} · West Coast · WARNING+`,
         `the count reads "${filter.dom.text('cities-count')}"`);
     } else {
       assert.equal(filter.dom.text('cities-count'), 'No cities match these filters.',
         `the count reads "${filter.dom.text('cities-count')}"`);
     }
     both.forEach((zone) => assert.ok(gridOrder(filter).includes(zone.zone_id),
-      `${zone.zone_id} is South and at WARNING or worse, but the filters hid it`));
+      `${zone.zone_id} is on the West Coast and at WARNING or worse, but the filters hid it`));
 
     // and All on both controls brings every city back
-    clickChip(filter, 'cities-region', 'region', 'all');
+    clickChip(filter, 'cities-coast', 'coast', 'all');
     clickChip(filter, 'cities-risk', 'risk', 'all');
     assert.equal(gridCards(filter), payload.zones.length, 'the All chips did not restore the fleet');
     assert.equal(filter.runtime.countMatching('/zones'), before,
@@ -1729,33 +1740,33 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     const mapped = payload.zones.filter((zone) => FP.cityImageFor(zone));
     assert.equal((grid.match(/<img class="city-photo"/g) || []).length, mapped.length,
       `the grid loads ${(grid.match(/<img class="city-photo"/g) || []).length} images for ${mapped.length} mapped cities`);
-    // a city with no photograph keeps the drawn plate, and the plate names its region
-    const plateRegions = (grid.match(/class="city-thumb-region"/g) || []).length;
-    assert.equal(plateRegions, payload.zones.length - mapped.length,
-      `${plateRegions} drawn plates name a region, expected ${payload.zones.length - mapped.length}`);
+    // a city with no photograph keeps the drawn plate, and the plate names its coast group
+    const plateCoasts = (grid.match(/class="city-thumb-coast"/g) || []).length;
+    assert.equal(plateCoasts, payload.zones.length - mapped.length,
+      `${plateCoasts} drawn plates name a coast group, expected ${payload.zones.length - mapped.length}`);
     assert.ok(!/src="[^"]*https?:/.test(grid), 'a city card references a remote asset');
 
-    // every card names its city, its state, its region and the way in
+    // every card names its city, its state, its coast group and the way in
     payload.zones.forEach((zone) => {
       assert.ok(grid.includes(`href="#/cities/${zone.zone_id}"`), `${zone.zone_id} has no link to its city view`);
       assert.ok(grid.includes(`${zone.name}, ${zone.state}`), `${zone.zone_id} does not name its state`);
-      assert.ok(grid.includes(`&#183; ${zone.region} region`) || grid.includes(`· ${zone.region} region`),
-        `${zone.zone_id} does not name its region`);
+      assert.ok(grid.includes(`&#183; ${zone.coast_group}`) || grid.includes(`· ${zone.coast_group}`),
+        `${zone.zone_id} does not name its coast group`);
       assert.ok(grid.includes('Open city'), `${zone.zone_id} does not say how to open it`);
     });
-    // and the caveat is stated, not implied: the cities are monitored, not the states
-    assert.ok(!/monitoring the (state|region|country)/i.test(grid),
+    // and the caveat is stated, not implied: the cities are monitored, not the states or a coast
+    assert.ok(!/monitoring the (state|coast|region|country)/i.test(grid),
       'the Cities page claims broader coverage than the fleet has');
   });
 
-  check('no surface claims that a state, a region or the country is monitored', () => {
+  check('no surface claims that a state, a coast or the country is monitored', () => {
     ['ov-intro', 'ov-headline', 'ov-subline', 'hero-monitor', 'cities-lede', 'cities-coverage',
       'city-cards-note', 'city-detail', 'about-cities', 'about-limitations'].forEach((id) => {
       const text = `${dom.html(id)} ${dom.text(id)}`;
-      assert.ok(!/monitoring (the )?(state|region|country)/i.test(text),
+      assert.ok(!/monitoring (the )?(state|coast|region|country)/i.test(text),
         `${id} claims the wrong scope: ${text.slice(0, 160)}`);
-      assert.ok(!/\d+ (states|regions) (are )?(monitored|watched|covered)/i.test(text),
-        `${id} implies a state or region is monitored: ${text.slice(0, 160)}`);
+      assert.ok(!/\d+ (states|coasts|regions) (are )?(monitored|watched|covered)/i.test(text),
+        `${id} implies a state, a coast or a region is monitored: ${text.slice(0, 160)}`);
       assert.ok(!/\bis (safe|dry)\b/i.test(text), `${id} calls something safe: ${text.slice(0, 160)}`);
     });
   });

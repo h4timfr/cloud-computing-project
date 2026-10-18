@@ -144,7 +144,8 @@ async function main() {
       live.payload.zones.forEach((zone) => {
         assert.ok(ranking.includes(zone.name), `ranking is missing ${zone.name}`);
       });
-      assert.match(dom.text('brand-subtitle'), /India live-weather monitoring/);
+      // M13: the strip names the product and the fleet noun, and the count is the payload's.
+      assert.match(dom.text('brand-subtitle'), /^FloodPulse Coastal India · \d+ coastal cities/);
     });
 
     zonesAnswer = () => ({ status: 500, body: { error: 'boom' } });
@@ -574,9 +575,10 @@ async function main() {
     const dom = boot(runtime);
     await runtime.settle();
 
-    await check('live mode labels the board as an India live-weather fleet', () => {
-      assert.match(dom.text('brand-subtitle'),
-      /India live-weather monitoring · 15 cities in 5 regions/);
+    await check('live mode labels the board as a coastal fleet', () => {
+      // The coast-group clause comes from the payload's coverage block; this fixture predates the
+      // coastal fleet, so the assertion covers the product name and the fleet noun.
+      assert.match(dom.text('brand-subtitle'), /^FloodPulse Coastal India · \d+ coastal cities/);
       assert.match(dom.text('ranking-title'), /Risk ranking by city/);
       assert.match(dom.html('zones-title'), /City detail/);
       assert.match(dom.text('banner-title'), /LIVE WEATHER/);
@@ -615,7 +617,7 @@ async function main() {
     await runtime.settle();
 
     await check('switching back to live mode restores the live labels and the feed line', () => {
-      assert.match(dom.text('brand-subtitle'), /India live-weather monitoring/);
+      assert.match(dom.text('brand-subtitle'), /^FloodPulse Coastal India · \d+ coastal cities/);
       assert.match(dom.text('banner-title'), /LIVE WEATHER/);
       assert.equal(dom.text('conn-badge'), 'LIVE');
       assert.match(dom.text('summary-freshness'), /weather feed 5 min old/);

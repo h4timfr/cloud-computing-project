@@ -918,7 +918,11 @@ check('dashboard has no remote dependencies or CDN assets', () => {
   // reader chooses to follow is a documentation destination, not a dependency: nothing in this
   // project fetches those hosts, and they must never be loaded as an asset. They are listed
   // explicitly (and only as destinations) so a stray asset URL to them still fails below.
-  const allowedOfficialHosts = ['mausam.imd.gov.in', 'ndma.gov.in'];
+  // M13 adds the sources the coastal fleet is selected from: the ministry report, the weather
+  // department's coastal-station table, the ocean information service, a World Bank project
+  // document and the hazard atlas built by GFDRR and the World Bank.
+  const allowedOfficialHosts = ['mausam.imd.gov.in', 'ndma.gov.in', 'moef.gov.in',
+    'rsmcnewdelhi.imd.gov.in', 'tsunami.incois.gov.in', 'documents1.worldbank.org', 'thinkhazard.org'];
   [['index.html', htmlSource], ['styles.css', cssSource], ['lib.js', libSource], ['app.js', appSource]]
     .forEach(([name, source]) => {
       // Everything except <a href="..."> is an asset/endpoint/dependency reference and must be
@@ -955,7 +959,8 @@ check('dashboard has no remote dependencies or CDN assets', () => {
   const docHosts = [...new Set(docLinks.map((match) => new URL(match[1]).host))];
   const unexpectedDocs = docHosts.filter((host) => !allowedRemoteHosts.includes(host) && !allowedOfficialHosts.includes(host));
   assert.deepEqual(unexpectedDocs, [], `the page links to an unlisted external host: ${unexpectedDocs.join(', ')}`);
-  assert.ok(docHosts.length <= 3, `the page links out to ${docHosts.length} different external sites`);
+  // The cap keeps link sprawl out. M13 cites five sources, all of them in the list above.
+  assert.ok(docHosts.length <= 8, `the page links out to ${docHosts.length} different external sites`);
 });
 
 check('site contains no credentials, keys or tokens', () => {
@@ -2641,7 +2646,7 @@ check('M10: the hero answers the question in the first screen, with no formula i
   assert.match(hero, /data-band="unknown"/, 'the hero ships without a neutral band');
   // icon (decorative), kicker, the visitor's question, the answer, then the reasoning
   assert.match(hero, /class="hero-glyph" aria-hidden="true"/, 'the hero icon is not decorative');
-  assert.match(hero, /Live flood risk monitoring/, 'the hero has no kicker');
+  assert.match(hero, /Live coastal flood-risk monitoring/, 'the hero has no kicker');
   assert.match(hero, /<h2[^>]*id="ov-title"[^>]*>[^<]*\?/, 'the hero does not ask the visitor\'s question');
   assert.match(hero, /id="ov-headline"[^>]*role="status"[^>]*aria-live="polite"/,
     'the hero answer is not announced politely');
@@ -3284,7 +3289,7 @@ check('M11: the Overview names the fleet it is showing part of, and links to all
   assert.match(appSource, /var OVERVIEW_CITY_LIMIT = 5;/,
     'the Overview limit is not defined in one place');
   assert.match(appSource, /payload\.zone_count/, 'no sentence counts the fleet from the payload');
-  assert.ok(!/\b15 cities\b/.test(htmlSource + appSource + libSource),
+  assert.ok(!/\b15 cities\b|\b5 regions\b/.test(htmlSource + appSource + libSource),
     'a page hardcodes the size of the fleet instead of reading it from the payload');
 });
 
@@ -3296,34 +3301,34 @@ check('M11: every chip is built from the payload, and says what it sets', () => 
     'a chip does not tell assistive tech whether it is pressed');
   assert.match(libSource, /data-' \+ kind \+ '="' \+ escapeHtml\(option\.value\)/,
     'a chip does not carry the value it sets');
-  assert.match(libSource, /options\.push\(\{ value: entry\.region, label: entry\.region \}\)/,
-    'the region chips are not the regions the payload grouped the fleet into');
+  assert.match(libSource, /options\.push\(\{ value: entry\.coast_group, label: entry\.coast_group \}\)/,
+    'the coast chips are not the coast groups the payload grouped the fleet into');
   assert.match(libSource, /BANDS\.indexOf\(String\([\s\S]{0,140}?\.toUpperCase\(\)\)/,
     'a risk floor is compared with a case the API does not use');
   ['WATCH', 'WARNING', 'CRITICAL'].forEach((floor) => {
     assert.match(appSource, new RegExp(`'${floor}'`), `the risk filter does not offer ${floor}+`);
   });
   // filtering is client-side: a control can never be the reason the page asks for the fleet again
-  assert.ok(!/fetch\([^)]*cities-(search|region|risk|sort)/.test(appSource),
+  assert.ok(!/fetch\([^)]*cities-(search|coast|risk|sort)/.test(appSource),
     'a filter control fetches from the API instead of filtering what the page already has');
 });
 
-check('M11: a region is navigation, never a second risk score', () => {
-  assert.match(libSource, /regions: \(Array\.isArray\(block\.regions\) \? block\.regions : \[\]\)/,
+check('M13: a coast group is navigation, never a second risk score', () => {
+  assert.match(libSource, /coasts: \(Array\.isArray\(block\.coast_groups\) \? block\.coast_groups : \[\]\)/,
     'the coverage block is not read as the API sent it');
-  assert.ok(!/region[\s\S]{0,40}?risk_score/i.test(libSource + appSource),
-    'a region is given a risk score of its own');
-  assert.match(cssSource, /\.city-thumb-region\s*\{/, 'the drawn plate cannot name its region');
-  assert.match(libSource, /class="city-thumb-region"/, 'no drawn plate names the region of its city');
+  assert.ok(!/coast[\s\S]{0,40}?risk_score/i.test(libSource + appSource),
+    'a coast group is given a risk score of its own');
+  assert.match(cssSource, /\.city-thumb-coast\s*\{/, 'the drawn plate cannot name its coast');
+  assert.match(libSource, /class="city-thumb-coast"/, 'no drawn plate names the coast of its city');
   assert.match(libSource, /function fleetScopeNote\(payload\)/,
     'the fleet has no sentence stating what it does and does not cover');
 });
 
-check('M11: a city card names the city, its state and its region, and the way into it', () => {
+check('M13: a city card names its city, state, coast group, and the way into it', () => {
   assert.match(libSource, /function cityPlaceLine\(zone\)/, 'a card has no place line');
   assert.match(libSource, /class="city-place" data-f="city_state"/,
     'the place line is not marked as the city and its state');
-  assert.match(libSource, /class="city-region"> · /, 'the place line does not name the region');
+  assert.match(libSource, /class="city-coast"> · /, 'the place line does not name the coast group');
   assert.match(libSource, /function openCityLabel\(noun\)/, 'a card does not say how to open it');
   assert.match(libSource, /class="city-open-label" aria-hidden="true"/,
     'the open label is not decorative, so a screen reader hears it twice');
@@ -3412,10 +3417,10 @@ check('M11.2: the control bar declares a layout that fits every width the brief 
   });
 
   // one grid, four named areas, and no tier that leaves a control without a home
-  assert.match(cssSource, /grid-template-areas: 'search region risk sort';/, 'no single-row desktop tier');
-  assert.match(cssSource, /grid-template-areas: 'search sort' 'region risk';/, 'no two-row tablet tier');
-  assert.match(cssSource, /grid-template-areas: 'search' 'region' 'risk' 'sort';/, 'no stacked phone tier');
-  ['search', 'region', 'risk', 'sort'].forEach((area) => {
+  assert.match(cssSource, /grid-template-areas: 'search coast risk sort';/, 'no single-row desktop tier');
+  assert.match(cssSource, /grid-template-areas: 'search sort' 'coast risk';/, 'no two-row tablet tier');
+  assert.match(cssSource, /grid-template-areas: 'search' 'coast' 'risk' 'sort';/, 'no stacked phone tier');
+  ['search', 'coast', 'risk', 'sort'].forEach((area) => {
     assert.match(cssSource, new RegExp(`grid-area: ${area};`), `no field claims the ${area} area`);
   });
 });
@@ -3431,7 +3436,7 @@ check('M11.2: the chips wrap, and nothing in the bar is set to nowrap', () => {
   assert.equal(nowraps, 0, `the control bar contains ${nowraps} white-space: nowrap rule(s)`);
   assert.match(htmlSource, /class="cities-toolbar" id="cities-toolbar" role="search"/,
     'the toolbar lost its search role');
-  ['cities-search-label', 'cities-region-label', 'cities-risk-label'].forEach((id) => {
+  ['cities-search-label', 'cities-coast-label', 'cities-risk-label'].forEach((id) => {
     assert.ok(htmlSource.includes(`id="${id}"`), `the ${id} label is gone`);
   });
   assert.match(htmlSource, /<label class="toolbar-label" for="cities-sort">Sort by<\/label>/,

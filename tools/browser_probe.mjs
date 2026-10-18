@@ -57,7 +57,7 @@ const PROBE = `((args) => {
                bottom: Math.round(r.bottom), width: Math.round(r.width), height: Math.round(r.height) };
     };
     const text = (node) => (node ? (node.textContent || '').trim().replace(/\\s+/g, ' ') : '');
-    const fields = ['search', 'region', 'risk', 'sort'].map((name) => {
+    const fields = ['search', 'coast', 'risk', 'sort'].map((name) => {
       const node = document.querySelector('.toolbar-field-' + name);
       return { name, box: rect(node), scrollWidth: node ? node.scrollWidth : null,
                clientWidth: node ? node.clientWidth : null };

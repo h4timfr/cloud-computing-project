@@ -1,6 +1,6 @@
 """Probe the real Open-Meteo weather feed for the FloodPulse live zones (M4).
 
-Read-only diagnostic: it calls the provider once for all five Indian cities and prints
+Read-only diagnostic: it calls the provider once for the twelve coastal cities and prints
 exactly what FloodPulse would ingest, including the REAL / MODEL_DERIVED / SIMULATED
 provenance of every metric. It stores nothing and needs no AWS credentials.
 
