@@ -26,10 +26,7 @@
   };
 
   /* Plain-language explanation per metric, shown as a help tooltip in the city page. A visitor
-   * should not have to know what "soil saturation" is to read the page, and a visitor who does
-   * know should not have to see the explanation: it is behind a focusable help button.
-   * The noun/phrase pairs live with METRIC_PLAIN further down (they predate this table and are
-   * used by the sentence builders); the help line belongs here, next to the metric metadata. */
+ * Plain-language explanation per metric, shown as a help tooltip in the city page.: why it is the way it is - see README, "Interface notes". */
   var METRIC_HELP = {
     rainfall_mm_per_hr: 'How hard it is raining right now, in millimetres per hour.',
     soil_saturation_pct: 'How wet the ground is. Saturated ground cannot absorb more rain, so water runs off instead.',
@@ -182,12 +179,7 @@
   }
 
   /* What moved between two polls, in words.
-   *
-   * A board that shows only the current state asks the operator to compare snapshots in their
-   * head, which is exactly the work an early-warning display should do for them. Only real
-   * movements in the band ladder are reported: a zone that had no reading and now has one has
-   * "started reporting" - it has not "escalated". A zone that lost its reading is a data gap
-   * and is reported with a WATCH tone, because silence is not safety. */
+ * What moved between two polls, in words.: why it is the way it is - see README, "Interface notes". */
   function fleetChange(beforeClasses, payload) {
     var change = { escalated: [], eased: [], started: [], stopped: [], tone: '', text: '' };
     if (!beforeClasses || !payload || !payload.zones) return change;
@@ -351,10 +343,7 @@
     var contributions = (latest && latest.contributions) || [];
     var map = {};
     // The API names this field `variable`; an earlier fixture (and the harness built on it)
-    // called it `metric`. Both are accepted, because reading only one of them left the map
-    // empty on every real payload - the weighted contributions, the driver shares and the
-    // "what is not driving this" half of the plain sentence all silently disappeared, with no
-    // error anywhere. The live payload is checked against this in the runtime harness.
+    // The API names this field `variable`; an earlier fixture (and the harness built o: why it is the way it is - see README, "Interface notes".
     contributions.forEach(function (entry) {
       if (!entry) return;
       var key = entry.variable || entry.metric;
@@ -377,9 +366,7 @@
     var feed = payload ? feedStatus(payload, nowMs, opts.ageOffsetSeconds) : null;
     if (lastSuccessMs === null || lastSuccessMs === undefined) {
       // A page that has never reached the API is CONNECTING, and says why it is still waiting.
-      // The badge keeps that name on purpose (the detail carries the failure); what must not
-      // happen is the loading *pulse* running forever, which is handled by the DOM class the
-      // controller adds next to is-connecting.
+      // A page that has never reached the API is CONNECTING, and says why it is still wa: why it is the way it is - see README, "Interface notes".
       return {
         state: 'connecting',
         label: 'CONNECTING',
@@ -669,11 +656,7 @@
   /* ------------------------------------------------------------ feed health --- */
 
   // Everything the page knows about the external weather feed, derived only from the
-  // payload. Missing fields come back as null: nothing here is guessed or assumed fresh.
-  //
-  // ageOffsetSeconds is the time this page has been holding the payload: the API reports
-  // an age that was true when it answered, and adding the local elapsed time is what makes
-  // the age (and the countdown) keep moving between polls instead of freezing for 5 s.
+  // Everything the page knows about the external weather feed, derived only from the: why it is the way it is - see README, "Interface notes".
   function feedStatus(payload, nowMs, ageOffsetSeconds) {
     var data = payload || {};
     var weather = data.weather || {};
@@ -832,9 +815,7 @@
     var watchPct = scale.watchPct === null ? 0 : scale.watchPct;
     var criticalPct = scale.criticalPct === null ? 0 : scale.criticalPct;
     // The weighted contribution used to sit here as a bare number next to the value. On a list
-    // of cities that is an unexplained figure a visitor cannot use: the measurement, its value
-    // and its position against the thresholds are the public facts, and the weighting is part
-    // of "how was this calculated" on the city page and the methodology page.
+    // The weighted contribution used to sit here as a bare number next to the value. O: why it is the way it is - see README, "Interface notes".
     return (
       '<li class="metric" data-metric="' + escapeHtml(metric) + '">' +
       '<span class="metric-name">' + escapeHtml(METRIC_META[metric].label) +
@@ -863,6 +844,7 @@
     // words. It used to sit on the Overview card; the Overview is now five photographs and five
     // answers, so the sentence lives here, where the numbers that explain it already are.
     var summary = plainRiskSummary(zone);
+    var noun = (options && options.noun) || 'city';
     var driverLine = summary.driverLabel
       ? '<p class="zone-driver" data-f="driver-sentence">' + icon('rain', 15) +
         '<span>' + escapeHtml(summary.driverLabel) + ' is the main factor behind this score.</span></p>'
@@ -899,9 +881,17 @@
       // The card lifts on hover and on focus, so it has to be a real target: this list used
       // to be a dead end, with #/cities/<id> only reachable from the Overview grid.
       '<h3><a class="zone-link" href="#/cities/' + escapeHtml(zone.zone_id) + '">' +
-      escapeHtml(zone.name) + '</a></h3>' +
+      escapeHtml(zone.name) + '</a>' + openCityLabel((options && options.noun) || 'city') + '</h3>' +
       '<p class="zone-sub"><span data-f="sensor_node_id">' + escapeHtml(latest ? latest.sensor_node_id : 'no node') + '</span>' +
       '<span class="dot">·</span><span data-f="age">' + escapeHtml(latest ? ageLabel(latest.age_seconds) : 'no data') + '</span></p>' +
+      // the city and the state it is in, as the API reported them; a zone with no state
+      // (the simulated fleet) renders nothing here rather than an empty line
+      (typeof zone.state === 'string' && zone.state.trim()
+        ? '<p class="zone-place" data-f="zone_place">' + escapeHtml(cityPlaceText(zone)) +
+          (typeof zone.region === 'string' && zone.region
+            ? '<span class="zone-region"> · ' + escapeHtml(zone.region) + ' region</span>' : '') +
+          '</p>'
+        : '') +
       '<p class="zone-provenance" data-f="provenance">' + zoneProvenance(zone) + '</p>' +
       '<p class="zone-sources" data-f="source-set">' + sourceSummary(zone) + '</p>' +
       '</div>' +
@@ -916,9 +906,7 @@
           '<span class="spark-label">session trend from this page\'s polls</span>' +
           '</div>' +
           // The plain-language reason, not the model's own output string. The raw line
-          // ("risk_score 0.3877 = weighted base ...") used to be printed here verbatim, which
-          // put the formula, the variable names and the arithmetic in front of every visitor on
-          // the city list. It stays in the technical disclosures on the city page.
+          // The plain-language reason, not the model's own output string. The raw line: why it is the way it is - see README, "Interface notes".
           '<p class="explain" data-f="why">' + escapeHtml(plainRiskSummary(zone).why) + '</p>' +
           '<p class="muted small">Weights, thresholds and the raw model output for this reading are on the ' +
           '<a class="zone-link" href="#/cities/' + escapeHtml(zone.zone_id) + '">' + escapeHtml(zone.name) +
@@ -1182,11 +1170,7 @@
   /* ------------------------------------------------------------------ names --- */
 
   /* Every engineering identifier the API can send, in words a visitor can read.
-   *
-   * The rule for the public views is absolute: a snake_case token never reaches them. A
-   * variable this page has not seen before still has to be described somehow, so the fallback
-   * strips the unit suffix and the underscores rather than printing the raw name - and the raw
-   * name itself stays available in the technical disclosures, where it belongs. */
+ * Every engineering identifier the API can send, in words a visitor can read.: why it is the way it is - see README, "Interface notes". */
   var UNIT_SUFFIXES = ['_mm_per_hr', '_mm_per_hour', '_m3_per_s', '_m3_s', '_pct', '_percent', '_mm', '_m'];
 
   function humaniseVariable(value) {
@@ -1233,14 +1217,7 @@
   }
 
   /* ------------------------------------------------------------------ icons ---
-   *
-   * One local icon set, defined as SVG path data and inlined into the markup. No icon font, no
-   * CDN, no sprite fetch: the page has to satisfy `script-src 'self'` and stay one request per
-   * asset, and inline SVG is the only thing that does both. Every icon is drawn on the same
-   * 24x24 grid with one stroke width and round caps, inherits `currentColor` so it takes the
-   * colour of whatever it sits in, and is hidden from assistive technology by default - the
-   * words next to it carry the meaning, and a screen reader should not hear "cloud" twice.
-   */
+ * icons: why it is the way it is - see README, "Interface notes". */
   var ICON_PATHS = {
     // weather and water
     rain: 'M7 15a4.2 4.2 0 0 1 .5-8.3 5.6 5.6 0 0 1 10.6 1.4A3.6 3.6 0 0 1 17.4 15Z|M8.5 18.4l-1 2.2|M12 18.4l-1 2.2|M15.5 18.4l-1 2.2',
@@ -1330,17 +1307,7 @@
   }
 
   /* One plain sentence explaining *why* the city is in its band, plus one line of advice.
-   *
-   * The sentence answers the two questions a visitor actually has: which measurement is pushing
-   * the score up, and which ones are not. Both halves come from the API's own contribution
-   * entries - the named driver is the one the API listed first, and a measurement is only called
-   * quiet when its own value and its own watch threshold say so. Nothing is assumed about the
-   * channels that are not driving risk, and no formula, weight or variable name appears here:
-   * those live in the collapsed technical section and on the methodology page.
-   *
-   *   "Risk is currently WATCH. Soil saturation is the main contributor, while rainfall, drain
-   *    level and flow rate remain below their watch levels. Conditions are holding steady."
-   */
+ * One plain sentence explaining *why* the city is in its band, plus one line of ad: why it is the way it is - see README, "Interface notes". */
   function reasonSentence(zone) {
     var latest = zone && zone.latest;
     if (!latest) return '';
@@ -1372,9 +1339,7 @@
     text += '.';
 
     // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one that
-    // answers "which way is this going". Comparing the label to 'rising'/'falling' never
-    // matched, so neither sentence could ever appear on a flash-flood board. The numbers stay
-    // in the technical table: this sentence is the plain-language one.
+    // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one : why it is the way it is - see README, "Interface notes".
     var direction = trendDirection(latest.trend);
     if (direction === 'up') text += ' Conditions are getting worse.';
     else if (direction === 'down') text += ' Conditions are easing.';
@@ -1425,9 +1390,7 @@
   /* ---------------------------------------------------------- routing --- */
 
   /* '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknown ->
-   * the default view. Kept tiny and total: the router can never throw on a bad URL, including
-   * a fragment that is not valid percent-encoding ('#/cities/%'), where decodeURIComponent
-   * throws a URIError that would otherwise abort start() and leave the page never polling. */
+ * '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknow: why it is the way it is - see README, "Interface notes". */
   function routeFromHash(hash) {
     var raw = String(hash === null || hash === undefined ? '' : hash).replace(/^#\/?/, '');
     var parts = raw.split('/').filter(function (part) { return part.length > 0; });
@@ -1554,11 +1517,7 @@
   }
 
   /* One sentence for the top of the page, written for a non-technical reader. The noun comes
-   * from the fleet's own mode, so demo zones are never described as cities.
-   *
-   * The verb follows the count, not the fleet: "1 of 5 cities **is** worth watching" is the
-   * sentence, because the subject is the "1". It read "are" until M10, which is the kind of
-   * detail that makes a monitoring product look translated. */
+ * One sentence for the top of the page, written for a non-technical reader. The no: why it is the way it is - see README, "Interface notes". */
   function fleetHeadline(worst, counts, zoneCount, plural) {
     var noun = plural || 'cities';
     var singular = noun === 'cities' ? 'city' : 'zone';
@@ -1600,12 +1559,7 @@
   }
 
   /* Overview card: visual navigation, not a mini technical dashboard.
-   *
-   * Reading order is deliberate: the city's own nightscape, then its name, then the band in words
-   * (the answer), then the score and the meter, then the one line a reader asks next - rain, and
-   * how old the reading is. The headline sentence, the driver, the other channels and the
-   * provenance chips are all one click away on the city view, which is where somebody who wants
-   * them is going anyway; a card carrying them too stops being something you scan. */
+ * Overview card: visual navigation, not a mini technical dashboard.: why it is the way it is - see README, "Interface notes". */
   function cityStatusCard(zone, options) {
     // Same rule as cityDetail: a missing or malformed entry renders nothing instead of
     // throwing, so one bad element cannot stop the fleet grid from being drawn.
@@ -1629,7 +1583,8 @@
         '<div class="city-body">' +
         '<header class="city-head">' +
         '<h3 data-f="zone_name">' + escapeHtml(zone.name) + '</h3>' +
-        '<span class="city-chevron" aria-hidden="true">' + CITY_ARROW + '</span>' +
+        cityPlaceLine(zone) +
+        '<span class="city-chevron">' + openCityLabel(noun) + '</span>' +
         '</header>' +
         '<p class="city-band-line">' + bandPill(latest ? latest.risk_class : null) + '</p>' +
         '<div class="city-figures">' +
@@ -1712,6 +1667,10 @@
       '<div>' +
       '<p class="detail-kicker">Current flood risk</p>' +
       '<h2 data-f="zone_name">' + escapeHtml(zone.name) + '</h2>' +
+      '<p class="detail-place" data-f="zone_place">' + escapeHtml(cityPlaceText(zone)) +
+      (typeof zone.region === 'string' && zone.region
+        ? '<span class="detail-region"> · ' + escapeHtml(zone.region) + ' region</span>' : '') +
+      '</p>' +
       '<p class="detail-sub" data-f="zone_description">' + escapeHtml(zone.description || '') + '</p>' +
       '</div>' +
       '<div class="detail-score band-' + band + '">' +
@@ -1731,7 +1690,8 @@
       (latest && trendDirection(latest.trend) !== 'flat' ? trendIcon(latest.trend, 'detail-trend') : '') +
       '</div>' +
       // The reading order a visitor needs: what is happening (above), the measurements, then why
-      // the score moved, then how it has been moving - and the model itself last, folded away.
+      // The reading order a visitor needs: what is happening (above), the measurements, : why it is the way it is - see README, "Interface notes".
+      (opts.scopeNote ? '<p class="detail-scope">' + escapeHtml(opts.scopeNote) + '</p>' : '') +
       '<h3 class="block-title">Measurements</h3>' +
       '<div class="tile-grid" data-f="tiles">' + metricTiles(zone) + '</div>' +
       '<p class="muted small">Each measurement carries its own provenance: ' +
@@ -1747,10 +1707,7 @@
   }
 
   /* The raw model, folded away by default: native <details>, keyboard accessible, no JS.
-   *
-   * This is where the engineering detail lives now - the variable names, the weights, the
-   * sub-scores, the arithmetic and the model's own output string. Nothing here is hidden from a
-   * reader who wants it; it is simply behind a click instead of in front of one. */
+ * The raw model, folded away by default: native <details>, keyboard accessible, no: why it is the way it is - see README, "Interface notes". */
   function technicalDetails(zone) {
     var latest = (zone && zone.latest) || null;
     var grouped = sourceCounts(zone);
@@ -1816,9 +1773,7 @@
   }
 
   /* The arithmetic behind one reading, written out. Every number is the API's own: the weighted
-   * contributions are added up and the reported score is quoted beside them, so a reader can
-   * check the sum rather than take the ring's word for it. The trend term is only shown when the
-   * payload carries one, because the total is not always the sum of the five channels. */
+ * The arithmetic behind one reading, written out. Every number is the API's own: t: why it is the way it is - see README, "Interface notes". */
   function scoreBreakdown(zone) {
     var latest = (zone && zone.latest) || null;
     if (!latest) return '';
@@ -1851,10 +1806,7 @@
   }
 
   /* The four different clocks behind one number, named so they cannot be confused.
-   *
-   * A live reading is stamped when FloodPulse computed it, but the rain it describes was
-   * observed by the provider up to an hour earlier, and the fetch that brought it may itself
-   * be minutes old. Showing one age and calling it "updated now" hides two of the three. */
+ * The four different clocks behind one number, named so they cannot be confused.: why it is the way it is - see README, "Interface notes". */
   function freshnessRows(zone) {
     var latest = (zone && zone.latest) || null;
     var weather = (zone && zone.weather) || null;
@@ -1926,7 +1878,7 @@
         (open ? icon('warning', 15) : icon('check', 15)) +
         '<span>' + escapeHtml(severity) + '</span></span>' +
         '<div class="alert-body">' +
-        '<p class="alert-title"><b data-f="zone_name">' + escapeHtml(incident.zone_name || incident.zone_id) + '</b>' +
+        '<p class="alert-title"><b data-f="zone_name">' + escapeHtml(incidentZoneLabel(incident)) + '</b>' +
         ' <span class="alert-state" data-f="status">' + (open ? 'active' : 'resolved') + '</span>' +
         '</p>' +
         '<ul class="alert-facts">' +
@@ -2104,13 +2056,7 @@
   }
 
   /* -------------------------------------------------------- loading states ---
-   *
-   * Skeletons rather than the word "loading". The page is polled every few seconds and the
-   * first paint happens before the first response, so this is the state a visitor is most
-   * likely to meet. The placeholders are aria-hidden: announcing "loading" once per card while
-   * the API is answering would be noise, and the polite regions elsewhere already carry the
-   * real connection state.
-   */
+ * loading states: why it is the way it is - see README, "Interface notes". */
   function skeletonLines(count, className) {
     var n = toNumber(count);
     var lines = n === null ? 2 : Math.max(1, Math.round(n));
@@ -2439,16 +2385,7 @@
   }
 
   /* ================================================================== M10 ===
-   *
-   * Presentation pieces for the premium pass, plus the wording of the public email
-   * subscription form.
-   *
-   * Nothing here invents a number: the meter's fill is the score the API reported, the
-   * monitoring sentence counts the bands the payload reported, and the alert preview shows
-   * the incidents the incidents route returned. The subscription wording is deliberately
-   * unable to promise delivery - AWS sends the confirmation email, and until the visitor
-   * follows it the subscription is pending, so no state on this page may say "subscribed".
-   */
+ * M10: why it is the way it is - see README, "Interface notes". */
 
   /* The band boundaries, as numbers, in one place: the history chart shades them, the city
    * meter ticks them, and both must agree with the documented heuristic-v1 boundaries. */
@@ -2459,6 +2396,174 @@
     return (payload && payload.zone_mode === 'live_weather') ? 'Indian cities' : 'simulated zones';
   }
 
+  /* ====================================================================== M11 ===
+ * M11: why it is the way it is - see README, "Interface notes". */
+
+  function coverageInfo(payload) {
+    var block = payload && payload.coverage;
+    if (!block || typeof block !== 'object') return null;
+    return {
+      kind: block.fleet_kind === 'cities' ? 'cities' : 'zones',
+      cities: toNumber(block.city_count),
+      states: toNumber(block.state_count),
+      regionCount: toNumber(block.region_count),
+      regions: (Array.isArray(block.regions) ? block.regions : []).filter(function (entry) {
+        return entry && typeof entry === 'object' && typeof entry.region === 'string';
+      }),
+      scopeNote: typeof block.scope_note === 'string' ? block.scope_note : ''
+    };
+  }
+
+  /* " across 14 states and union territories and 5 regions": where the monitored cities are. */
+  function coverageClause(coverage) {
+    if (!coverage || coverage.states === null || coverage.regionCount === null) return '';
+    return ' across ' + (coverage.states === 1 ? '1 state or union territory'
+      : coverage.states + ' states and union territories') +
+      ' and ' + (coverage.regionCount === 1 ? '1 region' : coverage.regionCount + ' regions');
+  }
+
+  /* The API's own scope note, or its plain equivalent: no page may promise more coverage. */
+  function fleetScopeNote(payload) {
+    var coverage = coverageInfo(payload);
+    if (coverage && coverage.scopeNote) return coverage.scopeNote;
+    return payload && payload.zone_mode === 'live_weather'
+      ? 'FloodPulse monitors individual cities, not states, regions or the country.'
+      : 'FloodPulse monitors the simulated zones listed here, not regions or the country.';
+  }
+
+  /* A class name's index in the fleet's own band order (-1 when unknown), so the risk filter
+   * cannot drift from the classes the API sends. BANDS holds the API's own spelling: upper case. */
+  function riskLevel(riskClass) {
+    return BANDS.indexOf(String(riskClass === null || riskClass === undefined ? ''
+      : riskClass).toUpperCase());
+  }
+
+  /* "Visakhapatnam, Andhra Pradesh", or the name alone when the payload reported no state. */
+  function cityPlaceText(zone) {
+    var name = zone && typeof zone.name === 'string' && zone.name
+      ? zone.name : String((zone && zone.zone_id) || '');
+    var state = zone && typeof zone.state === 'string' ? zone.state.trim() : '';
+    return state ? name + ', ' + state : name;
+  }
+
+  /* The state line under a city's name. Empty for a zone with no state, so the simulated fleet's
+   * cards are exactly what they were. */
+  function cityPlaceLine(zone) {
+    var state = zone && typeof zone.state === 'string' ? zone.state.trim() : '';
+    if (!state) return '';
+    var region = zone && typeof zone.region === 'string' && zone.region ? zone.region : '';
+    return '<p class="city-place" data-f="city_state">' + escapeHtml(state) +
+      (region ? '<span class="city-region"> · ' + escapeHtml(region) + ' region</span>' : '') + '</p>';
+  }
+
+  /* The labelled way into a city. Decorative: the card is one link and names itself for assistive
+   * tech, so this label and the arrow are aria-hidden with it. */
+  function openCityLabel(noun) {
+    return '<span class="city-open-label" aria-hidden="true">Open ' +
+      escapeHtml(noun || 'city') + CITY_ARROW + '</span>';
+  }
+
+  /* The city and the state its incident recorded, for an alert row. */
+  function incidentZoneLabel(incident) {
+    var name = (incident && (incident.zone_name || incident.zone_id)) || '';
+    var state = incident && typeof incident.zone_state === 'string' ? incident.zone_state.trim() : '';
+    return state ? String(name) + ', ' + state : String(name);
+  }
+
+  /* ---------------------------------------------------- a city of fifteen: find --- */
+
+  /* Case-insensitive match over what a visitor would type: the city, its state, its region, the
+   * display name the API sent and the zone id, so a pasted id works too. All of it is in the
+   * payload already. */
+  function cityMatches(zone, criteria) {
+    var rules = criteria || {};
+    var query = String(rules.query || '').trim().toLowerCase();
+    if (query) {
+      var haystack = [zone.name, zone.city, zone.state, zone.region, zone.display_name, zone.zone_id]
+        .filter(function (value) { return typeof value === 'string' && value !== ''; })
+        .join(' ').toLowerCase();
+      if (haystack.indexOf(query) < 0) return false;
+    }
+    var region = rules.region || 'all';
+    if (region !== 'all' && String(zone.region || '') !== region) return false;
+    var risk = rules.risk || 'all';
+    if (risk !== 'all') {
+      var floor = riskLevel(risk);
+      if (floor >= 0 && riskLevel(zone.latest && zone.latest.risk_class) < floor) return false;
+    }
+    return true;
+  }
+
+  /* Highest risk, A-Z or freshest first. A city with no reading sorts last in the two
+   * reading-based orders, so it cannot sit at the top of a list that reads as freshest first;
+   * A-Z stays alphabetical, which is what A-Z means. */
+  function sortCities(zones, sortKey) {
+    var key = sortKey || 'risk';
+    var list = (zones || []).slice();
+    list.sort(function (a, b) {
+      var fallback = cityPlaceText(a).localeCompare(cityPlaceText(b));
+      if (key === 'name') return fallback;
+      var field = key === 'fresh' ? 'age_seconds' : 'risk_score';
+      var aValue = a.latest ? toNumber(a.latest[field]) : null;
+      var bValue = b.latest ? toNumber(b.latest[field]) : null;
+      if (aValue === null || bValue === null) {
+        if (aValue === bValue) return fallback;
+        return aValue === null ? 1 : -1;
+      }
+      return aValue === bValue ? fallback : (key === 'fresh' ? aValue - bValue : bValue - aValue);
+    });
+    return list;
+  }
+
+  function visibleCities(zones, criteria) {
+    var rules = criteria || {};
+    return sortCities((zones || []).filter(function (zone) {
+      return zone && typeof zone === 'object' && cityMatches(zone, rules);
+    }), rules.sort || 'risk');
+  }
+
+  /* Region options from the payload's own grouping: the regions are navigation and nothing else. */
+  function regionOptions(payload) {
+    var coverage = coverageInfo(payload);
+    var options = [{ value: 'all', label: 'All' }];
+    (coverage ? coverage.regions : []).forEach(function (entry) {
+      options.push({ value: entry.region, label: entry.region });
+    });
+    return options;
+  }
+
+  /* One chip group, built here beside every other renderer: the values are the API's own region
+   * and class names, so a chip cannot say something the payload does not. */
+  function filterChips(kind, options, active) {
+    return (options || []).map(function (option) {
+      var on = option.value === active;
+      return '<button type="button" class="ghost filter-chip' + (on ? ' is-active' : '') +
+        '" data-' + kind + '="' + escapeHtml(option.value) + '" aria-pressed="' + (on ? 'true' : 'false') +
+        '">' + escapeHtml(option.label) + '</button>';
+    }).join('');
+  }
+
+  function citiesResultLine(shown, total, plural) {
+    var noun = plural || 'cities';
+    return shown === total ? 'Showing all ' + total + ' ' + noun + '.'
+      : 'Showing ' + shown + ' of ' + total + ' ' + noun + '.';
+  }
+
+  /* The empty state a filter combination can produce: the same shape as every other empty state
+   * on the site, with the one action that is useful here. */
+  function citiesEmptyState(plural) {
+    var noun = plural || 'cities';
+    return emptyState({
+      key: 'no-city-match',
+      icon: 'info',
+      title: 'No ' + noun + ' match these filters.',
+      detail: 'Nothing in the current fleet matches this search and these filters. Clear them ' +
+        'to see all ' + noun + '.',
+      action: 'clear-filters',
+      actionLabel: 'Clear filters'
+    });
+  }
+
   /* The monitoring sentence under the hero headline. Every clause follows a count from the
    * payload, and the calm branch is only used when the payload really has nothing above
    * NORMAL - the same rule the headline follows. */
@@ -2466,11 +2571,12 @@
     var ov = overview || {};
     var counts = ov.counts || bandCounts(payload || {});
     var total = toNumber(ov.total);
-    var region = regionNoun(payload);
+    var fleetNoun = regionNoun(payload);
     if (total === null) total = ((payload && payload.zones) || []).length;
-    var fleet = 'We are monitoring ' + total + ' ' + region + '.';
+    var fleet = 'We are monitoring ' + total + ' ' + fleetNoun +
+      coverageClause(coverageInfo(payload)) + '.';
     if (!total) {
-      return 'FloodPulse monitors rainfall, soil moisture and drainage across ' + region + '.';
+      return 'FloodPulse monitors rainfall, soil moisture and drainage across ' + fleetNoun + '.';
     }
     if (counts.CRITICAL) {
       return fleet + ' ' + counts.CRITICAL + ' of them ' +
@@ -2488,16 +2594,7 @@
   }
 
   /* City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a file beside
-   * this one in web/.
-   *
-   * It is a lookup table and deliberately not a derived path. A path assembled from API text would
-   * let anything that can choose a zone_id address any file on the site - and if such a value ever
-   * reached a src, anywhere else. An unknown id therefore gets no image at all rather than a guess,
-   * and the card keeps the drawn plate, so the layout never depends on the mapping growing.
-   *
-   * The five files are the ones prepared by the asset pass (README, "Image assets"). The seven
-   * files named *.svg in that directory are PNG payloads with the wrong extension: they are
-   * deliberately NOT referenced here, and the icon system stays the inline SVG in this file. */
+ * City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a: why it is the way it is - see README, "Interface notes". */
   var CITY_IMAGES = {
     'city-chennai': 'chennai-nightscape.webp',
     'city-mumbai': 'mumbai-nightscape.webp',
@@ -2515,15 +2612,14 @@
   }
 
   /* One image band for every city card - the Overview grid and the Cities page both call this, so
-   * the imagery is a single implementation rather than two that drift.
-   *
-   * It is decorative: the card names the city in text and labels itself for assistive tech, so the
-   * image is alt="" and the band is aria-hidden. A reader hears "Chennai city detail", never
-   * "Chennai Chennai city Chennai image", and the risk level never depends on the photograph.
-   *
-   * The first cards of a grid are left to the browser's default eager loading - they are the ones
-   * on screen - and the rest are `loading="lazy"`: native behaviour, no script of ours involved.
-   * A zone with no mapped image keeps the drawn plate, band-tinted, so the card shape is constant. */
+ * One image band for every city card - the Overview grid and the Cities page both : why it is the way it is - see README, "Interface notes". */
+  /* The region a drawn plate stands for; empty when the payload reported none, so a simulated
+   * zone's plate is exactly the plate it always was. */
+  function cityThumbRegion(zone) {
+    var region = zone && typeof zone.region === 'string' ? zone.region.trim() : '';
+    return region ? '<span class="city-thumb-region">' + escapeHtml(region) + '</span>' : '';
+  }
+
   function cityThumb(zone, options) {
     var latest = zone && zone.latest;
     var band = bandKey(latest ? latest.risk_class : null);
@@ -2534,7 +2630,10 @@
       // reserve the space before the image arrives, and object-fit: cover does the fitting.
       ? '<img class="city-photo" src="' + escapeHtml(src) + '" alt="" width="800" height="450" ' +
         (eager ? '' : 'loading="lazy" ') + 'decoding="async">'
-      : icon('city', (options && options.size) || 24);
+      // A city with no photograph keeps a drawn plate, so the card's shape and band height do
+      // not depend on an image existing. Since M11 the plate also carries the city's region:
+      // ten of the fifteen cities have no photograph, and a bare icon says very little.
+      : icon('city', (options && options.size) || 24) + cityThumbRegion(zone);
     return '<span class="city-thumb band-' + band + '" data-band="' + escapeHtml(band) +
       '" aria-hidden="true">' + inner + '</span>';
   }
@@ -2595,12 +2694,7 @@
   }
 
   /* ------------------------------------------------- email alert subscriptions ---
-   *
-   * A visitor's browser calls POST /subscriptions, which asks SNS to subscribe the address.
-   * AWS sends the confirmation message; the browser never sees the topic, the subscription
-   * ARN or any AWS error text. These are the only four things the form may say, and none of
-   * them claims that anybody is subscribed.
-   */
+ * email alert subscriptions: why it is the way it is - see README, "Interface notes". */
 
   var SUBSCRIBE_MAX_LENGTH = 254;
   var SUBSCRIBE_ADDRESS = /^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
@@ -2800,6 +2894,23 @@
     SCORE_BAND_EDGES: SCORE_BAND_EDGES,
     regionNoun: regionNoun,
     monitorLine: monitorLine,
+    // M11: coverage, geography, and the Cities page's own find-and-sort - all client-side
+    coverageInfo: coverageInfo,
+    coverageClause: coverageClause,
+    fleetScopeNote: fleetScopeNote,
+    riskLevel: riskLevel,
+    cityPlaceText: cityPlaceText,
+    filterChips: filterChips,
+    cityPlaceLine: cityPlaceLine,
+    openCityLabel: openCityLabel,
+    incidentZoneLabel: incidentZoneLabel,
+    cityMatches: cityMatches,
+    cityLabelFor: cityPlaceText,
+    sortCities: sortCities,
+    visibleCities: visibleCities,
+    regionOptions: regionOptions,
+    citiesResultLine: citiesResultLine,
+    citiesEmptyState: citiesEmptyState,
     cityThumb: cityThumb,
     cityMeter: cityMeter,
     alertPreview: alertPreview,

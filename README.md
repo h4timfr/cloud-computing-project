@@ -2200,3 +2200,995 @@ owner's approval):
 See `AGENTS.md`. In short: work only in this repository, use profile `cloud-project` in
 `eu-north-1`, never commit credentials, never fabricate results, prefer the simplest
 complete implementation, and do not provision AWS infrastructure without approval.
+
+## Interface notes (kept out of the shipped stylesheet)
+
+The M9 front-end budget keeps the four shipped files under 400 KB total, and the bytes it
+counts are bytes on a visitor's connection. The long narratives below were written in
+`web/styles.css` while the look was being arrived at; they are kept here word for word, with a
+one-line pointer left at each site. Nothing about the rules or the behaviour changed when they
+moved: a comment is the one thing in a shipped stylesheet that carries no behaviour.
+
+### backdrop
+
+```
+/* -------------------------------------------------------------- backdrop ---
+ *
+ * The photograph is the shell's atmosphere, and it already arrives on the fixed
+ * `.bg-layer` element (M6). It stays there rather than becoming a `body` background:
+ * `background-attachment: fixed` on the body makes a full-page repaint on every scroll
+ * for mobile Safari, while an element fixed behind the content is composited once. The
+ * look is the one this pass is after - image, cover, centred, held still - and the
+ * overlay above it is what keeps every word legible.
+ *
+ * Order, top to bottom: photograph -> navy ramp -> soft edge vignette -> panels. The
+ * ramp is strongest where paragraphs sit (the middle of the viewport) and the vignette
+ * darkens the four edges, so the picture is felt at the margins and never fights text.
+ */
+```
+
+### M10.1 the imagery
+
+```
+/* ======================================================= M10.1 - the imagery ===
+ *
+ * Wiring the prepared raster assets into the interface, and the surfaces they sit on. Three
+ * decisions are made here and nowhere else:
+ *
+ * 1. A city nightscape is the *card's* image: one 16:9 band at the top of `.city-thumb`, which
+ *    the Overview card and the city list both render from the same builder, with
+ *    `object-fit: cover` so a 612x344 file and an 800x450 file land in the same box the same
+ *    way, and a gradient at the band's foot so the city name below never meets a bright skyline.
+ *    A zone whose id is not in the mapping keeps the drawn plate - the band-tinted gradient that
+ *    was there before - so a card never changes shape with the data, and no image is guessed.
+ * 2. The backdrop is the 930x312 photograph: cover, centred on the top edge, at 55% over the
+ *    page gradient, with the navy ramp and the inset vignette over it. At 1920 CSS px the
+ *    browser upscales it 2.06x and it is visibly soft at that width. The alternative was
+ *    inventing pixels, so the softness is accepted and reported rather than hidden.
+ * 3. Surfaces get lighter, not darker. The photograph has to be visible through the large
+ *    panels - that is what "atmospheric" means here - so the panel gradient drops to ~60%
+ *    opacity and the blur stays at 7px: enough to soften the skyline behind a paragraph, far
+ *    from the frosting that makes small text work to read.
+ */
+```
+
+### M10.2
+
+```
+/* ================================================================= M10.2 ===
+ *
+ * WHY THE RAIN WAS INVISIBLE. The photograph was on the page the whole time, was the right
+ * file, and was never overridden: `.bg-layer` still had `background-image: url("bg-storm.webp")`
+ * and `background-size: cover` with nothing later touching either. It was invisible because four
+ * darkenings stacked on top of each other, three of them inside the layer itself:
+ *
+ *   1. `mix-blend-mode: screen` on the layer. Screen keeps the *lightest* values: over a dark
+ *      navy backdrop the photograph's darks and midtones - the skyline, the road, the wet
+ *      reflections - came out within a couple of levels of the page colour, so no scene survived.
+ *      Worse, it lightens: the result read as navy with a haze, never as a photograph.
+ *   2. `opacity: 0.55` on the layer, multiplying the already-masked group a second time.
+ *   3. `.bg-layer::after`, a navy radial at 0.54 in the middle and 0.90 at the edges, painted
+ *      *inside* the layer, i.e. directly on top of the image and under both multiplications.
+ *   4. `box-shadow: inset 0 0 180px 60px rgba(2, 6, 23, 0.78)`, a hard 0.78 vignette on the same
+ *      box, for the same reason.
+ *
+ * The arithmetic those four produce at the middle of the viewport is (1 - 0.585) x 0.55 = 0.23 of
+ * the photograph, then screen-blended, so its darks landed about five 8-bit levels away from the
+ * flat body gradient underneath: a 0-5% signal. That is the "flat navy" the review saw. Nothing
+ * opaque covered the page: `main`, `.view`, `.view-head` and the section wrappers carry no
+ * background at all, and the only full-viewport box in the file is `.bg-layer` itself.
+ *
+ * WHAT CHANGED. The overlay is no longer a mask over the image but a *ramp in front of it*, with
+ * each multiplier kept separate and small:
+ *
+ *   photograph -> one navy wash (linear) -> a soft radial -> the ::after vignette at the edges
+ *   -> the panels. `opacity: 1`, no blend mode, no second darkening layer.
+ *
+ * Transmission of the photograph, computed from these declarations at three points of a 1440x900
+ * viewport (this is arithmetic over the alpha stops, not a rendering):
+ *
+ *   middle of the screen   0.38   the band the review asked for (30-45%)
+ *   top edge (behind nav)  0.35
+ *   bottom-left corner     0.10   before the inset vignette, which takes it under 0.06
+ *
+ * So the city is visible around the header, in the page gaps and at the edges of every panel, and
+ * the panels stay dark enough to carry text: the surfaces below are 0.74-0.86 - a hierarchy, not
+ * one opacity for everything, because a large panel showing 22% of a photograph behind a
+ * paragraph needs more body than a stat tile showing a number.
+ *
+ * Not touched: the image itself (no re-encode, no replacement, still `bg-storm.webp`), the city
+ * nightscape mapping, the CSP (`img-src 'self' data:` - the file is same-origin), and every text
+ * colour.
+ */
+```
+
+### M11
+
+```
+/* ===================================================================== M11 ===
+ *
+ * Fifteen cities instead of five. Three things had to appear: where each city is, a way to find
+ * one among fifteen, and an Overview that says its cards are the highest-risk few. Almost none of
+ * this is new styling - the chips are .ghost, the row is .button-group, the search box is
+ * .subscribe-input, the way to the rest is .ghost-link - so what follows is the toolbar's layout,
+ * the place lines and the plate's region label, and nothing else.
+ */
+```
+
+## Interface notes (kept out of the shipped stylesheet)
+
+The M9 front-end budget keeps the four shipped files under 400 KB total, and the bytes it
+counts are bytes on a visitor's connection. The long narratives below were written in
+`web/styles.css` while the look was being arrived at; they are kept here word for word, with a
+one-line pointer left at each site. Nothing about the rules or the behaviour changed when they
+moved: a comment is the one thing in a shipped stylesheet that carries no behaviour.
+
+### M9 - product experience, information design and responsive polish
+
+```
+/* ============================================================================
+ * M9 - product experience, information design and responsive polish
+ * ============================================================================
+ *
+ * Everything below is additive: the M6-M8 rules above still describe the base look, and this
+ * section refines it for a public audience - larger type, calmer surfaces, an icon next to
+ * every meaning, honest empty and loading states, and layouts that survive a 320px phone.
+ *
+ * Colour roles are unchanged and never reused: cyan/teal = live and NORMAL, amber = WATCH and
+ * stale, orange = WARNING, red = CRITICAL, slate = unknown. A status colour is always paired
+ * with a word, so colour is never the only carrier of meaning.
+ */
+```
+
+### M10 - premium pass: cinematic shell, grouped header, the hero, city ca
+
+```
+/* ============================================================================
+ * M10 - premium pass: cinematic shell, grouped header, the hero, city cards,
+ *        the alerts preview, the three-step explainer and the subscription form
+ * ============================================================================
+ *
+ * Additive again: the M6-M9 rules above still describe the base, and this layer makes the
+ * product read as one deliberate surface rather than a dashboard of separate panels.
+ *
+ * The three rules kept from the earlier passes, because they are the ones that keep the page
+ * readable rather than merely pretty:
+ *   * a status colour is never the only carrier of meaning - every one is paired with a word;
+ *   * the text always sits on a surface, never directly on the photograph;
+ *   * nothing here is animated on a timer, so `prefers-reduced-motion` has almost nothing to
+ *     switch off.
+ */
+```
+
+### backdrop
+
+```
+/* -------------------------------------------------------------- backdrop ---
+ *
+ * The photograph is the shell's atmosphere, and it already arrives on the fixed
+ * `.bg-layer` element (M6). It stays there rather than becoming a `body` background:
+ * `background-attachment: fixed` on the body makes a full-page repaint on every scroll
+ * for mobile Safari, while an element fixed behind the content is composited once. The
+ * look is the one this pass is after - image, cover, centred, held still - and the
+ * overlay above it is what keeps every word legible.
+ *
+ * Order, top to bottom: photograph -> navy ramp -> soft edge vignette -> panels. The
+ * ramp is strongest where paragraphs sit (the middle of the viewport) and the vignette
+ * darkens the four edges, so the picture is felt at the margins and never fights text.
+ */
+```
+
+### header
+
+```
+/* ------------------------------------------------------------------ header ---
+ *
+ * Three groups, in the order a reader scans them: who this is (left), where to go
+ * (centre), and what state the system is in (right). The model name is not here: it is a
+ * method detail, and it lives in the folded technical summary on this page and on Data &
+ * Methodology, where somebody who wants it goes looking.
+ */
+```
+
+### hero
+
+```
+/* -------------------------------------------------------------------- hero ---
+ *
+ * The answer card: icon and kicker, one plain sentence, one monitoring line, the reason
+ * behind the leading city, and the facts line. The right column says what the product is
+ * and points at the method. No formula appears here on purpose - the calculation is one
+ * click away, in the collapsed technical section and on the methodology page.
+ */
+```
+
+### city cards
+
+```
+/* ------------------------------------------------------------- city cards ---
+ *
+ * The thumbnail and the meter are both decoration built from the payload: the plate's hue
+ * follows the city's band, and the meter's fill is the score the API reported, with the
+ * documented boundaries marked. No photograph is used, because none is licensed here.
+ */
+```
+
+### alert preview
+
+```
+/* ------------------------------------------------------------ alert preview ---
+ *
+ * "Is anything alerting?" in one block, above the fold of the alerts page itself. The
+ * calm state is a state too: it says so in words with a tick, rather than showing an
+ * empty list that a reader has to interpret.
+ */
+```
+
+### responsive
+
+```
+/* --------------------------------------------------------------- responsive ---
+ *
+ * The new layouts collapse in the order the content matters: the aside under the hero,
+ * the three steps into a column, the form's button under its field. Every track is
+ * `minmax(0, …)`, so a long address or a narrow phone can never introduce a horizontal
+ * scrollbar.
+ */
+```
+
+### M10.1 the imagery
+
+```
+/* ======================================================= M10.1 - the imagery ===
+ *
+ * Wiring the prepared raster assets into the interface, and the surfaces they sit on. Three
+ * decisions are made here and nowhere else:
+ *
+ * 1. A city nightscape is the *card's* image: one 16:9 band at the top of `.city-thumb`, which
+ *    the Overview card and the city list both render from the same builder, with
+ *    `object-fit: cover` so a 612x344 file and an 800x450 file land in the same box the same
+ *    way, and a gradient at the band's foot so the city name below never meets a bright skyline.
+ *    A zone whose id is not in the mapping keeps the drawn plate - the band-tinted gradient that
+ *    was there before - so a card never changes shape with the data, and no image is guessed.
+ * 2. The backdrop is the 930x312 photograph: cover, centred on the top edge, at 55% over the
+ *    page gradient, with the navy ramp and the inset vignette over it. At 1920 CSS px the
+ *    browser upscales it 2.06x and it is visibly soft at that width. The alternative was
+ *    inventing pixels, so the softness is accepted and reported rather than hidden.
+ * 3. Surfaces get lighter, not darker. The photograph has to be visible through the large
+ *    panels - that is what "atmospheric" means here - so the panel gradient drops to ~60%
+ *    opacity and the blur stays at 7px: enough to soften the skyline behind a paragraph, far
+ *    from the frosting that makes small text work to read.
+ */
+```
+
+### M10.2
+
+```
+/* ================================================================= M10.2 ===
+ *
+ * WHY THE RAIN WAS INVISIBLE. The photograph was on the page the whole time, was the right
+ * file, and was never overridden: `.bg-layer` still had `background-image: url("bg-storm.webp")`
+ * and `background-size: cover` with nothing later touching either. It was invisible because four
+ * darkenings stacked on top of each other, three of them inside the layer itself:
+ *
+ *   1. `mix-blend-mode: screen` on the layer. Screen keeps the *lightest* values: over a dark
+ *      navy backdrop the photograph's darks and midtones - the skyline, the road, the wet
+ *      reflections - came out within a couple of levels of the page colour, so no scene survived.
+ *      Worse, it lightens: the result read as navy with a haze, never as a photograph.
+ *   2. `opacity: 0.55` on the layer, multiplying the already-masked group a second time.
+ *   3. `.bg-layer::after`, a navy radial at 0.54 in the middle and 0.90 at the edges, painted
+ *      *inside* the layer, i.e. directly on top of the image and under both multiplications.
+ *   4. `box-shadow: inset 0 0 180px 60px rgba(2, 6, 23, 0.78)`, a hard 0.78 vignette on the same
+ *      box, for the same reason.
+ *
+ * The arithmetic those four produce at the middle of the viewport is (1 - 0.585) x 0.55 = 0.23 of
+ * the photograph, then screen-blended, so its darks landed about five 8-bit levels away from the
+ * flat body gradient underneath: a 0-5% signal. That is the "flat navy" the review saw. Nothing
+ * opaque covered the page: `main`, `.view`, `.view-head` and the section wrappers carry no
+ * background at all, and the only full-viewport box in the file is `.bg-layer` itself.
+ *
+ * WHAT CHANGED. The overlay is no longer a mask over the image but a *ramp in front of it*, with
+ * each multiplier kept separate and small:
+ *
+ *   photograph -> one navy wash (linear) -> a soft radial -> the ::after vignette at the edges
+ *   -> the panels. `opacity: 1`, no blend mode, no second darkening layer.
+ *
+ * Transmission of the photograph, computed from these declarations at three points of a 1440x900
+ * viewport (this is arithmetic over the alpha stops, not a rendering):
+ *
+ *   middle of the screen   0.38   the band the review asked for (30-45%)
+ *   top edge (behind nav)  0.35
+ *   bottom-left corner     0.10   before the inset vignette, which takes it under 0.06
+ *
+ * So the city is visible around the header, in the page gaps and at the edges of every panel, and
+ * the panels stay dark enough to carry text: the surfaces below are 0.74-0.86 - a hierarchy, not
+ * one opacity for everything, because a large panel showing 22% of a photograph behind a
+ * paragraph needs more body than a stat tile showing a number.
+ *
+ * Not touched: the image itself (no re-encode, no replacement, still `bg-storm.webp`), the city
+ * nightscape mapping, the CSP (`img-src 'self' data:` - the file is same-origin), and every text
+ * colour.
+ */
+```
+
+### surfaces
+
+```
+/* ------------------------------------------------------------------ surfaces ---
+ *
+ * Four surfaces, four jobs. The photograph is visible between them; through them it is a
+ * suggestion. Numbers are percentages of opacity, so a reader can compare them to the brief:
+ * hero 0.74-0.78, large panel 0.78-0.80, ordinary card 0.85-0.86, inset row 0.78. */
+```
+
+### phones
+
+```
+/* ------------------------------------------------------------------- phones ---
+ *
+ * The photograph stays on the page at every width - it is darker, never gone. A phone is read at
+ * arm's length in daylight, so the vignette gets stronger and the picture keeps its job as
+ * atmosphere rather than as a picture. Only the vignette and the edge shadow change; the wash
+ * above the image is one declaration in this file, shared by every width. */
+```
+
+## Interface notes (moved out of the shipped scripts)
+
+The M9 front-end budget counts the bytes of the four shipped files, and a comment
+in a shipped file is a byte on a visitor's connection. These narratives were written
+beside the code they explain; they are kept here word for word, with the section
+banner and a one-line pointer left at each site.
+
+### The API names this field `variable`; an earlier fixture (and the harness built o
+
+```javascript
+    // The API names this field `variable`; an earlier fixture (and the harness built on it)
+    // called it `metric`. Both are accepted, because reading only one of them left the map
+    // empty on every real payload - the weighted contributions, the driver shares and the
+    // "what is not driving this" half of the plain sentence all silently disappeared, with no
+    // error anywhere. The live payload is checked against this in the runtime harness.
+
+```
+
+### Everything the page knows about the external weather feed, derived only from the
+
+```javascript
+  // Everything the page knows about the external weather feed, derived only from the
+  // payload. Missing fields come back as null: nothing here is guessed or assumed fresh.
+  //
+  // ageOffsetSeconds is the time this page has been holding the payload: the API reports
+  // an age that was true when it answered, and adding the local elapsed time is what makes
+  // the age (and the countdown) keep moving between polls instead of freezing for 5 s.
+
+```
+
+### icons
+
+```javascript
+/* ------------------------------------------------------------------ icons ---
+   *
+   * One local icon set, defined as SVG path data and inlined into the markup. No icon font, no
+   * CDN, no sprite fetch: the page has to satisfy `script-src 'self'` and stay one request per
+   * asset, and inline SVG is the only thing that does both. Every icon is drawn on the same
+   * 24x24 grid with one stroke width and round caps, inherits `currentColor` so it takes the
+   * colour of whatever it sits in, and is hidden from assistive technology by default - the
+   * words next to it carry the meaning, and a screen reader should not hear "cloud" twice.
+   */
+```
+
+### loading states
+
+```javascript
+/* -------------------------------------------------------- loading states ---
+   *
+   * Skeletons rather than the word "loading". The page is polled every few seconds and the
+   * first paint happens before the first response, so this is the state a visitor is most
+   * likely to meet. The placeholders are aria-hidden: announcing "loading" once per card while
+   * the API is answering would be noise, and the polite regions elsewhere already carry the
+   * real connection state.
+   */
+```
+
+### M10
+
+```javascript
+/* ================================================================== M10 ===
+   *
+   * Presentation pieces for the premium pass, plus the wording of the public email
+   * subscription form.
+   *
+   * Nothing here invents a number: the meter's fill is the score the API reported, the
+   * monitoring sentence counts the bands the payload reported, and the alert preview shows
+   * the incidents the incidents route returned. The subscription wording is deliberately
+   * unable to promise delivery - AWS sends the confirmation email, and until the visitor
+   * follows it the subscription is pending, so no state on this page may say "subscribed".
+   */
+```
+
+### M11
+
+```javascript
+/* ====================================================================== M11 ===
+   *
+   * Fifteen cities in one fleet. These helpers keep the copy honest - what the payload says the
+   * fleet covers, where each city is, and which cities a visitor's own filters leave - and all of
+   * them are pure functions of the payload, so nothing here fetches anything.
+   */
+```
+
+### email alert subscriptions
+
+```javascript
+/* ------------------------------------------------- email alert subscriptions ---
+   *
+   * A visitor's browser calls POST /subscriptions, which asks SNS to subscribe the address.
+   * AWS sends the confirmation message; the browser never sees the topic, the subscription
+   * ARN or any AWS error text. These are the only four things the form may say, and none of
+   * them claims that anybody is subscribed.
+   */
+```
+
+### The facts line answers "how bad, why, how fresh, which way" in one narrow column
+
+```javascript
+    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
+    // the same information as the cards below, in the order a reader asks for it. The score and
+    // the age are the API's own answer for the leading city (`highest_risk_zone`), not a second
+    // reading taken out of the zone table, so this sentence can never disagree with the band the
+    // page just announced.
+
+```
+
+### Size the backing store from the laid-out width, like the history chart does. The
+
+```javascript
+    // Size the backing store from the laid-out width, like the history chart does. The old
+    // code drew a dpr-scaled path into the 280x56 attribute-sized bitmap, so on a HiDPI
+    // screen the newest samples were drawn past the right edge and silently clipped, and on
+    // a 1x screen a 280 px bitmap was stretched across the card. clientWidth is 0 for a
+    // canvas that is not laid out (a hidden view), so fall back to the attribute size.
+
+```
+
+## Interface notes (moved out of the shipped scripts)
+
+The M9 front-end budget counts the bytes of the four shipped files, and a comment
+in a shipped file is a byte on a visitor's connection. These narratives were written
+beside the code they explain; they are kept here word for word, with the section
+banner and a one-line pointer left at each site.
+
+### The API names this field `variable`; an earlier fixture (and the harness built o
+
+```javascript
+    // The API names this field `variable`; an earlier fixture (and the harness built on it)
+    // called it `metric`. Both are accepted, because reading only one of them left the map
+    // empty on every real payload - the weighted contributions, the driver shares and the
+    // "what is not driving this" half of the plain sentence all silently disappeared, with no
+    // error anywhere. The live payload is checked against this in the runtime harness.
+
+```
+
+### Everything the page knows about the external weather feed, derived only from the
+
+```javascript
+  // Everything the page knows about the external weather feed, derived only from the
+  // payload. Missing fields come back as null: nothing here is guessed or assumed fresh.
+  //
+  // ageOffsetSeconds is the time this page has been holding the payload: the API reports
+  // an age that was true when it answered, and adding the local elapsed time is what makes
+  // the age (and the countdown) keep moving between polls instead of freezing for 5 s.
+
+```
+
+### icons
+
+```javascript
+/* ------------------------------------------------------------------ icons ---
+   *
+   * One local icon set, defined as SVG path data and inlined into the markup. No icon font, no
+   * CDN, no sprite fetch: the page has to satisfy `script-src 'self'` and stay one request per
+   * asset, and inline SVG is the only thing that does both. Every icon is drawn on the same
+   * 24x24 grid with one stroke width and round caps, inherits `currentColor` so it takes the
+   * colour of whatever it sits in, and is hidden from assistive technology by default - the
+   * words next to it carry the meaning, and a screen reader should not hear "cloud" twice.
+   */
+```
+
+### loading states
+
+```javascript
+/* -------------------------------------------------------- loading states ---
+   *
+   * Skeletons rather than the word "loading". The page is polled every few seconds and the
+   * first paint happens before the first response, so this is the state a visitor is most
+   * likely to meet. The placeholders are aria-hidden: announcing "loading" once per card while
+   * the API is answering would be noise, and the polite regions elsewhere already carry the
+   * real connection state.
+   */
+```
+
+### M10
+
+```javascript
+/* ================================================================== M10 ===
+   *
+   * Presentation pieces for the premium pass, plus the wording of the public email
+   * subscription form.
+   *
+   * Nothing here invents a number: the meter's fill is the score the API reported, the
+   * monitoring sentence counts the bands the payload reported, and the alert preview shows
+   * the incidents the incidents route returned. The subscription wording is deliberately
+   * unable to promise delivery - AWS sends the confirmation email, and until the visitor
+   * follows it the subscription is pending, so no state on this page may say "subscribed".
+   */
+```
+
+### M11
+
+```javascript
+/* ====================================================================== M11 ===
+   *
+   * Fifteen cities in one fleet. These helpers keep the copy honest - what the payload says the
+   * fleet covers, where each city is, and which cities a visitor's own filters leave - and all of
+   * them are pure functions of the payload, so nothing here fetches anything.
+   */
+```
+
+### email alert subscriptions
+
+```javascript
+/* ------------------------------------------------- email alert subscriptions ---
+   *
+   * A visitor's browser calls POST /subscriptions, which asks SNS to subscribe the address.
+   * AWS sends the confirmation message; the browser never sees the topic, the subscription
+   * ARN or any AWS error text. These are the only four things the form may say, and none of
+   * them claims that anybody is subscribed.
+   */
+```
+
+### The facts line answers "how bad, why, how fresh, which way" in one narrow column
+
+```javascript
+    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
+    // the same information as the cards below, in the order a reader asks for it. The score and
+    // the age are the API's own answer for the leading city (`highest_risk_zone`), not a second
+    // reading taken out of the zone table, so this sentence can never disagree with the band the
+    // page just announced.
+
+```
+
+### Size the backing store from the laid-out width, like the history chart does. The
+
+```javascript
+    // Size the backing store from the laid-out width, like the history chart does. The old
+    // code drew a dpr-scaled path into the 280x56 attribute-sized bitmap, so on a HiDPI
+    // screen the newest samples were drawn past the right edge and silently clipped, and on
+    // a 1x screen a 280 px bitmap was stretched across the card. clientWidth is 0 for a
+    // canvas that is not laid out (a hidden view), so fall back to the attribute size.
+
+```
+
+## Interface notes (moved out of the shipped scripts)
+
+The M9 front-end budget counts the bytes of the four shipped files, and a comment
+in a shipped file is a byte on a visitor's connection. These narratives were written
+beside the code they explain; they are kept here word for word, with the section
+banner and a one-line pointer left at each site.
+
+### Plain-language explanation per metric, shown as a help tooltip in the city page.
+
+```javascript
+  /* Plain-language explanation per metric, shown as a help tooltip in the city page. A visitor
+   * should not have to know what "soil saturation" is to read the page, and a visitor who does
+   * know should not have to see the explanation: it is behind a focusable help button.
+   * The noun/phrase pairs live with METRIC_PLAIN further down (they predate this table and are
+   * used by the sentence builders); the help line belongs here, next to the metric metadata. */
+
+```
+
+### What moved between two polls, in words.
+
+```javascript
+  /* What moved between two polls, in words.
+   *
+   * A board that shows only the current state asks the operator to compare snapshots in their
+   * head, which is exactly the work an early-warning display should do for them. Only real
+   * movements in the band ladder are reported: a zone that had no reading and now has one has
+   * "started reporting" - it has not "escalated". A zone that lost its reading is a data gap
+   * and is reported with a WATCH tone, because silence is not safety. */
+
+```
+
+### The API names this field `variable`; an earlier fixture (and the harness built o
+
+```javascript
+    // The API names this field `variable`; an earlier fixture (and the harness built on it)
+    // called it `metric`. Both are accepted, because reading only one of them left the map
+    // empty on every real payload - the weighted contributions, the driver shares and the
+    // "what is not driving this" half of the plain sentence all silently disappeared, with no
+    // error anywhere. The live payload is checked against this in the runtime harness.
+
+```
+
+### A page that has never reached the API is CONNECTING, and says why it is still wa
+
+```javascript
+      // A page that has never reached the API is CONNECTING, and says why it is still waiting.
+      // The badge keeps that name on purpose (the detail carries the failure); what must not
+      // happen is the loading *pulse* running forever, which is handled by the DOM class the
+      // controller adds next to is-connecting.
+
+```
+
+### Everything the page knows about the external weather feed, derived only from the
+
+```javascript
+  // Everything the page knows about the external weather feed, derived only from the
+  // payload. Missing fields come back as null: nothing here is guessed or assumed fresh.
+  //
+  // ageOffsetSeconds is the time this page has been holding the payload: the API reports
+  // an age that was true when it answered, and adding the local elapsed time is what makes
+  // the age (and the countdown) keep moving between polls instead of freezing for 5 s.
+
+```
+
+### The weighted contribution used to sit here as a bare number next to the value. O
+
+```javascript
+    // The weighted contribution used to sit here as a bare number next to the value. On a list
+    // of cities that is an unexplained figure a visitor cannot use: the measurement, its value
+    // and its position against the thresholds are the public facts, and the weighting is part
+    // of "how was this calculated" on the city page and the methodology page.
+
+```
+
+### The plain-language reason, not the model's own output string. The raw line
+
+```javascript
+          // The plain-language reason, not the model's own output string. The raw line
+          // ("risk_score 0.3877 = weighted base ...") used to be printed here verbatim, which
+          // put the formula, the variable names and the arithmetic in front of every visitor on
+          // the city list. It stays in the technical disclosures on the city page.
+
+```
+
+### Every engineering identifier the API can send, in words a visitor can read.
+
+```javascript
+  /* Every engineering identifier the API can send, in words a visitor can read.
+   *
+   * The rule for the public views is absolute: a snake_case token never reaches them. A
+   * variable this page has not seen before still has to be described somehow, so the fallback
+   * strips the unit suffix and the underscores rather than printing the raw name - and the raw
+   * name itself stays available in the technical disclosures, where it belongs. */
+
+```
+
+### icons
+
+```javascript
+  /* ------------------------------------------------------------------ icons ---
+   *
+   * One local icon set, defined as SVG path data and inlined into the markup. No icon font, no
+   * CDN, no sprite fetch: the page has to satisfy `script-src 'self'` and stay one request per
+   * asset, and inline SVG is the only thing that does both. Every icon is drawn on the same
+   * 24x24 grid with one stroke width and round caps, inherits `currentColor` so it takes the
+   * colour of whatever it sits in, and is hidden from assistive technology by default - the
+   * words next to it carry the meaning, and a screen reader should not hear "cloud" twice.
+   */
+
+```
+
+### One plain sentence explaining *why* the city is in its band, plus one line of ad
+
+```javascript
+  /* One plain sentence explaining *why* the city is in its band, plus one line of advice.
+   *
+   * The sentence answers the two questions a visitor actually has: which measurement is pushing
+   * the score up, and which ones are not. Both halves come from the API's own contribution
+   * entries - the named driver is the one the API listed first, and a measurement is only called
+   * quiet when its own value and its own watch threshold say so. Nothing is assumed about the
+   * channels that are not driving risk, and no formula, weight or variable name appears here:
+   * those live in the collapsed technical section and on the methodology page.
+   *
+   *   "Risk is currently WATCH. Soil saturation is the main contributor, while rainfall, drain
+   *    level and flow rate remain below their watch levels. Conditions are holding steady."
+   */
+
+```
+
+### trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one 
+
+```javascript
+    // trendLabel() formats the delta ("+0.40 m / 5 min"); trendDirection() is the one that
+    // answers "which way is this going". Comparing the label to 'rising'/'falling' never
+    // matched, so neither sentence could ever appear on a flash-flood board. The numbers stay
+    // in the technical table: this sentence is the plain-language one.
+
+```
+
+### '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknow
+
+```javascript
+  /* '#/cities/city-chennai' -> {view:'city', zoneId:'city-chennai'}, anything unknown ->
+   * the default view. Kept tiny and total: the router can never throw on a bad URL, including
+   * a fragment that is not valid percent-encoding ('#/cities/%'), where decodeURIComponent
+   * throws a URIError that would otherwise abort start() and leave the page never polling. */
+
+```
+
+### One sentence for the top of the page, written for a non-technical reader. The no
+
+```javascript
+  /* One sentence for the top of the page, written for a non-technical reader. The noun comes
+   * from the fleet's own mode, so demo zones are never described as cities.
+   *
+   * The verb follows the count, not the fleet: "1 of 5 cities **is** worth watching" is the
+   * sentence, because the subject is the "1". It read "are" until M10, which is the kind of
+   * detail that makes a monitoring product look translated. */
+
+```
+
+### Overview card: visual navigation, not a mini technical dashboard.
+
+```javascript
+  /* Overview card: visual navigation, not a mini technical dashboard.
+   *
+   * Reading order is deliberate: the city's own nightscape, then its name, then the band in words
+   * (the answer), then the score and the meter, then the one line a reader asks next - rain, and
+   * how old the reading is. The headline sentence, the driver, the other channels and the
+   * provenance chips are all one click away on the city view, which is where somebody who wants
+   * them is going anyway; a card carrying them too stops being something you scan. */
+
+```
+
+### The reading order a visitor needs: what is happening (above), the measurements, 
+
+```javascript
+      // The reading order a visitor needs: what is happening (above), the measurements, then why
+      // the score moved, then how it has been moving - and the model itself last, folded away.
+      // What this page does and does not cover, in the API's own words: a visitor reading a
+      // city page should not have to infer that the state around it is not being watched
+
+```
+
+### The raw model, folded away by default: native <details>, keyboard accessible, no
+
+```javascript
+  /* The raw model, folded away by default: native <details>, keyboard accessible, no JS.
+   *
+   * This is where the engineering detail lives now - the variable names, the weights, the
+   * sub-scores, the arithmetic and the model's own output string. Nothing here is hidden from a
+   * reader who wants it; it is simply behind a click instead of in front of one. */
+
+```
+
+### The arithmetic behind one reading, written out. Every number is the API's own: t
+
+```javascript
+  /* The arithmetic behind one reading, written out. Every number is the API's own: the weighted
+   * contributions are added up and the reported score is quoted beside them, so a reader can
+   * check the sum rather than take the ring's word for it. The trend term is only shown when the
+   * payload carries one, because the total is not always the sum of the five channels. */
+
+```
+
+### The four different clocks behind one number, named so they cannot be confused.
+
+```javascript
+  /* The four different clocks behind one number, named so they cannot be confused.
+   *
+   * A live reading is stamped when FloodPulse computed it, but the rain it describes was
+   * observed by the provider up to an hour earlier, and the fetch that brought it may itself
+   * be minutes old. Showing one age and calling it "updated now" hides two of the three. */
+
+```
+
+### loading states
+
+```javascript
+  /* -------------------------------------------------------- loading states ---
+   *
+   * Skeletons rather than the word "loading". The page is polled every few seconds and the
+   * first paint happens before the first response, so this is the state a visitor is most
+   * likely to meet. The placeholders are aria-hidden: announcing "loading" once per card while
+   * the API is answering would be noise, and the polite regions elsewhere already carry the
+   * real connection state.
+   */
+
+```
+
+### M10
+
+```javascript
+  /* ================================================================== M10 ===
+   *
+   * Presentation pieces for the premium pass, plus the wording of the public email
+   * subscription form.
+   *
+   * Nothing here invents a number: the meter's fill is the score the API reported, the
+   * monitoring sentence counts the bands the payload reported, and the alert preview shows
+   * the incidents the incidents route returned. The subscription wording is deliberately
+   * unable to promise delivery - AWS sends the confirmation email, and until the visitor
+   * follows it the subscription is pending, so no state on this page may say "subscribed".
+   */
+
+```
+
+### M11
+
+```javascript
+  /* ====================================================================== M11 ===
+   *
+   * Fifteen cities in one fleet. These helpers keep the copy honest - what the payload says the
+   * fleet covers, where each city is, and which cities a visitor's own filters leave - and all of
+   * them are pure functions of the payload, so nothing here fetches anything.
+   */
+
+```
+
+### City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a
+
+```javascript
+  /* City nightscape imagery: an explicit, trusted, local mapping from a zone_id to a file beside
+   * this one in web/.
+   *
+   * It is a lookup table and deliberately not a derived path. A path assembled from API text would
+   * let anything that can choose a zone_id address any file on the site - and if such a value ever
+   * reached a src, anywhere else. An unknown id therefore gets no image at all rather than a guess,
+   * and the card keeps the drawn plate, so the layout never depends on the mapping growing.
+   *
+   * The five files are the ones prepared by the asset pass (README, "Image assets"). The seven
+   * files named *.svg in that directory are PNG payloads with the wrong extension: they are
+   * deliberately NOT referenced here, and the icon system stays the inline SVG in this file. */
+
+```
+
+### One image band for every city card - the Overview grid and the Cities page both 
+
+```javascript
+  /* One image band for every city card - the Overview grid and the Cities page both call this, so
+   * the imagery is a single implementation rather than two that drift.
+   *
+   * It is decorative: the card names the city in text and labels itself for assistive tech, so the
+   * image is alt="" and the band is aria-hidden. A reader hears "Chennai city detail", never
+   * "Chennai Chennai city Chennai image", and the risk level never depends on the photograph.
+   *
+   * The first cards of a grid are left to the browser's default eager loading - they are the ones
+   * on screen - and the rest are `loading="lazy"`: native behaviour, no script of ours involved.
+   * A zone with no mapped image keeps the drawn plate, band-tinted, so the card shape is constant. */
+
+```
+
+### email alert subscriptions
+
+```javascript
+  /* ------------------------------------------------- email alert subscriptions ---
+   *
+   * A visitor's browser calls POST /subscriptions, which asks SNS to subscribe the address.
+   * AWS sends the confirmation message; the browser never sees the topic, the subscription
+   * ARN or any AWS error text. These are the only four things the form may say, and none of
+   * them claims that anybody is subscribed.
+   */
+
+```
+
+### The page states its own API base in a data attribute, not in a script tag: the d
+
+```javascript
+  /* The page states its own API base in a data attribute, not in a script tag: the deployed
+   * page carries a Content-Security-Policy with no 'unsafe-inline', so there is no inline
+   * script allowed anywhere on it. A window global is still honoured for local harnesses, and
+   * ?api= still overrides both for testing. */
+
+```
+
+### An API base may be overridden with ?api=<origin> for testing, which means it can
+
+```javascript
+  /* An API base may be overridden with ?api=<origin> for testing, which means it can also be
+   * arbitrary text from a link. It is only ever used as a fetch origin and as a display link,
+   * so anything that is not plainly an http(s) origin is ignored rather than followed: a
+   * javascript:/data: value would otherwise end up in an href, and a relative value would
+   * silently fetch from the dashboard host. */
+
+```
+
+### A payload element that is not an object (null, a string, a number) is not a zone
+
+```javascript
+  /* A payload element that is not an object (null, a string, a number) is not a zone and not an
+   * incident. It is dropped where the list enters state, so every consumer below - the card
+   * grid, the ranking, the change note, the session series, the alert view - can rely on
+   * objects and one malformed element cannot stop the board updating. The API's own counts are
+   * left untouched: they say what the fleet holds, not what this page could render. */
+
+```
+
+### Before the first successful poll the hero holds the copy index.html ships with. 
+
+```javascript
+    // Before the first successful poll the hero holds the copy index.html ships with. Once the
+    // page knows a request failed it must not keep promising a connection: the headline says
+    // what is actually true, and the sentence under it says what happens next. Both are written
+    // only from the failure branch, so a still-connecting page keeps its static wording.
+
+```
+
+### The hero: the fleet's answer, then the reason behind the highest-risk city.
+
+```javascript
+  /* The hero: the fleet's answer, then the reason behind the highest-risk city.
+   *
+   * It patches the card that is already in index.html instead of rebuilding it, so the
+   * structure (icon, kicker, question, headline, monitoring line, reason, facts, and the way to
+   * the method) is on the page before the first poll answers: what a reader sees with scripting
+   * off is the same product, just without numbers. Each field is reached by its own id through
+   * the same `setText` helper the rest of the page uses, so there is exactly one writer per node
+   * and the harness can read each field back the way a browser would read it.
+   *
+   * Nothing technical goes in here: no formula, no variable name, no model id. The band, the
+   * main risk factor, how old the reading is and which way it is going are the whole story,
+   * and the calculation is one click away on the city page and Data & Methodology.
+   */
+
+```
+
+### The facts line answers "how bad, why, how fresh, which way" in one narrow column
+
+```javascript
+    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
+    // the same information as the cards below, in the order a reader asks for it. The score and
+    // the age are the API's own answer for the leading city (`highest_risk_zone`), not a second
+    // reading taken out of the zone table, so this sentence can never disagree with the band the
+    // page just announced.
+
+```
+
+### The plain-language reason is patched like every other value on this card: the ca
+
+```javascript
+    // The plain-language reason is patched like every other value on this card: the card is only
+    // rebuilt when the *fleet* changes, so a sentence written once at build time would freeze
+    // while the reading behind it moved. The raw model output string is not patched into any
+    // visible node: it lives in the city page's technical section, which is redrawn on navigation.
+
+```
+
+### Size the backing store from the laid-out width, like the history chart does. The
+
+```javascript
+    // Size the backing store from the laid-out width, like the history chart does. The old
+    // code drew a dpr-scaled path into the 280x56 attribute-sized bitmap, so on a HiDPI
+    // screen the newest samples were drawn past the right edge and silently clipped, and on
+    // a 1x screen a 280 px bitmap was stretched across the card. clientWidth is 0 for a
+    // canvas that is not laid out (a hidden view), so fall back to the attribute size.
+
+```
+
+### ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an
+
+```javascript
+  /* ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an inline
+   * <code>). Every caller must therefore pass markup it built itself or escaped - never a
+   * payload string. Anything from the API goes through ``label`` or ``value``, which are
+   * escaped here.
+   *
+   * Each card carries one local SVG icon, its label, the value, and one supporting sentence.
+   * The icon is decorative: the label and the sentence are the meaning. */
+
+```
+
+### One public form: an address, a button, and a result that never claims more than 
+
+```javascript
+  /* One public form: an address, a button, and a result that never claims more than AWS has
+   * done. The browser posts the address to POST /subscriptions; the API asks SNS to subscribe
+   * it, and AWS sends the confirmation message. The visitor is only "subscribed" once they
+   * follow that link, so the success state says "check your inbox" and nothing else.
+   *
+   * What the page must never show: the topic ARN, a subscription ARN, an AWS error body, a
+   * stack trace, or any HTTP detail. The four states below are the whole vocabulary, and the
+   * only thing the form reveals about an address is what the visitor typed themselves. */
+
+```

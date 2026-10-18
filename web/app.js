@@ -12,9 +12,7 @@
   var params = new URLSearchParams(window.location.search);
 
   /* The page states its own API base in a data attribute, not in a script tag: the deployed
-   * page carries a Content-Security-Policy with no 'unsafe-inline', so there is no inline
-   * script allowed anywhere on it. A window global is still honoured for local harnesses, and
-   * ?api= still overrides both for testing. */
+ * The page states its own API base in a data attribute, not in a script tag: the d: why it is the way it is - see README, "Interface notes". */
   function configuredApiBase() {
     var fromPage = '';
     try {
@@ -28,10 +26,7 @@
   var API_BASE = configuredApiBase().replace(/\/+$/, '');
 
   /* An API base may be overridden with ?api=<origin> for testing, which means it can also be
-   * arbitrary text from a link. It is only ever used as a fetch origin and as a display link,
-   * so anything that is not plainly an http(s) origin is ignored rather than followed: a
-   * javascript:/data: value would otherwise end up in an href, and a relative value would
-   * silently fetch from the dashboard host. */
+ * An API base may be overridden with ?api=<origin> for testing, which means it can: why it is the way it is - see README, "Interface notes". */
   function isHttpOrigin(value) {
     return typeof value === 'string' && /^https?:\/\/[^\s"'<>]+$/i.test(value);
   }
@@ -168,6 +163,9 @@
       'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data', 'view-about',
       'ov-headline', 'ov-subline', 'ov-intro', 'ov-stats', 'band-strip-title',
       'city-cards-title', 'cities-lede', 'incidents-zone-header', 'city-cards', 'city-detail', 'city-crumb',
+      // M11: the Cities page's find-and-sort controls and the Overview's coverage note
+      'cities-search', 'cities-region', 'cities-region-label', 'cities-region-field', 'cities-risk',
+      'cities-sort', 'cities-count', 'cities-empty', 'city-cards-note', 'city-cards-more',
       'alerts-lede', 'alerts-summary', 'alerts-active', 'alerts-closed',
       'provenance-legend', 'attribution-block', 'attribution-detail', 'summary-weather-provider',
       'method-block', 'why-simulated', 'limitations', 'summary-model-data', 'score-breakdown',
@@ -303,10 +301,7 @@
   }
 
   /* A payload element that is not an object (null, a string, a number) is not a zone and not an
-   * incident. It is dropped where the list enters state, so every consumer below - the card
-   * grid, the ranking, the change note, the session series, the alert view - can rely on
-   * objects and one malformed element cannot stop the board updating. The API's own counts are
-   * left untouched: they say what the fleet holds, not what this page could render. */
+ * A payload element that is not an object (null, a string, a number) is not a zone: why it is the way it is - see README, "Interface notes". */
   function usableEntries(list) {
     return (Array.isArray(list) ? list : []).filter(function (entry) {
       return entry && typeof entry === 'object';
@@ -328,7 +323,7 @@
     renderBandStrip(payload);
     renderChangeNote(payload);
     renderHero(payload);
-    renderCards(state.zones);
+    renderCitiesPage();
     renderRanking(state.zones);
     renderHistoryButtons(state.zones);
     // every view is rendered on every successful poll, not only the visible one: the
@@ -493,8 +488,11 @@
     var names = zones.slice(0, 5).map(function (zone) { return zone.name; });
     var suffix = zones.length > names.length ? ' +' + (zones.length - names.length) : '';
     if (feed.live) {
+      var regions = FP.coverageInfo(payload);
+      var where = regions && regions.regionCount !== null
+        ? ' in ' + regions.regionCount + (regions.regionCount === 1 ? ' region' : ' regions') : '';
       return 'India live-weather monitoring · ' + (feed.zoneCount || zones.length) +
-        ' cities · ' + names.join(', ') + suffix;
+        ' cities' + where + ' · ' + names.join(', ') + suffix;
     }
     return 'Simulated sensor fleet · ' + zones.length + ' zones · ' +
       (names.length ? names.join(', ') + suffix : 'demo mode');
@@ -531,9 +529,7 @@
     // the feed countdown ticks here, once per second, on the panel row only
     if (state.payload) renderFreshness(state.payload);
     // Before the first successful poll the hero holds the copy index.html ships with. Once the
-    // page knows a request failed it must not keep promising a connection: the headline says
-    // what is actually true, and the sentence under it says what happens next. Both are written
-    // only from the failure branch, so a still-connecting page keeps its static wording.
+    // Before the first successful poll the hero holds the copy index.html ships with. : why it is the way it is - see README, "Interface notes".
     if (!state.payload && state.lastError) {
       setText('ov-headline', 'Awaiting live data');
       setText('hero-monitor', 'The FloodPulse API has not answered this page yet, so no reading ' +
@@ -551,18 +547,7 @@
   /* ------------------------------------------------------------------- hero --- */
 
   /* The hero: the fleet's answer, then the reason behind the highest-risk city.
-   *
-   * It patches the card that is already in index.html instead of rebuilding it, so the
-   * structure (icon, kicker, question, headline, monitoring line, reason, facts, and the way to
-   * the method) is on the page before the first poll answers: what a reader sees with scripting
-   * off is the same product, just without numbers. Each field is reached by its own id through
-   * the same `setText` helper the rest of the page uses, so there is exactly one writer per node
-   * and the harness can read each field back the way a browser would read it.
-   *
-   * Nothing technical goes in here: no formula, no variable name, no model id. The band, the
-   * main risk factor, how old the reading is and which way it is going are the whole story,
-   * and the calculation is one click away on the city page and Data & Methodology.
-   */
+ * The hero: the fleet's answer, then the reason behind the highest-risk city.: why it is the way it is - see README, "Interface notes". */
   function renderHero(payload) {
     var highest = payload.highest_risk_zone;
     var feed = FP.feedStatus(payload, Date.now());
@@ -602,10 +587,7 @@
     setText('hero-monitor', FP.monitorLine(payload, FP.fleetOverview(payload, state.incidents, Date.now())));
     setText('hero-why', summary && summary.why ? summary.why : '');
     // The facts line answers "how bad, why, how fresh, which way" in one narrow column: it is
-    // the same information as the cards below, in the order a reader asks for it. The score and
-    // the age are the API's own answer for the leading city (`highest_risk_zone`), not a second
-    // reading taken out of the zone table, so this sentence can never disagree with the band the
-    // page just announced.
+    // The facts line answers "how bad, why, how fresh, which way" in one narrow column: why it is the way it is - see README, "Interface notes".
     var direction = latest ? FP.trendDirection(latest.trend) : 'flat';
     var trendWords = { up: 'getting worse', down: 'easing', flat: 'holding steady' };
     var score = highest.risk_score !== undefined && highest.risk_score !== null
@@ -638,6 +620,8 @@
     return '[data-zone="' + escaped + '"]';
   }
 
+  /* The card grid holds cards and nothing else: an empty fleet leaves it empty, and the
+   * sentence that explains the emptiness lives beside it (see renderCitiesPage). */
   function renderCards(zones) {
     var grid = el.zones;
     if (!grid) return;
@@ -645,7 +629,7 @@
       // The index decides image loading only: the first row of cards is on screen and loads the
       // way the browser does by default, the rest carry loading="lazy". (.map passes the index.)
       grid.innerHTML = zones.map(function (zone, index) {
-        return FP.renderZoneCard(zone, { eager: index < 4 });
+        return FP.renderZoneCard(zone, { eager: index < 4, noun: FP.zoneNoun(state.payload) });
       }).join('');
       grid.setAttribute('data-signature', zoneSignature(zones));
     }
@@ -710,9 +694,7 @@
     setText('sensor_node_id', latest.sensor_node_id);
     setText('age', FP.ageLabel(latest.age_seconds));
     // The plain-language reason is patched like every other value on this card: the card is only
-    // rebuilt when the *fleet* changes, so a sentence written once at build time would freeze
-    // while the reading behind it moved. The raw model output string is not patched into any
-    // visible node: it lives in the city page's technical section, which is redrawn on navigation.
+    // The plain-language reason is patched like every other value on this card: the ca: why it is the way it is - see README, "Interface notes".
     setText('why', FP.plainRiskSummary(zone).why);
 
     var trend = card.querySelector('[data-f="trend"]');
@@ -767,10 +749,7 @@
     var ctx = canvas.getContext('2d');
     var dpr = window.devicePixelRatio || 1;
     // Size the backing store from the laid-out width, like the history chart does. The old
-    // code drew a dpr-scaled path into the 280x56 attribute-sized bitmap, so on a HiDPI
-    // screen the newest samples were drawn past the right edge and silently clipped, and on
-    // a 1x screen a 280 px bitmap was stretched across the card. clientWidth is 0 for a
-    // canvas that is not laid out (a hidden view), so fall back to the attribute size.
+    // Size the backing store from the laid-out width, like the history chart does. The: why it is the way it is - see README, "Interface notes".
     var width = Math.round(canvas.clientWidth || 0) || Math.round(canvas.width / dpr) || 280;
     var height = SPARK_CSS_HEIGHT;
     var pixelWidth = Math.round(width * dpr);
@@ -1215,12 +1194,7 @@
   /* ------------------------------------------------------------------ overview --- */
 
   /* ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an inline
-   * <code>). Every caller must therefore pass markup it built itself or escaped - never a
-   * payload string. Anything from the API goes through ``label`` or ``value``, which are
-   * escaped here.
-   *
-   * Each card carries one local SVG icon, its label, the value, and one supporting sentence.
-   * The icon is decorative: the label and the sentence are the meaning. */
+ * ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an: why it is the way it is - see README, "Interface notes". */
   function statCard(label, value, metaHtml, tone, iconName) {
     return '<article class="stat' + (tone ? ' band-' + tone : '') + '">' +
       (iconName ? '<span class="stat-icon" aria-hidden="true">' + FP.icon(iconName, 20) + '</span>' : '') +
@@ -1274,6 +1248,10 @@
     renderRecentActivity();
   }
 
+  /* How many cities the Overview puts on screen: it answers "what should I look at", and the
+   * Cities page carries the rest. Every count the page states comes from the payload. */
+  var OVERVIEW_CITY_LIMIT = 5;
+
   /* "Is anything actually alerting?" in one compact block: the two newest active alerts, or a
    * calm state that says so plainly and points at the alerts page. It reads the same incidents
    * payload as the Alerts page, so the two can never disagree. */
@@ -1312,19 +1290,22 @@
       Date.now(), { changes: changes });
   }
 
-  /* Five compact cards: name, band, one plain sentence, score and freshness. The full
-   * detail lives on the city view, one click away. */
+  /* The highest-risk few: name, state, band, score, freshness. The full detail is on the city
+   * view and the whole fleet is on the Cities page, one click away. */
   function renderCityCards(zones) {
     var host = el['city-cards'];
     if (!host) return;
-    var list = zones || [];
+    var all = zones || [];
+    // The same ordering the risk ranking uses, so the cards and the list can never disagree
+    var list = FP.ranking(all).slice(0, OVERVIEW_CITY_LIMIT);
     // The loading/loaded state is part of the signature: an empty list before the first response
     // is a skeleton, and an empty list *after* a response is an empty state, and those two must
     // not hash to the same key (that mistake left the skeleton on screen for ever).
-    var signature = (state.payload ? 'loaded' : 'loading') + '|' + (list.map(function (zone) {
-      var latest = zone.latest;
-      return zone.zone_id + ':' + (latest ? latest.risk_class + ':' + latest.ts_epoch : 'none');
-    }).join('|') || 'empty');
+    var signature = (state.payload ? 'loaded' : 'loading') + '|' + all.length + '|' +
+      (list.map(function (zone) {
+        var latest = zone.latest;
+        return zone.zone_id + ':' + (latest ? latest.risk_class + ':' + latest.ts_epoch : 'none');
+      }).join('|') || 'empty');
     if (signature === state.cityCardSignature) return;
     state.cityCardSignature = signature;
     var noun = FP.zoneNoun(state.payload);
@@ -1348,7 +1329,29 @@
           actionLabel: 'Check again now'
         })
         // nothing has arrived yet: placeholders that show the shape of what is coming
-        : FP.cityCardsSkeleton(3));
+        : FP.cityCardsSkeleton(OVERVIEW_CITY_LIMIT));
+    renderOverviewFleetNote(all, list);
+  }
+
+  /* The line under the grid and the way to the other cities, both from the payload's own
+   * totals: neither can claim a fleet size the API did not report. */
+  function renderOverviewFleetNote(all, shown) {
+    var plural = FP.zoneNounPlural(state.payload);
+    var total = FP.toNumber(state.payload && state.payload.zone_count);
+    if (total === null) total = all.length;
+    if (el['city-cards-note']) {
+      var note = !all.length ? ''
+        : (all.length > shown.length
+          ? 'Showing the ' + shown.length + ' highest-risk ' + plural + ' of ' + total +
+            '. The rest are one click away.'
+          : 'Showing every ' + plural + ' the fleet is monitoring (' + total + ').');
+      setText('city-cards-note', note);
+    }
+    if (el['city-cards-more']) {
+      var label = 'View all ' + total + ' ' + plural;
+      if (el['city-cards-more'].textContent !== label) el['city-cards-more'].textContent = label;
+      el['city-cards-more'].hidden = total <= shown.length;
+    }
   }
 
   /* -------------------------------------------------------------- city detail --- */
@@ -1551,13 +1554,7 @@
   /* ------------------------------------------------- email alert subscriptions --- */
 
   /* One public form: an address, a button, and a result that never claims more than AWS has
-   * done. The browser posts the address to POST /subscriptions; the API asks SNS to subscribe
-   * it, and AWS sends the confirmation message. The visitor is only "subscribed" once they
-   * follow that link, so the success state says "check your inbox" and nothing else.
-   *
-   * What the page must never show: the topic ARN, a subscription ARN, an AWS error body, a
-   * stack trace, or any HTTP detail. The four states below are the whole vocabulary, and the
-   * only thing the form reveals about an address is what the visitor typed themselves. */
+ * One public form: an address, a button, and a result that never claims more than : why it is the way it is - see README, "Interface notes". */
   function setSubscriptionState(kind, address) {
     var copy = FP.subscriptionResult(kind);
     var node = el['subscribe-result'];
@@ -1983,6 +1980,7 @@
       state.detailSignature = null;
       state.alertPreviewSignature = null;
       renderCityCards(state.zones);
+      renderCitiesPage();
       renderAlertPreview(state.incidents);
       renderSystemHealth();
       setTimeout(function () { button.disabled = false; }, 1200);
@@ -2002,6 +2000,8 @@
       // field the visitor has since corrected
       if (state.subscribe === 'invalid') setSubscriptionState('idle', null);
     });
+
+    bindCityControls();
 
     bindTo('history-zone', 'click', function (event) {
       var button = event.target.closest('[data-zone-pick]');
@@ -2082,6 +2082,124 @@
         loadHistory();
         loadIncidents();
       }
+    });
+  }
+
+  /* -------------------------------------------------------------- Cities page ---
+   *
+   * Fifteen cities on one page: find one, filter the list, order it - all client-side from the
+   * payload already in memory, so no filter change costs a request.
+   */
+
+  function cityFilters() {
+    if (!state.cities) state.cities = { query: '', region: 'all', risk: 'all', sort: 'risk' };
+    return state.cities;
+  }
+
+  /* The risk floors: "WATCH+" means "this class or worse". Values are the API's own class names. */
+  var RISK_FILTERS = [
+    { value: 'all', label: 'All' },
+    { value: 'WATCH', label: 'WATCH+' },
+    { value: 'WARNING', label: 'WARNING+' },
+    { value: 'CRITICAL', label: 'CRITICAL' }
+  ];
+
+  /* A chip group, rebuilt only when its own options or its own pressed chip changed: a poll that
+   * changed nothing must not touch the DOM, or move the visitor's focus. */
+  function renderChipGroup(host, kind, options, active) {
+    if (!host) return;
+    var rendered = options.map(function (option) {
+      return option.value + (option.value === active ? '*' : '');
+    }).join('|');
+    if (host.getAttribute('data-rendered') === rendered) return;
+    host.setAttribute('data-rendered', rendered);
+    host.innerHTML = FP.filterChips(kind, options, active);
+  }
+
+  /* Both groups, from the fleet's own regions and the API's own class names. A payload that
+   * reports no regional grouping offers no region filter. */
+  function renderCityFilters(payload) {
+    var rules = cityFilters();
+    var regions = FP.regionOptions(payload);
+    var grouped = regions.length > 1;
+    ['cities-region', 'cities-region-label', 'cities-region-field'].forEach(function (id) {
+      if (el[id]) el[id].hidden = !grouped;
+    });
+    renderChipGroup(el['cities-region'], 'region', grouped ? regions : [], rules.region);
+    renderChipGroup(el['cities-risk'], 'risk', RISK_FILTERS, rules.risk);
+    if (el['cities-sort'] && el['cities-sort'].value !== rules.sort) el['cities-sort'].value = rules.sort;
+    if (el['cities-search'] && el['cities-search'].value !== rules.query) {
+      el['cities-search'].value = rules.query;
+    }
+  }
+
+  /* The grid, the count and the two empty states: on every payload and every filter change, and
+   * it fetches nothing. */
+  function renderCitiesPage() {
+    var rules = cityFilters();
+    var all = state.zones || [];
+    var plural = FP.zoneNounPlural(state.payload);
+    var visible = FP.visibleCities(all, rules);
+    var noun = FP.zoneNoun(state.payload);
+    // Beside the grid, never inside it. Which empty state applies is the only difference between
+    // "the fleet has nothing yet" and "these filters excluded everything".
+    var emptyHtml = '';
+    if (state.payload) {
+      emptyHtml = !all.length
+        ? FP.emptyState({
+          key: 'no-cities-list',
+          icon: 'info',
+          title: 'No ' + noun + ' is reporting a scored reading',
+          detail: 'The API answered, but no ' + noun + ' has a complete reading yet. ' +
+            'This page keeps checking every few seconds.',
+          action: 'retry',
+          actionLabel: 'Check again now'
+        })
+        : (!visible.length ? FP.citiesEmptyState(plural) : '');
+    }
+    if (el['cities-empty']) {
+      if (el['cities-empty'].innerHTML !== emptyHtml) el['cities-empty'].innerHTML = emptyHtml;
+      el['cities-empty'].hidden = !emptyHtml;
+    }
+    // Rewritten only when the sentence changes: a status region that hears the same text every
+    // poll would announce itself every five seconds for nothing.
+    if (el['cities-count']) {
+      var line = state.payload ? FP.citiesResultLine(visible.length, all.length, plural) : '';
+      if (el['cities-count'].textContent !== line) el['cities-count'].textContent = line;
+    }
+    renderCards(visible);
+    renderCityFilters(state.payload);
+  }
+
+  function bindCityControls() {
+    // typing filters the list in place: no request, and no debounce needed for fifteen rows
+    bindTo('cities-search', 'input', function (event) {
+      cityFilters().query = String(event.target.value || '');
+      renderCitiesPage();
+    });
+    // one handler per chip group: the group's own attribute names the filter it sets
+    var groups = { 'cities-region': ['region', 'data-region'], 'cities-risk': ['risk', 'data-risk'] };
+    Object.keys(groups).forEach(function (id) {
+      var entry = groups[id];
+      bindTo(id, 'click', function (event) {
+        var chip = event.target && event.target.closest ? event.target.closest('[' + entry[1] + ']') : null;
+        if (!chip) return;
+        cityFilters()[entry[0]] = chip.getAttribute(entry[1]) || 'all';
+        renderCitiesPage();
+      });
+    });
+    bindTo('cities-sort', 'change', function (event) {
+      cityFilters().sort = String(event.target.value || 'risk');
+      renderCitiesPage();
+    });
+    // "Clear filters": the whole fleet back, and the controls back with it
+    document.addEventListener('click', function (event) {
+      var button = event.target && event.target.closest
+        ? event.target.closest('[data-action="clear-filters"]') : null;
+      if (!button) return;
+      event.preventDefault();
+      state.cities = { query: '', region: 'all', risk: 'all', sort: 'risk' };
+      renderCitiesPage();
     });
   }
 

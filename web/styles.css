@@ -1422,18 +1422,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   .zone-card:hover, .city-card:hover { transform: none; }
 }
 
-/* ============================================================================
- * M9 - product experience, information design and responsive polish
- * ============================================================================
- *
- * Everything below is additive: the M6-M8 rules above still describe the base look, and this
- * section refines it for a public audience - larger type, calmer surfaces, an icon next to
- * every meaning, honest empty and loading states, and layouts that survive a 320px phone.
- *
- * Colour roles are unchanged and never reused: cyan/teal = live and NORMAL, amber = WATCH and
- * stale, orange = WARNING, red = CRITICAL, slate = unknown. A status colour is always paired
- * with a word, so colour is never the only carrier of meaning.
- */
+/* M9 - product experience, information design and responsive polish - notes in README, "Interface notes". */
 
 :root {
   /* type scale: bigger body copy, fewer all-caps labels, headings that step down clearly */
@@ -2343,21 +2332,7 @@ main, .topbar, .footer { max-width: 100%; }
 }
 .breakdown-total b { color: var(--white); font-variant-numeric: tabular-nums; }
 
-/* ============================================================================
- * M10 - premium pass: cinematic shell, grouped header, the hero, city cards,
- *        the alerts preview, the three-step explainer and the subscription form
- * ============================================================================
- *
- * Additive again: the M6-M9 rules above still describe the base, and this layer makes the
- * product read as one deliberate surface rather than a dashboard of separate panels.
- *
- * The three rules kept from the earlier passes, because they are the ones that keep the page
- * readable rather than merely pretty:
- *   * a status colour is never the only carrier of meaning - every one is paired with a word;
- *   * the text always sits on a surface, never directly on the photograph;
- *   * nothing here is animated on a timer, so `prefers-reduced-motion` has almost nothing to
- *     switch off.
- */
+/* M10 - premium pass: cinematic shell, grouped header, the hero, city cards, the alerts preview, the three-step explainer and the subscription form - notes in README, "Interface notes". */
 
 :root {
   --scrim: rgba(4, 10, 24, 0.72);
@@ -2366,19 +2341,7 @@ main, .topbar, .footer { max-width: 100%; }
   --glow-cyan: 0 0 0 1px rgba(34, 211, 238, 0.18), 0 12px 30px rgba(6, 182, 212, 0.10);
 }
 
-/* -------------------------------------------------------------- backdrop ---
- *
- * The photograph is the shell's atmosphere, and it already arrives on the fixed
- * `.bg-layer` element (M6). It stays there rather than becoming a `body` background:
- * `background-attachment: fixed` on the body makes a full-page repaint on every scroll
- * for mobile Safari, while an element fixed behind the content is composited once. The
- * look is the one this pass is after - image, cover, centred, held still - and the
- * overlay above it is what keeps every word legible.
- *
- * Order, top to bottom: photograph -> navy ramp -> soft edge vignette -> panels. The
- * ramp is strongest where paragraphs sit (the middle of the viewport) and the vignette
- * darkens the four edges, so the picture is felt at the margins and never fights text.
- */
+/* backdrop - README, "Interface notes". */
 
 .bg-layer {
   background-position: center;
@@ -2399,13 +2362,7 @@ main, .topbar, .footer { max-width: 100%; }
   box-shadow: 0 10px 30px rgba(1, 4, 14, 0.45);
 }
 
-/* ------------------------------------------------------------------ header ---
- *
- * Three groups, in the order a reader scans them: who this is (left), where to go
- * (centre), and what state the system is in (right). The model name is not here: it is a
- * method detail, and it lives in the folded technical summary on this page and on Data &
- * Methodology, where somebody who wants it goes looking.
- */
+/* header - README, "Interface notes". */
 
 .topbar-status { justify-content: flex-end; }
 
@@ -2438,13 +2395,7 @@ main, .topbar, .footer { max-width: 100%; }
   }
 }
 
-/* -------------------------------------------------------------------- hero ---
- *
- * The answer card: icon and kicker, one plain sentence, one monitoring line, the reason
- * behind the leading city, and the facts line. The right column says what the product is
- * and points at the method. No formula appears here on purpose - the calculation is one
- * click away, in the collapsed technical section and on the methodology page.
- */
+/* hero - README, "Interface notes". */
 
 .hero.hero-live {
   display: grid;
@@ -2570,12 +2521,7 @@ main, .topbar, .footer { max-width: 100%; }
 .stat-value { margin: 2px 0 6px; }
 .stat-meta { color: var(--slate-300); }
 
-/* ------------------------------------------------------------- city cards ---
- *
- * The thumbnail and the meter are both decoration built from the payload: the plate's hue
- * follows the city's band, and the meter's fill is the score the API reported, with the
- * documented boundaries marked. No photograph is used, because none is licensed here.
- */
+/* city cards - README, "Interface notes". */
 
 .city-thumb {
   display: inline-grid;
@@ -2630,12 +2576,7 @@ main, .topbar, .footer { max-width: 100%; }
 .city-meter[data-band="critical"] .city-meter-fill { background: var(--band-critical); box-shadow: 0 0 12px rgba(239, 68, 68, 0.36); }
 .city-meter[data-band="unknown"] .city-meter-fill { background: var(--slate-400); box-shadow: none; }
 
-/* ------------------------------------------------------------ alert preview ---
- *
- * "Is anything alerting?" in one block, above the fold of the alerts page itself. The
- * calm state is a state too: it says so in words with a tick, rather than showing an
- * empty list that a reader has to interpret.
- */
+/* alert preview - README, "Interface notes". */
 
 .alert-preview { padding: 20px 22px; }
 .alert-preview .block-title { margin-top: 0; }
@@ -2773,13 +2714,7 @@ main, .topbar, .footer { max-width: 100%; }
 
 .subscribe-notes p { margin: 0; }
 
-/* --------------------------------------------------------------- responsive ---
- *
- * The new layouts collapse in the order the content matters: the aside under the hero,
- * the three steps into a column, the form's button under its field. Every track is
- * `minmax(0, …)`, so a long address or a narrow phone can never introduce a horizontal
- * scrollbar.
- */
+/* responsive - README, "Interface notes". */
 
 @media (max-width: 900px) {
   .hero.hero-live { grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 22px; }
@@ -2810,26 +2745,7 @@ main, .topbar, .footer { max-width: 100%; }
   .btn, .health-summary { transition: none; }
 }
 
-/* ======================================================= M10.1 - the imagery ===
- *
- * Wiring the prepared raster assets into the interface, and the surfaces they sit on. Three
- * decisions are made here and nowhere else:
- *
- * 1. A city nightscape is the *card's* image: one 16:9 band at the top of `.city-thumb`, which
- *    the Overview card and the city list both render from the same builder, with
- *    `object-fit: cover` so a 612x344 file and an 800x450 file land in the same box the same
- *    way, and a gradient at the band's foot so the city name below never meets a bright skyline.
- *    A zone whose id is not in the mapping keeps the drawn plate - the band-tinted gradient that
- *    was there before - so a card never changes shape with the data, and no image is guessed.
- * 2. The backdrop is the 930x312 photograph: cover, centred on the top edge, at 55% over the
- *    page gradient, with the navy ramp and the inset vignette over it. At 1920 CSS px the
- *    browser upscales it 2.06x and it is visibly soft at that width. The alternative was
- *    inventing pixels, so the softness is accepted and reported rather than hidden.
- * 3. Surfaces get lighter, not darker. The photograph has to be visible through the large
- *    panels - that is what "atmospheric" means here - so the panel gradient drops to ~60%
- *    opacity and the blur stays at 7px: enough to soften the skyline behind a paragraph, far
- *    from the frosting that makes small text work to read.
- */
+/* M10.1 the imagery - README, "Interface notes". */
 
 /* ------------------------------------------------------------------ backdrop --- */
 
@@ -3046,14 +2962,24 @@ main, .topbar, .footer { max-width: 100%; }
  * One row of five on a wide desktop, three at 1024, two at 768, one on a phone. Every track is
  * minmax(0, ...) so a long city name can never push the page sideways. */
 
-@media (min-width: 1320px) {
-  .city-cards { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-}
-
-@media (max-width: 560px) {
+/* The card grid at every width the site is checked at. auto-fit put three cards on a 768px
+ * tablet and could put two on a phone, which is not the ladder the milestone names: five down to
+ * three on a desktop, two on a tablet, one on a phone. Every track is minmax(0, ...) so a long
+ * city name can never push the page sideways; the base rules (auto-fit, 248px and 340px) still
+ * cover the widths between these steps. */
+@media (min-width: 1320px) { .city-cards { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (min-width: 1080px) and (max-width: 1319px) { .city-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 900px) and (max-width: 1079px) { .city-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 640px) and (max-width: 899px) { .city-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 639px) {
   .city-cards { grid-template-columns: minmax(0, 1fr); }
   .city-card .city-head h3 { font-size: 1.06rem; }
 }
+/* The same ladder for the Cities page's fuller cards, whose base rule is auto-fit at 340px. */
+@media (min-width: 1500px) { .zone-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 1180px) and (max-width: 1499px) { .zone-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 760px) and (max-width: 1179px) { .zone-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 759px) { .zone-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* ------------------------------------------------------- the city list cards ---
  *
@@ -3123,51 +3049,7 @@ main, .topbar, .footer { max-width: 100%; }
   .city-card:focus-visible .city-photo { transform: none; }
 }
 
-/* ================================================================= M10.2 ===
- *
- * WHY THE RAIN WAS INVISIBLE. The photograph was on the page the whole time, was the right
- * file, and was never overridden: `.bg-layer` still had `background-image: url("bg-storm.webp")`
- * and `background-size: cover` with nothing later touching either. It was invisible because four
- * darkenings stacked on top of each other, three of them inside the layer itself:
- *
- *   1. `mix-blend-mode: screen` on the layer. Screen keeps the *lightest* values: over a dark
- *      navy backdrop the photograph's darks and midtones - the skyline, the road, the wet
- *      reflections - came out within a couple of levels of the page colour, so no scene survived.
- *      Worse, it lightens: the result read as navy with a haze, never as a photograph.
- *   2. `opacity: 0.55` on the layer, multiplying the already-masked group a second time.
- *   3. `.bg-layer::after`, a navy radial at 0.54 in the middle and 0.90 at the edges, painted
- *      *inside* the layer, i.e. directly on top of the image and under both multiplications.
- *   4. `box-shadow: inset 0 0 180px 60px rgba(2, 6, 23, 0.78)`, a hard 0.78 vignette on the same
- *      box, for the same reason.
- *
- * The arithmetic those four produce at the middle of the viewport is (1 - 0.585) x 0.55 = 0.23 of
- * the photograph, then screen-blended, so its darks landed about five 8-bit levels away from the
- * flat body gradient underneath: a 0-5% signal. That is the "flat navy" the review saw. Nothing
- * opaque covered the page: `main`, `.view`, `.view-head` and the section wrappers carry no
- * background at all, and the only full-viewport box in the file is `.bg-layer` itself.
- *
- * WHAT CHANGED. The overlay is no longer a mask over the image but a *ramp in front of it*, with
- * each multiplier kept separate and small:
- *
- *   photograph -> one navy wash (linear) -> a soft radial -> the ::after vignette at the edges
- *   -> the panels. `opacity: 1`, no blend mode, no second darkening layer.
- *
- * Transmission of the photograph, computed from these declarations at three points of a 1440x900
- * viewport (this is arithmetic over the alpha stops, not a rendering):
- *
- *   middle of the screen   0.38   the band the review asked for (30-45%)
- *   top edge (behind nav)  0.35
- *   bottom-left corner     0.10   before the inset vignette, which takes it under 0.06
- *
- * So the city is visible around the header, in the page gaps and at the edges of every panel, and
- * the panels stay dark enough to carry text: the surfaces below are 0.74-0.86 - a hierarchy, not
- * one opacity for everything, because a large panel showing 22% of a photograph behind a
- * paragraph needs more body than a stat tile showing a number.
- *
- * Not touched: the image itself (no re-encode, no replacement, still `bg-storm.webp`), the city
- * nightscape mapping, the CSP (`img-src 'self' data:` - the file is same-origin), and every text
- * colour.
- */
+/* M10.2 - README, "Interface notes". */
 
 /* ------------------------------------------------------------------ backdrop --- */
 
@@ -3211,11 +3093,7 @@ main, .topbar, .footer { max-width: 100%; }
       rgba(1, 6, 18, 0.30) 100%);
 }
 
-/* ------------------------------------------------------------------ surfaces ---
- *
- * Four surfaces, four jobs. The photograph is visible between them; through them it is a
- * suggestion. Numbers are percentages of opacity, so a reader can compare them to the brief:
- * hero 0.74-0.78, large panel 0.78-0.80, ordinary card 0.85-0.86, inset row 0.78. */
+/* surfaces - README, "Interface notes". */
 
 :root {
   /* Hero and the subscription panel: the most transparent, because they are the largest surfaces
@@ -3274,12 +3152,7 @@ main, .topbar, .footer { max-width: 100%; }
   background: rgba(3, 11, 26, 0.80);
 }
 
-/* ------------------------------------------------------------------- phones ---
- *
- * The photograph stays on the page at every width - it is darker, never gone. A phone is read at
- * arm's length in daylight, so the vignette gets stronger and the picture keeps its job as
- * atmosphere rather than as a picture. Only the vignette and the edge shadow change; the wash
- * above the image is one declaration in this file, shared by every width. */
+/* phones - README, "Interface notes". */
 
 @media (max-width: 760px) {
   .bg-layer {
@@ -3315,4 +3188,98 @@ main, .topbar, .footer { max-width: 100%; }
         rgba(2, 9, 24, 0.24) 58%,
         rgba(1, 6, 18, 0.42) 100%);
   }
+}
+
+/* ===================================================================== M11 ===
+ *
+ * Fifteen cities instead of five. Three things had to appear: where each city is, a way to find
+ * one among fifteen, and an Overview that says its cards are the highest-risk few. Almost none of
+ * this is new styling - the chips are .ghost, the row is .button-group, the search box is
+ * .subscribe-input, the way to the rest is .ghost-link - so what follows is the toolbar's layout,
+ * the place lines and the plate's region label, and nothing else.
+ */
+
+.city-card .city-place,
+.zone-card .zone-place,
+.city-detail .detail-place {
+  margin: 2px 0 0;
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
+
+.city-region, .zone-region, .detail-region { color: var(--slate-400); }
+
+/* The label beside the arrow, on both card shapes. Decorative: the card names itself for
+ * assistive tech, so this travels with the arrow inside one aria-hidden span. */
+.city-open-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--slate-400);
+  white-space: nowrap;
+}
+
+.zone-card:hover .city-open-label, .zone-card:focus-within .city-open-label { color: var(--cyan-300); }
+
+/* Ten of the fifteen cities have no photograph, so the drawn plate says which region the city is
+ * in instead of showing a bare icon. */
+.city-thumb-region {
+  position: absolute;
+  inset: auto auto 10px 12px;
+  z-index: 1;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: inherit;
+  background: rgba(4, 9, 26, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+}
+
+/* What the fleet covers, in the API's own scope note, on a city page. */
+.detail-scope {
+  margin: 0 0 4px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--stroke-strong);
+  background: rgba(9, 21, 45, 0.55);
+  font-size: var(--text-sm);
+  color: var(--slate-300);
+}
+
+/* --------------------------------------------------- finding one of fifteen --- */
+
+.cities-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 18px;
+  margin: 0 0 6px;
+}
+
+/* min-width: 0 on every field, so a long region name wraps the toolbar instead of widening the
+ * page; the search box grows first, because it is the control people reach for. */
+.toolbar-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.toolbar-field-search { flex: 1 1 260px; max-width: 360px; }
+.toolbar-label { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--slate-400); }
+.cities-search { width: 100%; min-height: 40px; padding: 8px 12px; font-size: var(--text-sm); }
+.cities-sort { min-height: 40px; padding: 8px 12px; font-size: var(--text-sm); cursor: pointer; }
+.filter-group { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 44px, the same target size as every other control on the site */
+.filter-chip { min-height: 44px; }
+.cities-count { margin: 4px 0 12px; font-size: var(--text-sm); color: var(--slate-400); }
+.cities-empty { margin: 4px 0 0; }
+.cities-empty[hidden] { display: none; }
+.city-cards-note { margin: 12px 0 0; font-size: var(--text-sm); color: var(--slate-400); }
+.city-cards-more-row { margin: 10px 0 0; }
+.city-cards-more[hidden] { display: none; }
+
+@media (max-width: 719px) {
+  .toolbar-field-search { max-width: none; }
+  .cities-toolbar { gap: 12px; }
 }

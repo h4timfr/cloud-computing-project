@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FloodPulse — Live flood monitoring</title>
-<meta name="description" content="FloodPulse monitors flood risk for five Indian cities: real Open-Meteo rainfall and soil moisture, simulated drain, water level and flow, scored by the deterministic heuristic-v1 model running on AWS Lambda, DynamoDB and API Gateway.">
+<meta name="description" content="FloodPulse monitors flood risk for fifteen Indian cities across fourteen states and five regions: real Open-Meteo rainfall and soil moisture, simulated drain, water level and flow, scored by the deterministic heuristic-v1 model running on AWS Lambda, DynamoDB and API Gateway.">
 <meta name="color-scheme" content="dark">
 <!-- The dashboard is a static page that talks to exactly one origin: this API. The policy below
      allows no inline script at all (the API base is a data attribute on <html>, not a script
@@ -157,6 +157,11 @@
     <section id="city-cards" class="city-cards" aria-labelledby="city-cards-title">
       <p class="muted" data-f="loading">waiting for data…</p>
     </section>
+    <!-- Which cities these cards are, and where the rest of the fleet is. Both lines are
+         written from the API's own totals: the Overview shows the highest-risk few, not all
+         fifteen, and says so. -->
+    <p class="city-cards-note" id="city-cards-note"></p>
+    <p class="city-cards-more-row"><a class="city-cards-more ghost-link" id="city-cards-more" href="#/cities" hidden>View all cities</a></p>
 
     <section id="alert-preview-card" class="alert-preview card" aria-labelledby="alert-preview-title">
       <h3 class="block-title" id="alert-preview-title">Recent alerts</h3>
@@ -223,8 +228,40 @@
     <h3 class="section-title" id="ranking-title">Risk ranking <span class="muted">highest score first</span></h3>
     <ol id="ranking" class="ranking" aria-labelledby="ranking-title"><li class="muted">waiting for data…</li></ol>
 
-    <h3 class="section-title" id="zones-title">City detail <span class="muted">live values from DynamoDB via the API</span></h3>
+    <h3 class="section-title" id="zones-title">All cities</h3>
+
+    <!-- One city out of fifteen. The controls are in the page rather than built by script, so they
+         exist before any payload arrives; only the chip groups are filled in from the payload,
+         because only the payload knows the fleet's own regions and risk classes. -->
+    <div class="cities-toolbar" id="cities-toolbar" role="search" aria-labelledby="cities-search-label">
+      <div class="toolbar-field toolbar-field-search">
+        <label class="toolbar-label" id="cities-search-label" for="cities-search">Search city or state</label>
+        <input class="cities-search subscribe-input" id="cities-search" type="search" name="cities-search"
+               placeholder="Search city or state" autocomplete="off" spellcheck="false" aria-controls="zones">
+      </div>
+      <div class="toolbar-field" id="cities-region-field">
+        <span class="toolbar-label" id="cities-region-label">Region</span>
+        <div class="button-group" id="cities-region" role="group" aria-labelledby="cities-region-label"></div>
+      </div>
+      <div class="toolbar-field">
+        <span class="toolbar-label" id="cities-risk-label">Risk level</span>
+        <div class="button-group" id="cities-risk" role="group" aria-labelledby="cities-risk-label"></div>
+      </div>
+      <div class="toolbar-field">
+        <label class="toolbar-label" for="cities-sort">Sort by</label>
+        <select class="cities-sort subscribe-input" id="cities-sort">
+          <option value="risk" selected>Highest risk</option>
+          <option value="name">A&#8211;Z</option>
+          <option value="fresh">Freshness</option>
+        </select>
+      </div>
+    </div>
+    <!-- polite, and rewritten only when the sentence changes: a poll that changes nothing
+         announces nothing -->
+    <p class="cities-count" id="cities-count" role="status" aria-live="polite"></p>
     <section id="zones" class="zone-grid" aria-labelledby="zones-title"></section>
+    <!-- The grid holds cards only; the sentence that explains an empty list sits beside it. -->
+    <div class="cities-empty" id="cities-empty" hidden></div>
   </section>
 
   <!-- ========================================================== City detail -->
@@ -429,8 +466,10 @@
     <header class="view-head hero-head">
       <p class="hero-kicker">About</p>
       <h2 class="view-title" id="about-title">What FloodPulse is</h2>
-      <p class="view-lede">A university cloud-computing project that watches rainfall and ground conditions across Indian
-        cities and shows how close each one is to flooding.</p>
+      <p class="view-lede">A university cloud-computing project that watches rainfall and ground conditions for
+        fifteen Indian cities and shows how close each one is to flooding. It monitors cities, not states,
+        regions or the country, and every number on the site is one of three things: measured, derived from
+        measurements, or simulated.</p>
     </header>
 
     <div class="about-grid">
