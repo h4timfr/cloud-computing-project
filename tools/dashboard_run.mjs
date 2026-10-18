@@ -1545,6 +1545,34 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
 
   await checkAsync('the cities page lists every city, and the search finds one by city or state', async () => {
     const find = await bootOnCities();
+
+    // M11.2: what a metric row is made of, measured on the page this check already opened.
+    const rowHtml = find.dom.html('zones');
+    const metricRows = rowHtml.match(/<li class="metric"[\s\S]*?<\/li>/g) || [];
+    assert.equal(metricRows.length, payload.zones.length * 5,
+      `the page rendered ${metricRows.length} metric rows for ${payload.zones.length} cities, expected five each`);
+    metricRows.forEach((one) => {
+      assert.match(one, /^<li class="metric" data-metric="[a-z0-9_]+">/,
+        `a metric row does not name its own metric: ${one.slice(0, 60)}`);
+      const name = one.match(/<span class="metric-name">([^<]*)<\/span>/);
+      assert.ok(name, `a metric row has no plain name cell: ${one.slice(0, 90)}`);
+      assert.ok(!/metric-source/.test(name[1]),
+        'the provenance chip is nested inside the name cell again, which is what broke the row');
+      assert.equal((one.match(/data-f="metric-source"/g) || []).length, 1,
+        'a metric row does not carry exactly one provenance chip');
+      assert.equal((one.match(/data-f="metric-value"/g) || []).length, 1,
+        'a metric row does not carry exactly one value cell');
+      assert.equal((one.match(/class="metric-track"/g) || []).length, 1,
+        'a metric row does not carry exactly one bar');
+    });
+    assert.ok(!/MODEL_DERIVED/.test(rowHtml), 'the raw provenance enum is on the page');
+    assert.ok(!/>SIMULATED</.test(rowHtml), 'the raw SIMULATED tag is on the page as a chip label');
+    [...rowHtml.matchAll(/data-f="metric-value">([^<]*)</g)].map((match) => match[1]).forEach((cell) => {
+      assert.ok(!/\s$/.test(cell), `a metric value ends in whitespace: ${JSON.stringify(cell)}`);
+      if (/[0-9]/.test(cell)) {
+        assert.match(cell, /[0-9]\s?\S/, `a metric value has no unit: ${JSON.stringify(cell)}`);
+      }
+    });
     assert.equal(gridCards(find), payload.zones.length,
       `the page lists ${gridCards(find)} of ${payload.zones.length} cities`);
     assert.match(find.dom.text('cities-count'), new RegExp(`Showing all ${payload.zones.length} cities`),
@@ -1556,8 +1584,8 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     typeSearch(find, city.name.toUpperCase());
     assert.equal(gridCards(find), 1, `searching "${city.name.toUpperCase()}" left ${gridCards(find)} cities`);
     assert.match(find.dom.html('zones'), new RegExp(city.name), 'the city that matched is not on screen');
-    assert.match(find.dom.text('cities-count'), new RegExp(`Showing 1 of ${payload.zones.length} cities`),
-      `the count reads "${find.dom.text('cities-count')}"`);
+    assert.match(find.dom.text('cities-count'), /^Showing 1 city \u00b7 Search: /,
+      `a single match should read as one city and name the search: "${find.dom.text('cities-count')}"`);
 
     // by state, and only the cities in it
     const inState = payload.zones.filter((zone) => zone.state === city.state);
@@ -1603,9 +1631,16 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     clickChip(filter, 'cities-risk', 'risk', 'WARNING');
     assert.equal(gridCards(filter), both.length,
       `South + WARNING+ shows ${gridCards(filter)} cities, expected ${both.length}`);
-    assert.match(filter.dom.text('cities-count'),
-      new RegExp(`Showing ${both.length} of ${payload.zones.length} cities`),
-      `the count reads "${filter.dom.text('cities-count')}"`);
+    // The sentence follows the payload: the recorded fleet is calm, so a WARNING floor matches
+    // nothing and the sentence says so. Either way it names what is in force.
+    if (both.length) {
+      assert.equal(filter.dom.text('cities-count'),
+        `Showing ${both.length} ${both.length === 1 ? 'city' : 'cities'} · South · WARNING+`,
+        `the count reads "${filter.dom.text('cities-count')}"`);
+    } else {
+      assert.equal(filter.dom.text('cities-count'), 'No cities match these filters.',
+        `the count reads "${filter.dom.text('cities-count')}"`);
+    }
     both.forEach((zone) => assert.ok(gridOrder(filter).includes(zone.zone_id),
       `${zone.zone_id} is South and at WARNING or worse, but the filters hid it`));
 
@@ -1627,7 +1662,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       'the empty state is not the designed one');
     assert.match(none.dom.html('cities-empty'), /No cities match these filters\./,
       `the empty state reads "${none.dom.html('cities-empty')}"`);
-    assert.match(none.dom.text('cities-count'), new RegExp(`Showing 0 of ${payload.zones.length} cities`),
+    assert.equal(none.dom.text('cities-count'), 'No cities match these filters.',
       `the count reads "${none.dom.text('cities-count')}"`);
 
     // "Clear filters" is a real control, and it puts the fleet and the controls back

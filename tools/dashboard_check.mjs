@@ -2183,14 +2183,43 @@ check('M9: the page is built for a phone before it is built for a desktop', () =
   });
   // grid definitions must never demand more than the viewport: min(X, 100%) is what keeps a
   // 320px phone from being forced sideways by a 260px column plus padding
-  const grids = [...cssSource.matchAll(/grid-template-columns:\s*([^;]+);/g)].map((match) => match[1].trim());
-  grids.forEach((value) => {
+  /* Which @media rule, if any, encloses the declaration at `index`: a brace walk backwards, because
+   * a regular expression over the preceding text silently matched nothing - the same class of bug
+   * this guard exists to catch, one level up. */
+  const enclosingMedia = (source, index) => {
+    let depth = 0;
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const ch = source[i];
+      if (ch === '}') depth += 1;
+      else if (ch === '{') {
+        // the rule's own brace is at depth 0 and is not a scope: keep walking past it
+        if (depth === 0) {
+          const header = source.slice(source.lastIndexOf('\n', i) + 1, i).trim();
+          if (header.startsWith('@media')) return header;
+        } else {
+          depth -= 1;
+        }
+      }
+    }
+    return '';
+  };
+
+  /* The narrowest viewport a declaration can be seen at: its own minimum inside a min-width query,
+   * and 0 everywhere else, including a max-width query, which a narrow phone always reaches. */
+  const smallestViewport = (header) => {
+    const min = /min-width:\s*(\d+)px/.exec(header);
+    return min ? parseInt(min[1], 10) : 0;
+  };
+
+  [...cssSource.matchAll(/grid-template-columns:\s*([^;]+);/g)].forEach((match) => {
+    const value = match[1].trim();
+    const allowed = Math.max(320, smallestViewport(enclosingMedia(cssSource, match.index)));
     const fixed = [...value.matchAll(/(\d+(?:\.\d+)?)(px|rem)/g)]
-      .map((match) => parseFloat(match[1]) * (match[2] === 'rem' ? 16 : 1));
+      .map((entry) => parseFloat(entry[1]) * (entry[2] === 'rem' ? 16 : 1));
     const guarded = value.includes('min(') || value.includes('100%') || value.includes('auto') || value.includes('1fr');
     fixed.forEach((width) => {
-      assert.ok(width <= 320 || guarded,
-        `a grid column demands ${width}px with nothing to shrink it: ${value}`);
+      assert.ok(width <= allowed || guarded,
+        `a grid column demands ${width}px at ${allowed}px and up with nothing to shrink it: ${value}`);
     });
   });
   // long payload text (a city name, a close reason) must wrap instead of widening the page
@@ -3303,10 +3332,136 @@ check('M11: a city card names the city, its state and its region, and the way in
   assert.match(cssSource, /\.zone-card:hover \.city-open-label/, 'the open label does not respond to hover');
 });
 
+/* -------------------------------------------------------------------------- */
+/* M11.2: the control bar, measured from the stylesheet at eleven widths.      */
+/* -------------------------------------------------------------------------- */
+
+/* A small model of the cascade, enough to answer one question: does a declared minimum fit at a
+ * given viewport? Declarations are read in source order; a declaration inside a media query that
+ * matches the viewport overrides the ones before it. */
+const enclosingMediaFor = (source, index) => {
+  let depth = 0;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const ch = source[i];
+    if (ch === '}') depth += 1;
+    else if (ch === '{') {
+      if (depth === 0) {
+        const header = source.slice(source.lastIndexOf('\n', i) + 1, i).trim();
+        if (header.startsWith('@media')) return header;
+      } else {
+        depth -= 1;
+      }
+    }
+  }
+  return '';
+};
+const mediaMatches = (header, viewport) => {
+  const min = /min-width:\s*(\d+)px/.exec(header);
+  const max = /max-width:\s*(\d+)px/.exec(header);
+  if (min && viewport < parseInt(min[1], 10)) return false;
+  if (max && viewport > parseInt(max[1], 10)) return false;
+  return true;
+};
+const declared = (selector, property, viewport) => {
+  const escaped = selector.replace('.', '\\.');
+  // the property needs a boundary: "width" is a suffix of "min-width"
+  const pattern = new RegExp(`${escaped}\\s*(?:,[^{}]*)?\\{[^{}]*(?<![\\w-])${property}\\s*:\\s*([^;]+);`, 'g');
+  let found = null;
+  for (const match of cssSource.matchAll(pattern)) {
+    const scope = enclosingMediaFor(cssSource, match.index);
+    if (!scope || mediaMatches(scope, viewport)) found = match[1].trim();
+  }
+  return found;
+};
+const trackMinimums = (tracks) => (String(tracks).match(/minmax\([^)]*\)|min\([^)]*\)|auto|[0-9.]+(?:fr|px|%)/g) || [])
+  .map((track) => {
+    const inner = /^minmax\(\s*([^,]+),/.exec(track);
+    const source = inner ? inner[1].trim() : track;
+    const px = /^([0-9.]+)px$/.exec(source);
+    return px ? parseFloat(px[1]) : 0;
+  });
+const pixelValues = (value) => [...String(value || '').matchAll(/(\d+(?:\.\d+)?)px/g)].map((m) => parseFloat(m[1]));
+const gutterFor = (viewport) => (viewport <= 760 ? 16 : 28);
+
+check('M11.2: the control bar declares a layout that fits every width the brief names', () => {
+  [320, 360, 390, 430, 600, 768, 900, 1024, 1280, 1440].forEach((viewport) => {
+    const tracks = declared('.cities-toolbar', 'grid-template-columns', viewport);
+    assert.ok(tracks, `the toolbar declares no columns at ${viewport}px`);
+    const gaps = pixelValues(declared('.cities-toolbar', 'gap', viewport));
+    const columnGap = gaps.length > 1 ? gaps[1] : (gaps[0] || 0);
+    const minima = trackMinimums(tracks);
+    const required = minima.reduce((sum, one) => sum + one, 0) + Math.max(0, minima.length - 1) * columnGap;
+    const available = viewport - 2 * gutterFor(viewport);
+    assert.ok(required <= available,
+      `at ${viewport}px the toolbar's ${minima.length} tracks want ${required}px ` +
+      `(minimums ${minima.join('+')}, ${columnGap}px gaps) in a ${available}px content box`);
+    // the two typed controls can never force a wider column than the track they sit in
+    ['.cities-search', '.cities-sort'].forEach((selector) => {
+      const width = declared(selector, 'width', viewport);
+      assert.ok(!width || width === '100%' || pixelValues(width)[0] <= available,
+        `${selector} declares width ${width} at ${viewport}px`);
+      assert.match(declared(selector, 'min-width', viewport) || '', /0/,
+        `${selector} has no min-width: 0 at ${viewport}px, so its own content sets a floor`);
+    });
+  });
+
+  // one grid, four named areas, and no tier that leaves a control without a home
+  assert.match(cssSource, /grid-template-areas: 'search region risk sort';/, 'no single-row desktop tier');
+  assert.match(cssSource, /grid-template-areas: 'search sort' 'region risk';/, 'no two-row tablet tier');
+  assert.match(cssSource, /grid-template-areas: 'search' 'region' 'risk' 'sort';/, 'no stacked phone tier');
+  ['search', 'region', 'risk', 'sort'].forEach((area) => {
+    assert.match(cssSource, new RegExp(`grid-area: ${area};`), `no field claims the ${area} area`);
+  });
+});
+
+check('M11.2: the chips wrap, and nothing in the bar is set to nowrap', () => {
+  assert.match(cssSource, /\.cities-toolbar \.button-group \{[^}]*flex-wrap: wrap/,
+    'the chip groups do not wrap inside the toolbar');
+  assert.match(cssSource, /\.filter-chip \{[^}]*min-height: 44px/, 'a chip is not a 44px touch target');
+  assert.match(cssSource, /\.filter-chip \{[^}]*max-width: 100%/, 'a chip may grow past its container');
+  // the only nowrap in this area is on a three-letter chip and on a metric value, both deliberate
+  const bar = cssSource.slice(cssSource.indexOf('finding one of fifteen')).replace(/\/\*[\s\S]*?\*\//g, '');
+  const nowraps = [...bar.matchAll(/white-space:\s*nowrap/g)].length;
+  assert.equal(nowraps, 0, `the control bar contains ${nowraps} white-space: nowrap rule(s)`);
+  assert.match(htmlSource, /class="cities-toolbar" id="cities-toolbar" role="search"/,
+    'the toolbar lost its search role');
+  ['cities-search-label', 'cities-region-label', 'cities-risk-label'].forEach((id) => {
+    assert.ok(htmlSource.includes(`id="${id}"`), `the ${id} label is gone`);
+  });
+  assert.match(htmlSource, /<label class="toolbar-label" for="cities-sort">Sort by<\/label>/,
+    'the sort control lost its label');
+  assert.match(libSource, /aria-pressed=/, 'a chip no longer states whether it is pressed');
+});
+
+check('M11.2: one metric is four columns, and the phone gets two lines', () => {
+  assert.match(cssSource, /\.metric \{\s*display: grid;/,
+    'a metric row is not a grid');
+  assert.match(cssSource, /\.metric \{\s*display: grid;\s*grid-template-columns:\s*minmax\(130px, 1fr\) auto minmax\(90px, auto\)/,
+    'the metric row does not declare four columns: name, chip, value, bar');
+  assert.match(cssSource, /\.metric-name \{[^}]*min-width: 0/, 'a metric name is not allowed to shrink');
+  assert.match(cssSource, /\.metric-name \{[^}]*overflow-wrap: break-word/, 'a long metric name cannot wrap');
+  assert.match(cssSource, /\.metric-value \{[^}]*font-variant-numeric: tabular-nums/,
+    'metric values are not set in tabular figures, so they cannot line up');
+  assert.match(cssSource, /\.metric-value \{[^}]*white-space: nowrap/,
+    'a value and its unit may be split across lines');
+  assert.match(cssSource, /@media \(max-width: 767px\) \{[\s\S]{0,900}?\.metric \{[\s\S]{0,240}?grid-template-areas: 'name source' 'value track'/,
+    'the phone metric row is not the two-line layout');
+  assert.match(libSource, /<span class="metric-name">' \+ escapeHtml\(METRIC_META\[metric\]\.label\) \+ '<\/span>'/,
+    'the metric name cell no longer closes before the chip');
+  assert.match(libSource, /'<span class="metric-source" data-f="metric-source">' \+ sourceChip/,
+    'the chip is not its own cell in the row');
+});
+
 /* ------------------------------------------------------------------ report --- */
 
 console.log(`\n${passed} checks passed, ${failures.length} failed`);
 if (failures.length > 0) {
-  failures.forEach((failure) => console.log(`  FAILED: ${failure.name}`));
+  failures.forEach((failure) => {
+    console.log(`  FAILED: ${failure.name}`);
+    // the message says what was expected and what arrived, so a failure is not a guessing game
+    if (failure.message) {
+      console.log(`          ${String(failure.message).split('\n')[0]}`);
+    }
+  });
   process.exit(1);
 }
