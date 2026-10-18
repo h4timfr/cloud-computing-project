@@ -3193,6 +3193,60 @@ banner and a one-line pointer left at each site.
 
 ```
 
+### Interface notes: the control bar, and one metric as one row (M11.2)
+
+Two layout defects were visible in the M11 dashboard. Both were structural, and both were found by
+reading the stylesheet rather than by squinting at it.
+
+**The control bar.** It was a wrapping flex row. The search field asked for `flex: 1 1 260px`, and the
+two chip groups were flex children, which cannot shrink below their longest pill. So there was no
+width at which the four controls had a defined relationship to each other: they wrapped wherever the
+intrinsic widths happened to land. At tablet widths the two chip groups shared a line with nothing to
+align to; at 320px the search field's own 260px basis was wider than the content box.
+
+It is one grid now, and the four controls keep the same order and the same names at every width.
+
+| viewport | layout | tracks | minimum + gaps | content box |
+| --- | --- | --- | --- | --- |
+| 1320px and up | one row: search, region, risk, sort | `minmax(280px, 1.5fr) minmax(360px, 2fr) minmax(300px, 1.5fr) minmax(170px, .8fr)` | 1158px | 1264px |
+| 1200-1319px | one row, narrower tracks | `minmax(260px, 1.5fr) minmax(330px, 2fr) minmax(280px, 1.5fr) minmax(160px, .8fr)` | 1060px | 1144px |
+| 768-1199px | two rows: search + sort, then region + risk | `minmax(0, 1.15fr) minmax(0, 1fr)` | 0px | anything |
+| 767px and below | one stacked column, in reading order | `minmax(0, 1fr)` | 0px | anything |
+
+The content box is the viewport minus two gutters: `--pad-x` is 28px, and 16px at 760px and below.
+Each tier's minimum is chosen to fit the viewport that tier starts at, and the arithmetic is
+recomputed from the stylesheet itself at eleven widths (320, 360, 390, 430, 600, 768, 900, 1024, 1280,
+1440) by `tools/dashboard_check.mjs` - which is also why the widest tracks live *inside* a
+`@media (min-width: 1320px)` query: a declaration that only makes sense on a wide screen belongs in
+the query that says so, and the M9 guard that asks "can this column shrink?" can then answer correctly.
+
+Every field carries `min-width: 0`; the chip groups are `flex-wrap: wrap` with a `gap`; no pill is
+`nowrap`; the pill is sized by its label and only the padding shrinks on smaller screens; every
+control is at least 44px tall, the touch target the rest of the site uses. The labels, the search
+landmark, the `aria-pressed` state and the keyboard path are unchanged.
+
+**One metric, one row.** A metric row declared four columns - `104px 84px minmax(0, 1fr) 44px` - and
+rendered three children, with the provenance chip nested *inside* the label span. So the chip was laid
+out as part of a fixed 104px label column, the value sat in the 84px column meant for it, and the
+progress bar, the intended fourth child, took the flexible column. That is why "Soil saturation" broke
+across its chip, and why values crowded the bar.
+
+The row is `minmax(130px, 1fr) auto minmax(90px, auto) minmax(72px, 1.1fr)` with four sibling cells:
+name, chip, value, bar.
+
+* The chip gets a column of its own, so the chips line up down a card and can never land on a value.
+* The value is right-aligned, `tabular-nums` and `nowrap`, so numbers line up on one edge and a unit
+  never separates from its number.
+* The name column is `min-width: 0` with `overflow-wrap: break-word`, so the longest label wraps
+  inside its own cell instead of pushing the chip or the value out of the card.
+* At 767px and below the row becomes two lines - name and chip, then value and bar - which keeps a
+  number with its unit and gives a long label the whole width.
+
+The city-detail tiles took the same treatment: their header wraps instead of squeezing, and the chip
+keeps the end of the line. The provenance vocabulary is unchanged and still short: `REAL`, `MODEL`,
+`SIM` (and `?` when the API reports nothing), each with its explanation as a tooltip; the raw enum the
+API sends is never the visible label outside the technical details.
+
 ## M11 - India coverage: fifteen monitored cities, five regions, no new architecture
 
 FloodPulse monitored five Indian cities. It now monitors **fifteen**, across **fourteen states or

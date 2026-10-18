@@ -182,6 +182,10 @@ NEEDLES = {
         "the empty state offers the way back": 'clear-filters',
         "the risk filter offers the API's own floors": 'RISK_FILTERS',
         "a filter change never refetches": 'renderCitiesPage();',
+        # M11.2: the result sentence names the filters, and a metric chip is never the enum
+        "the result sentence names the filters in force": 'cityFilterLabels',
+        "an empty result says so in words": "' match these filters.'",
+        "the chip is a cell of its own in the row": '<span class="metric-source" data-f="metric-source">',
     },
     "styles.css": {
         "change note": "change-note",
@@ -192,6 +196,12 @@ NEEDLES = {
         "the skeleton is styled": "skel-sweep",
         "a placeholder has its own shape": ".skel-card",
         "the touch target rule is deployed": "min-height: 44px",
+        # M11.2: the control bar is a grid with a tier per width, and a metric row is four columns
+        "the desktop bar is one row": "grid-template-areas: 'search region risk sort';",
+        "the tablet bar is two rows": "grid-template-areas: 'search sort' 'region risk';",
+        "the phone bar is one column": "grid-template-areas: 'search' 'region' 'risk' 'sort';",
+        "a metric row declares four columns": "grid-template-columns: minmax(130px, 1fr) auto minmax(90px, auto)",
+        "the phone metric row is two lines": "grid-template-areas: 'name source' 'value track';",
         # M10: the spotlight sentence is set as prose, and the model's own words are set apart
         "the spotlight sentence is styled": ".hero-reason",
         "the raw model line is styled": ".raw-model",

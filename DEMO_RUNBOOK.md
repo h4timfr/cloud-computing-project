@@ -370,6 +370,13 @@ it from memory.
 
 ## M11 demo path - the fifteen-city fleet
 
+**On a phone (or a narrow window).** Open the Cities page and drag the window narrow: the
+control bar folds from one row to two and then to a stack, with the chips wrapping rather than
+squishing, and the result sentence stays directly under the controls. Open any city: the metric
+rows put the name, its REAL/MODEL/SIM chip and its value in three aligned columns on a wide
+screen, and on a phone each row becomes two lines - the number keeps its unit either way.
+
+
 The M11 additions are all on the Cities page and in the geography the sentences name. The seven
 minutes below cover them without changing the existing demo, which still works as written.
 
