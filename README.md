@@ -3192,3 +3192,148 @@ banner and a one-line pointer left at each site.
    * only thing the form reveals about an address is what the visitor typed themselves. */
 
 ```
+
+## M11 - India coverage: fifteen monitored cities, five regions, no new architecture
+
+FloodPulse monitored five Indian cities. It now monitors **fifteen**, across **fourteen states or
+union territories** and five regions used for navigation (North 3, South 5, East 3, West 3,
+Northeast 1). Nothing else changed: same Lambda, same HTTP API, same DynamoDB table, same S3 site,
+same SNS topic, same IAM, same heuristic and the same bands. No new AWS service, no new resource,
+no new IAM statement, and no per-city API route.
+
+| | M10 | M11 |
+| --- | --- | --- |
+| Monitored cities | 5 | 15 |
+| States / union territories | 5 | 14 |
+| Regions (navigation only) | - | 5 |
+| Authoritative city table | `src/floodpulse/config.py` | `LIVE_ZONE_DEFINITIONS`, 15 rows |
+| `/zones` payload | 20,931 B | 59,230 B (11.3% of the 512 KB response cap) |
+| Provider requests per 600 s refresh | 1 | 1 (batched, unchanged) |
+| Dashboard round trip, warm median | 1.13 s | 1.13 s |
+| Lambda duration, weighted average | 380.6 ms | 428.5 ms (cold starts dominate the window) |
+| AWS resources | - | none added, none changed |
+
+### One table decides what is monitored
+
+`LIVE_ZONE_DEFINITIONS` in `src/floodpulse/config.py` is the single authoritative list: zone id,
+city, state or union territory, region, display name, coordinates, the city's own thresholds and a
+short description. The live fleet, the allow-list the validator enforces, the coverage block the
+API publishes, the alerts' geography and every sentence on the dashboard are all derived from it,
+so a city can never be monitored in one place and absent from another.
+
+**The one that is not obvious:** "monitored" always means a
+city, never a state, a region or the country. A card, a sentence or an email may say *Chennai,
+Tamil Nadu*; nothing may say *Tamil Nadu is monitored*, and nothing may say *Tamil Nadu is safe*,
+because a monitored city says nothing about the rest of its state. `coverage.scope_note` states
+that where the fleet is described, the API carries only counts and city names in `coverage`, and
+no region gets a risk score of its own.
+
+### Weather: one batched request for the whole fleet
+
+The strategy did not change; its scale did. Before, one refresh covered five cities with one
+Open-Meteo request. Now it covers fifteen cities with **one** request - the coordinates are
+requested in a single call and the response is split per city - so the number of provider requests
+per refresh is still one, the refresh interval is still 600 s, the timeout is still 4 s, and the
+per-city cache in DynamoDB (`sk = WEATHER#CACHE`) is unchanged. Measured against the live provider
+during M11: 15 cities, **1 request**, 491-character URL, 29,340 B response, 1.25 s, 15 of 15 cities
+delivered, 5.6% of the response cap.
+
+Failure is still isolated per city. A city the provider does not answer for keeps its previous
+reading and appears in `weather.last_refresh.failed`; every other city is refreshed normally, and a
+city whose reading is older than `stale_after_seconds` (1800 s) appears in `stale_zone_ids` and is
+marked on the page rather than silently scored. The live fleet at the time of writing reports
+`failed: []`, `error: null`, and all fifteen cities `already_fresh` - the normal state when the
+dashboard polls faster than the refresh interval.
+
+Hydraulics are unchanged and still global: drain level, water level and flow rate are simulated by
+the same deterministic response to real rainfall, with the same constants and the same thresholds,
+for all fifteen cities. New cities are not tuned individually and no band or hysteresis value was
+retouched; rainfall is still REAL, soil saturation MODEL_DERIVED, and the three hydraulic
+measurements SIMULATED, per metric, in every view.
+
+### What the API publishes now
+
+`GET /zones` keeps every field it had and gains:
+
+* per city: `city`, `state`, `region`, `display_name`;
+* `highest_risk_zone` with the same four fields, alongside its score;
+* `coverage`: `city_count`, `state_count`, `region_count`, `states`, `regions` (each with its
+  `city_count` and city names) and `scope_note`.
+
+The change is additive and backwards compatible: a client that reads only `zones`, `zone_count` or
+`stale_zone_ids` is unaffected, no route was added or removed, `/zones/<unknown>/history` still
+answers 404 `unknown_zone`, and demo mode still serves three simulated zones and omits `state` and
+`region` rather than inventing them.
+
+### The Cities page, and what the Overview deliberately stopped doing
+
+The Overview used to show one card per city, which is why it stopped doing that: fifteen cards
+would push the alerts, the form and the status panel off the fold. It now shows the highest-risk
+few, states the fleet's own total next to them, and links to the rest.
+
+* Overview: fleet totals, reporting count, highest-risk city with its state, alert count,
+  freshness, the risk distribution, the top five cards by risk, the dynamic copy saying so, and a
+  link to the Cities page.
+* Cities page: all fifteen cities. A labelled search over city and state, region chips, risk-floor
+  chips (All / WATCH+ / WARNING+ / CRITICAL), three orders (highest risk, A-Z, freshness), a polite
+  result count, and an empty state with a way back. A card carries city, state, region, band,
+  score, rainfall, main risk factor, "Updated X ago", the provenance chips and a way in.
+* Both are client-side. Search, filtering and sorting read the payload the page already has, so
+  filtering costs no request: the page's request count is the same at five cities and at fifteen,
+  and it is checked that way.
+* Every monitored city has its own photograph: the five that shipped with M10 and ten that came
+  with this milestone for the new cities. Each was centre-cropped to the card slot's 16:9 and
+  re-encoded without the EXIF metadata it arrived with; the originals are kept in
+  `build/asset-originals/`, which is not shipped. All fifteen are declared the same way, in the
+  deploy script's upload table and in the prepared-asset cap table, and they are checked the same
+  way - a real WebP, 16:9, inside the 800x450 slot, under 120 KB, no embedded metadata. A zone
+  with no entry in the table draws a plate from its own region and band with an inline icon rather
+  than loading an image that does not exist, so there is still no broken image and no 404; with the
+  live fleet fully mapped, that path is what the simulated demo fleet gets. The image table stays a
+  literal in `web/lib.js` read through an own-property test - payload text never chooses a file.
+* Alerts name the city and the state, in the list and in the email; SNS is untouched. The
+  subscription flow is untouched.
+
+### Bytes, and the ceiling that did not move
+
+The M9 check keeps the four shipped front-end files under 400 KB of source, and M11 adds roughly
+25 KB of UI. Rather than raise a ceiling whose own comment says it exists to catch "a framework or
+a build step", the bytes came out of shipped commentary: the long design narratives that had
+accumulated in `web/styles.css`, `web/lib.js` and `web/app.js` now live in this README, word for
+word, each with a one-line pointer at the site they came from. Comments are bytes on every
+visitor's connection; the explanation is still one search away, and the stylesheet's rules were
+proved byte-identical across the move (89,761 B of rules before and after). Nothing was
+minified, no build step was added, and no new file was added to `web/`.
+
+### Verification
+
+* `python -m unittest discover -s tests -t .` - **593 tests**, OK. One test in this suite is
+  flaky for a pre-existing reason (it passes in most runs and fails in some): it was reproduced at
+  the pre-M11 commit `ccafc9d`, so it is not caused by M11 and was not touched.
+* `node tools/dashboard_check.mjs` - **126 static checks**, including five M11 checks for what a
+  fake DOM cannot see: the markup's label and landmark, the polite count line, the empty state
+  outside the grid, chips built from the payload, the region model staying navigation, and no page
+  hardcoding the fleet size.
+* `node tools/dashboard_run.mjs` - **82 runtime checks**, including the M11 group that drives the
+  search box, the chips and the sort, and pins that filtering costs no request. Also run against
+  the deployed site and API.
+* `node tools/dashboard_scenarios.mjs` - **49 scenario checks**.
+* `node tools/story_check.mjs` - **29 checks**.
+* `python tools/live_acceptance.py` - **57 checks** against the deployed API, 0 failed, including
+  the fleet's geography and the coverage block.
+* `python tools/verify_deployed_page.py` - all deployed page contracts hold, including 30 M11
+  needles; `python tools/verify_deployed_code.py` - the deployed Lambda code is byte-identical to
+  `src/`.
+
+### What M11 does not claim
+
+* Fifteen cities is not national coverage. India has thousands of urban local bodies; this is a
+  fifteen-city fleet and every sentence says so.
+* No state, region or national risk score exists, and none is planned without a real reason.
+* The hydraulic measurements remain simulated for every city, and the risk score remains the same
+  documented heuristic - not a validated hydrological model, not calibrated per city, not an
+  official warning.
+* There is no map. The design for one (a low-cost, offline-safe India outline with city markers
+  placed from the coordinates the API already publishes) is recorded in the M11 report; it was not
+  built, because it is not needed to find a city and the milestone's rule was to change as little
+  as possible.

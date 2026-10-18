@@ -367,3 +367,34 @@ it from memory.
   demo story is rehearsed on the demo fleet only.
 * Do not read a city that stopped reporting as a calm city: its score is an old one, and the board
   says exactly that next to it.
+
+## M11 demo path - the fifteen-city fleet
+
+The M11 additions are all on the Cities page and in the geography the sentences name. The seven
+minutes below cover them without changing the existing demo, which still works as written.
+
+1. **Overview first.** Point at the fleet totals and the reporting count, then at the cards: they
+   are the highest-risk few, and the note next to them says how many cities the fleet monitors and
+   links to the rest. Say plainly that the Overview shows part of the fleet on purpose.
+2. **"View all cities".** The Cities page lists all fifteen. Read two or three place lines aloud -
+   *Kochi, Kerala · South*, *Guwahati, Assam · Northeast* - and say that the state and region come
+   from the payload, not from the page.
+3. **Search.** Type `kol` and watch the list narrow to Kolkata; then type `Kerala` to show that the
+   search covers the state as well as the city. Say the thing that matters for the architecture:
+   *no request was made* - the page already had all fifteen cities, and the filters work on what it
+   has.
+4. **Filters and order.** Pick the East region, then CRITICAL+ to show the empty state and its way
+   back, then reset to All and switch the order to A-Z and back to highest risk. The count line
+   reads out what is on screen.
+5. **One city.** Open a city whose region has one monitored city (Guwahati) and read the scope
+   line: the fleet monitors cities, not states, and a city says nothing about the rest of its
+   region. This is the sentence to slow down on.
+6. **Alerts.** Open the alerts page. Every row and every email names the city *and* the state, and
+   the delivery line still says what AWS has actually done rather than promising a delivery.
+7. **The weather panel.** Say that the whole fleet is refreshed by one provider request every ten
+   minutes, that each city keeps its own cache, and that a city the provider misses keeps its last
+   reading and is shown as not reporting rather than silently scored.
+
+If someone asks about coverage in general, the honest answer is the one the product gives: fifteen
+monitored cities, each of them a city, with no state, regional or national risk score anywhere in
+the system.
