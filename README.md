@@ -1968,15 +1968,14 @@ row. It now checks the arithmetic - four tracks, floors plus chip plus gaps insi
 
 ### Bytes
 
-| | before | after |
+| | before M14 | after M14.1 |
 | --- | --- | --- |
-| `web/` total | 409,073 B | 408,791 B |
-| comments in `web/` | 62,666 B (15.3%) | 62,349 B (15.3%) |
+| `web/` total | 409,073 B | 399,286 B |
+| of that, comment lines (terminators included) | 62,666 B | 61,879 B |
+| headroom under the 409,600 B ceiling | 527 B | 10,314 B |
 
-Line endings are CRLF in the working tree and in the repository, so the byte ceiling measures what the
-browser downloads. Normalising the four shipped files to LF would release 9,185 B of pure line-ending
-overhead. It is deliberately not taken: that is not reclaimed content, and the ceiling is a content
-discipline. One command if the trade ever becomes worth it.
+The table above counts terminators, because the ceiling is measured against the bytes the site ships.
+M14.1 took the 9,181 B that CRLF was spending; see below.
 
 ### Checking it
 
@@ -1987,6 +1986,30 @@ discipline. One command if the trade ever becomes worth it.
 | `node tools/dashboard_scenarios.mjs` | 49 checks passed |
 | `node tools/story_check.mjs` | 29 checks passed |
 | `python -m pytest tests -q` | 597 passed, 2096 subtests |
+### M14.1 line endings
+
+The four shipped text files were stored and served with CRLF. They are LF now, and `.gitattributes`
+pins those paths to LF (`web/*.html`, `web/*.css`, `web/*.js`) because `core.autocrlf` is true in
+this repository and would otherwise write the CRLF back on any Windows checkout. The 23 images and
+icons in `web/` are not matched by those patterns and are byte-identical to before.
+
+| file | before | after | lines |
+| --- | --- | --- | --- |
+| `index.html` | 38,744 B | 38,127 B | 617 |
+| `styles.css` | 116,265 B | 112,941 B | 3,324 |
+| `lib.js` | 145,967 B | 142,992 B | 2,975 |
+| `app.js` | 107,491 B | 105,226 B | 2,265 |
+| **total** | 408,467 B | **399,286 B** | saved 9,181 B |
+
+Terminators are all that moved, and that is checkable rather than asserted: every changed file in the
+commit has equal insertions and deletions, `git diff --ignore-cr-at-eol` shows nothing but
+`.gitattributes`, and `build/m14_1_proof.py` checks per file that the original with CRLF collapsed to
+LF is byte-identical to what the index holds. In the browser, a before/after capture of 14 route and
+width pairs finds the same visible view, the same 732 stylesheet rules, the same image sizes and the
+same computed layout signature for 15 elements; the rendered text is identical in 1,291 of 1,295
+lines, and the four that differ are clock readings sixteen seconds apart, which differ between any
+two runs of the same files.
+
 ## Repository layout
 
 ```
