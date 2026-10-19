@@ -215,7 +215,7 @@
       </div>
     </details>
         <!-- Why these cities? The five highest-risk cities are already on this page. -->
-    <section class="card" id="why-these-cities" aria-labelledby="why-cities-title">
+    <section class="card about-card" id="why-these-cities" aria-labelledby="why-cities-title">
       <h3 class="block-title" id="why-cities-title">Why these cities?</h3>
       <p id="why-cities-lede">Selected for documented exposure to coastal flooding, extreme rainfall,
         cyclone or storm-surge hazards, or related urban flood vulnerability.</p>
@@ -257,11 +257,13 @@
       </div>
       <div class="toolbar-field toolbar-field-sort">
         <label class="toolbar-label" for="cities-sort">Sort by</label>
-        <select class="cities-sort subscribe-input" id="cities-sort">
+        <span class="select-wrap">
+            <select class="cities-sort subscribe-input" id="cities-sort">
           <option value="risk" selected>Highest risk</option>
           <option value="name">A&#8211;Z</option>
           <option value="fresh">Freshness</option>
         </select>
+        </span>
       </div>
     </div>
     <!-- polite, and rewritten only when the sentence changes: a poll that changes nothing
@@ -620,7 +622,7 @@
     <a href="#/about">About &amp; safety guidance</a>
   </nav>
   <p id="notice-text">
-    FloodPulse is a university cloud-computing project. Risk scores are deterministic
+    FloodPulse Coastal India is an experimental flood-risk monitoring prototype. Risk scores are deterministic
     <code>heuristic-v1</code> values, clearly labelled as such and never presented as a prediction.
     Every metric carries a provenance tag: <span class="src-chip src-real">REAL</span> comes from the
     external weather provider, <span class="src-chip src-model">MODEL</span> is derived from those

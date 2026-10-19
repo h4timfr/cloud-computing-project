@@ -1567,7 +1567,8 @@
       if (el['alerts-delivery']) {
         el['alerts-delivery'].innerHTML = loading
           ? '<div class="card"><p class="muted" data-f="loading">alert delivery details will appear here…</p></div>'
-          : FP.deliveryPanel(payload);
+          : '<details class="tech"><summary>Technical alert details</summary>' +
+        FP.deliveryPanel(payload) + '</details>';
       }
       if (el['alerts-summary']) {
         var alertsNoun = FP.zoneNoun(state.payload);
@@ -1577,7 +1578,7 @@
             FP.escapeHtml(summary.highest) + '</span> highest severity'
             : 'no ' + alertsNoun + ' above WATCH', summary.tone === 'calm' ? '' : FP.bandKey(summary.highest)) +
           statCard('Resolved incidents', String(split.closed.length), 'kept as history', '') +
-          statCard('Total recorded', String(split.total), 'source <code>GET /incidents</code>', '') +
+          statCard('Total recorded', String(split.total), 'kept as history', '') +
           // how alert publishing is configured belongs to the delivery panel below, where it can
           // be stated precisely; this card answers the "is anything reporting?" question instead
           statCard(FP.zoneNounPlural(state.payload).charAt(0).toUpperCase() +

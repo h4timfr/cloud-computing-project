@@ -3304,3 +3304,20 @@ main, .topbar, .footer { max-width: 100%; }
 .map-marker.band-critical, .map-band.band-critical, .map-key.band-critical { color: var(--band-critical-text); }
 .map-band.is-stale, .map-key.is-stale { color: var(--state-stale-text); }
 @media (max-width: 899px) { .map-split { grid-template-columns: minmax(0, 1fr); } }
+
+/* The sort control is a native select: only its arrow is ours, drawn on the wrapper so the control stays
+   a control. The chevron is decoration, so it never takes a click meant for the select underneath it. */
+.select-wrap { position: relative; display: block; min-width: 0; }
+.select-wrap::after { content: ''; position: absolute; right: 16px; top: 50%; width: 7px; height: 7px;
+  margin-top: -6px; border-right: 2px solid var(--slate-400); border-bottom: 2px solid var(--slate-400);
+  transform: rotate(45deg); pointer-events: none; }
+.cities-sort { appearance: none; -webkit-appearance: none; padding: 8px 42px 8px 12px; text-align: left; }
+.cities-sort:hover + .select-wrap::after, .select-wrap:hover::after { border-color: var(--cyan-400); }
+/* The drawn plate for a city with no photograph keeps the same box as a photograph: the card's rhythm
+   must not depend on which of the two it got. */
+.city-thumb { overflow: hidden; }
+
+/* The Data page's selection and architecture panels are .card elements used as text panels, and .card
+   carries no padding of its own: their copy sat against the border while every sibling panel was inset. */
+#city-selection + .card, .tech .card, #methodology + .card, #provenance + .card, #references + .card {
+  padding: 20px 22px; }
