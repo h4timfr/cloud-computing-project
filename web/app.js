@@ -1,8 +1,4 @@
 /* FloodPulse live dashboard controller.
- *
- * All displayed state comes from the deployed API (DynamoDB -> Lambda -> API Gateway).
- * This file never invents a risk value: on a failed request it keeps the last good
- * payload and marks the page stale/disconnected instead of faking freshness.
  */
 (function () {
   'use strict';
@@ -93,16 +89,12 @@
     // ages reported by the API are interpolated forward so the freshness line keeps moving
     payloadReceivedMs: null,
     // Monotonic request stamps: a response that is no longer the newest one for its route is
-    // dropped instead of being written over newer state (a slow reply must not win a race
-    // against the poll it belongs to).
     zonesSeq: 0,
     zonesAppliedSeq: 0,
     incidentsSeq: 0,
     incidentsAppliedSeq: 0,
     historySeq: 0,
     // which view the URL asks for, and what each view currently shows (so a poll that
-    // changed nothing does not rewrite the DOM). The route starts empty so the first
-    // applyRoute() always installs the view the URL asked for.
     route: { view: null, zoneId: null },
     overviewSignature: null,
     cityCardSignature: null,
@@ -145,6 +137,112 @@
     if (node.textContent !== value) node.textContent = value;
   }
 
+  /* The coverage map. Positions come from the payload's latitude and longitude and from nothing else, so
+     neither the grid's sort order nor the DOM order can move a marker. Emphasis and the panel reuse the
+     grid's own visible[] list, the payload's highest_risk_zone and stale_zone_ids. */
+  function renderMap(visible) {
+    var host = el['map-markers'];
+    if (!host) return;
+    var zones = state.zones || [];
+    var payload = state.payload;
+    var ready = Boolean(payload && zones.length);
+    bindMapEvents(host);
+    if (el['map-fallback']) el['map-fallback'].hidden = ready;
+    state.mapVisible = visible;
+    if (!ready) {
+      host.innerHTML = '';
+      host.removeAttribute('data-sig');
+      state.mapPick = null;
+      state.mapById = {};
+      setMapDetail('');
+      return;
+    }
+    var stale = {};
+    var keep = {};
+    var byId = {};
+    (payload.stale_zone_ids || []).forEach(function (id) { stale[id] = true; });
+    visible.forEach(function (zone) { if (zone) keep[zone.zone_id] = true; });
+    zones.forEach(function (zone) { byId[zone.zone_id] = zone; });
+    var top = payload.highest_risk_zone ? payload.highest_risk_zone.zone_id : '';
+    var sig = zones.map(function (zone) {
+      return zone.zone_id + (zone.latest ? FP.bandKey(zone.latest.risk_class) : '-') +
+        (stale[zone.zone_id] || !zone.latest ? '~' : '') + (keep[zone.zone_id] ? '+' : '-');
+    }).join('|') + top;
+    if (host.getAttribute('data-sig') !== sig) {
+      host.innerHTML = zones.map(function (zone) {
+        return FP.renderMapMarker(zone, { stale: Boolean(stale[zone.zone_id] || !zone.latest),
+          top: zone.zone_id === top, matches: Boolean(keep[zone.zone_id]) });
+      }).join('');
+      host.setAttribute('data-sig', sig);
+    }
+    state.mapStale = stale;
+    state.mapKeep = keep;
+    state.mapById = byId;
+    state.mapTop = top;
+    showMapPick(byId[state.mapPick] ? state.mapPick : null);
+  }
+
+  function bindMapEvents(host) {
+    if (state.mapBound) return;
+    state.mapBound = true;
+    host.addEventListener('focusin', pickMapZone);
+    host.addEventListener('pointerover', pickMapZone);
+    host.addEventListener('focusout', dropMapZone);
+    host.addEventListener('pointerout', dropMapZone);
+  }
+
+  function pickMapZone(event) {
+    var link = event.target && event.target.closest ? event.target.closest('.map-marker') : null;
+    if (link) showMapPick(link.getAttribute('data-zone'));
+  }
+
+  function dropMapZone(event) {
+    var to = event.relatedTarget;
+    if (!to || !to.closest || !to.closest('.map-markers')) showMapPick(null);
+  }
+
+  /* Repaints the panel and the selection ring only: a pointer crossing the map must not rebuild the
+     links under it, and must not move focus. */
+  function showMapPick(zoneId) {
+    var zone = (state.mapById || {})[zoneId] || mapDefault();
+    state.mapPick = zone ? zone.zone_id : null;
+    var host = el['map-markers'];
+    var was = host ? host.querySelector('.map-marker.is-selected') : null;
+    if (was) was.classList.remove('is-selected');
+    var now = zone && host ? host.querySelector('[data-zone="' + zone.zone_id + '"]') : null;
+    if (now) now.classList.add('is-selected');
+    setMapDetail(zone ? FP.renderMapDetail(zone, {
+      stale: Boolean(state.mapStale[zone.zone_id] || !zone.latest),
+      top: zone.zone_id === state.mapTop
+    }) : '');
+  }
+
+  /* The fleet's own highest-risk zone when the filters kept it, else the best score still visible.
+     Deliberately not "the first card": the grid's sort must not decide what the map shows. */
+  function mapDefault() {
+    var pool = (state.mapVisible || []).filter(function (zone) { return zone && zone.latest; });
+    var flagged = (state.mapById || {})[state.mapTop];
+    if (flagged && (!pool.length || state.mapKeep[flagged.zone_id])) return flagged;
+    var best = pool.length ? pool[0] : null;
+    pool.forEach(function (zone) {
+      if (Number(zone.latest.risk_score) > Number(best.latest.risk_score)) best = zone;
+    });
+    return best;
+  }
+
+  function setMapDetail(html) {
+    if (el['map-detail'] && el['map-detail'].innerHTML !== html) el['map-detail'].innerHTML = html;
+    var desc = el['map-svg-desc'];
+    if (!desc) return;
+    var line = 'Schematic coastline. City risk data is temporarily unavailable.';
+    if (state.payload) {
+      var top = state.payload.highest_risk_zone;
+      line = 'Schematic coastline and ' + (state.zones || []).length + ' monitored city markers' +
+        (top && top.city ? '; highest monitored risk: ' + top.city : '') + '.';
+    }
+    if (desc.textContent !== line) desc.textContent = line;
+  }
+
   function cacheDom() {
     var ids = [
       'conn-badge', 'conn-detail', 'conn-announce', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
@@ -155,9 +253,9 @@
       'brand-subtitle', 'summary-freshness', 'footer-disclaimer', 'ranking-title', 'zones-title',
       'change-note',
       // fleet distribution strip: renderBandStrip() and bandStripLabel() are guards on
-      // these two entries, so leaving them out of this list silently froze the strip at
-      // its static placeholders (found by the runtime harness, not by the static checks)
       'band-strip', 'band-strip-label',
+      // The coverage map: marker pool, selected-city panel, fallback line, SVG description.
+      'coast-map', 'map-markers', 'map-detail', 'map-fallback', 'map-svg-desc',
       // navigation and the views (M6 information architecture, extended with About in M9)
       'nav-toggle', 'nav-list', 'nav-overview', 'nav-cities', 'nav-alerts', 'nav-data', 'nav-about',
       'view-overview', 'view-cities', 'view-city', 'view-alerts', 'view-data', 'view-about',
@@ -182,8 +280,6 @@
     ];
     ids.forEach(function (id) { el[id] = $(id); });
     // A page and a controller from different revisions (a half-finished deploy, a hand-edited
-    // index.html) must not fail as a TypeError in the middle of start(): the missing ids are
-    // reported once, together, and the parts that can still work keep working.
     var missing = ids.filter(function (id) { return !el[id]; });
     if (missing.length) {
       state.domMismatch = missing;
@@ -205,8 +301,6 @@
 
   function getJson(path) {
     // AbortController is only used to *cancel* a request that the caller has already given up
-    // on; it is not what makes the dashboard recover. Every caller runs its own watchdog and
-    // a request-sequence guard, so recovery works in a browser without AbortController too.
     var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var timer = controller ? setTimeout(function () { controller.abort(); }, FETCH_TIMEOUT_MS) : null;
     var url = API_BASE + path + (path.indexOf('?') >= 0 ? '&' : '?') + 'cachebust=' + Date.now();
@@ -261,8 +355,6 @@
       state.payloadReceivedMs = Date.now();
       state.payload = payload;
       // The request succeeded, so the status line must say so whatever the payload contains.
-      // A malformed entry that defeats one renderer is logged and the rest of the board keeps
-      // its values: a payload must not be able to freeze the page on "CONNECTING" forever.
       try {
         applyPayload(payload);
       } catch (error) {
@@ -340,8 +432,6 @@
 
     if (state.historyZone !== state.selectedZone || state.historyMinutesLoaded !== state.historyMinutes) {
       // The API may re-point the default zone at a new highest-risk zone (the live fleet
-      // changes leader as rain moves). Reload so the chart always matches the highlighted
-      // zone button instead of silently showing a different city's series.
       loadHistory();
     }
   }
@@ -374,15 +464,12 @@
   }
 
   /* What changed since the last poll. The comparison is against the previous *successful*
-   * snapshot and is then forgotten, so a single escalation is stated once and does not keep
    * claiming attention on every subsequent poll. */
   function renderChangeNote(payload) {
     var note = el['change-note'];
     var change = FP.fleetChange(state.previousClasses, payload);
     state.previousClasses = FP.fleetClasses(payload);
     // Keep the last few observed changes, newest first, for the Overview activity panel. These
-    // are transitions this page watched happen - not a history, and not a claim about anything
-    // that happened while nobody was looking at the page.
     if (change.text) {
       state.changes = [change.text].concat(state.changes || []).slice(0, 4);
     }
@@ -442,7 +529,6 @@
   }
 
   /* Data freshness is its own panel row, not a footnote: it is the difference between
-   * "the API answered" and "the weather is new". Recomputed every second so the
    * countdown to the next provider check actually moves. */
   function renderFreshness(payload) {
     if (!el['summary-freshness']) return;
@@ -461,8 +547,6 @@
   }
 
   // The banner is driven by the payload so the page stays honest in both modes: demo
-  // payloads say everything is simulated, live payloads name what is real. A stale or
-  // failing feed colours it amber/red instead of pretending nothing is wrong.
   function renderDataNotice(payload) {
     if (!el['data-banner']) return;
     var feed = FP.feedStatus(payload, Date.now(), payloadAgeOffsetSeconds());
@@ -484,8 +568,6 @@
 
   function fleetSubtitle(payload, feed) {
     // An element that is not an object is not a zone, so it has no name to list. The subtitle
-    // used to throw here on a malformed payload, which - because this runs before the rest of
-    // the render - left the whole board frozen on its loading placeholders.
     var zones = usableEntries(payload && payload.zones);
     var names = zones.slice(0, 5).map(function (zone) { return zone.name; });
     var suffix = zones.length > names.length ? ' +' + (zones.length - names.length) : '';
@@ -521,8 +603,6 @@
     setText('conn-badge', info.label);
     setText('conn-detail', info.detail);
     // The visible status line ticks with the clock, so it is not a live region. The off-screen
-    // polite region gets a sentence with no ages in it, and only when the state really
-    // changes: announcing the ticking line re-read the top bar once per second, forever.
     if (state.connAnnounceKey !== info.announceKey) {
       state.connAnnounceKey = info.announceKey;
       setText('conn-announce', info.announcement);
@@ -617,7 +697,6 @@
   }
 
   /* Zone ids go into an attribute selector, so they are escaped as CSS: a quote or a bracket
-   * in one (a malformed payload, a hand-edited fixture) would otherwise throw a SyntaxError
    * inside the render pass and stop the board updating. */
   function zoneSelector(zoneId) {
     var value = String(zoneId === null || zoneId === undefined ? '' : zoneId);
@@ -1040,7 +1119,6 @@
   }
 
   /* Keyboard and touch path to the same per-point values the mouse tooltip shows. The chart
-   * used to answer `mousemove` only, and the canvas was not focusable, so on a phone or with a
    * keyboard those numbers were unreachable: nothing else on the page exposes them. */
   function hoverIndexAt(event) {
     if (!state.history || !state.history.points || !state.history.points.length) return null;
@@ -1126,7 +1204,6 @@
   /* ===================================================== views and navigation === */
 
   /* The site is one document with six views. The URL hash is the only source of
-   * truth for which one is visible, so a link, a reload or the back button all land in
    * the same place; nothing here fetches, it only decides what is on screen. */
   var VIEWS = ['overview', 'cities', 'city', 'alerts', 'data', 'about'];
 
@@ -1260,7 +1337,6 @@
   var OVERVIEW_CITY_LIMIT = 5;
 
   /* "Is anything actually alerting?" in one compact block: the two newest active alerts, or a
-   * calm state that says so plainly and points at the alerts page. It reads the same incidents
    * payload as the Alerts page, so the two can never disagree. */
   function renderAlertPreview(payload) {
     var host = el['alert-preview'];
@@ -1283,7 +1359,6 @@
   }
 
   /* "What should I pay attention to?" - the changes the page has actually observed since it was
-   * opened, plus the newest incidents. Both come from state the page already holds: nothing here
    * is inferred, and an empty list says so rather than showing a blank panel. */
   function renderRecentActivity() {
     var host = el['recent-activity'];
@@ -1306,8 +1381,6 @@
     // The same ordering the risk ranking uses, so the cards and the list can never disagree
     var list = FP.ranking(all).slice(0, OVERVIEW_CITY_LIMIT);
     // The loading/loaded state is part of the signature: an empty list before the first response
-    // is a skeleton, and an empty list *after* a response is an empty state, and those two must
-    // not hash to the same key (that mistake left the skeleton on screen for ever).
     var signature = (state.payload ? 'loaded' : 'loading') + '|' + all.length + '|' +
       (list.map(function (zone) {
         var latest = zone.latest;
@@ -1460,8 +1533,6 @@
     var split = FP.alertsSplit(payload);
     var summary = FP.alertSummary(split);
     // "nothing loaded yet" and "loaded, and there are no incidents" are different states
-    // that happen to have the same empty incident list: the loading flag keeps them apart,
-    // otherwise the view would stay on the loading placeholder forever.
     var signature = (payload ? 'loaded' : 'loading') + '|' + (FP.incidentsSignature(payload) || 'none') + '|' +
       (state.incidentsError || '') + '|' + (state.payload ? FP.zoneNounPlural(state.payload) : '');
     if (signature !== state.alertsSignature) {
@@ -1473,8 +1544,6 @@
       // closes on a return to NORMAL, not on silence), so say when that is the case.
       var silentZones = FP.staleZoneIds(state.payload);
       // Every incident row states what happened to its alert, using the API's own alert log
-      // count: "published to the notification topic" is only claimed where a publish is on
-      // the record, and delivery to a person is never claimed at all.
       var rowOptions = { silentZoneIds: silentZones, alerting: payload ? payload.alerting : null,
         noun: FP.zoneNoun(payload) };
       if (el['alerts-active']) {
@@ -1645,7 +1714,6 @@
   /* --------------------------------------------------------- data and method --- */
 
   /* The whole methodology page is static prose plus the live provenance per metric, so
-   * it renders from the helper data even before the first successful poll: this page has
    * to be readable when the API is down, which is exactly when somebody looks at it. */
   function renderDataPage(payload) {
     var metricSources = (payload && payload.metric_sources) || null;
@@ -1696,8 +1764,6 @@
       }
     }
     // The exact arithmetic of one real reading, folded away: which variable carried which weight,
-      // what each contributed, and the model's own output line - the transparency that used to sit
-      // on the Overview, in the place where a reader goes looking for it.
     if (el['score-breakdown']) {
       var leader = null;
       (state.zones || []).forEach(function (zone) {
@@ -1746,7 +1812,6 @@
   /* --------------------------------------------------------- system health --- */
 
   /* One honest sentence about right now: how much of the fleet is answering, how old the newest
-   * weather observation is, whether anything is stale, and whether any alert is open. Counts and
    * ages only - no infrastructure detail, no topic, no region, nothing an attacker can use. */
   function renderSystemHealth() {
     var health = FP.systemHealth(state.payload, state.incidents ? state.incidents.incidents : null, Date.now());
@@ -1803,7 +1868,6 @@
   /* ---------------------------------------------------------------- about --- */
 
   /* The About page repeats two live facts - which cities are monitored, and what the model does
-   * not do - so it is rendered from the payload rather than hard-coded, and stays true if the
    * fleet changes. Everything else on that page is static prose in index.html. */
   function renderAbout(payload) {
     var names = state.zones.map(function (zone) { return zone.name; }).filter(Boolean);
@@ -1922,8 +1986,6 @@
 
   function bind() {
     // ---- navigation ------------------------------------------------------------------
-    // The links are real anchors, so a click, a paste of the URL or the back button all
-    // work; these handlers only make the switch immediate and announce it accessibly.
     function followNav(event) {
       var link = event.target && event.target.closest ? event.target.closest('[data-nav]') : null;
       if (!link) return false;
@@ -1994,8 +2056,6 @@
     });
 
     // The public subscription form. Submitting is intercepted: the page posts to the API with
-    // fetch and renders the outcome itself, so the browser never navigates and CSP's
-    // `form-action 'none'` is never even asked to allow a submission.
     if (el['subscribe-form']) {
       el['subscribe-form'].addEventListener('submit', function (event) {
         event.preventDefault();
@@ -2038,8 +2098,6 @@
     });
 
     // The chart answers a mouse, a keyboard and a fingertip: the per-point values exist
-    // nowhere else on the page, so a pointer-only tooltip hides data from a whole class of
-    // people (a phone user, someone who cannot use a mouse).
     bindTo('history-canvas', 'mousemove', handleHistoryHover);
     bindTo('history-canvas', 'keydown', handleHistoryKey);
     bindTo('history-canvas', 'touchstart', handleHistoryHover, { passive: true });
@@ -2066,7 +2124,6 @@
     }
 
     /* Dragging a window edge fires resize dozens of times a second and each redraw resizes two
-     * canvases per card, which reallocates their backing stores. Coalescing to one redraw per
      * frame keeps the last size and drops the events the browser could not paint anyway. */
     var resizeQueued = false;
     function queueResizeRedraw() {
@@ -2093,9 +2150,6 @@
   }
 
   /* -------------------------------------------------------------- Cities page ---
-   *
-   * Twelve cities on one page: find one, filter the list, order it - all client-side from the
-   * payload already in memory, so no filter change costs a request.
    */
 
   function cityFilters() {
@@ -2176,6 +2230,7 @@
       if (el['cities-count'].textContent !== line) el['cities-count'].textContent = line;
     }
     renderCards(visible);
+    renderMap(visible);
     renderCityFilters(state.payload);
   }
 
@@ -2218,15 +2273,11 @@
     applyRoute({ focus: false });
     renderDataPage(null);
     // The three slow panels start as skeletons rather than as sentences, so the first paint
-    // already shows the shape of what is coming (and the About/status panels get their static
-    // contents immediately, since they must be readable even if the API never answers).
     renderCityCards([]);
     renderAbout(null);
     renderSystemHealth();
     if (!API_BASE) {
       // Say why the page will never fill in, in the same status line a failing poll uses:
-      // this used to leave the badge on CONNECTING and five panels on "waiting for data…"
-      // forever, because start() returned before anything could update them.
       if (el['conn-badge']) el['conn-badge'].className = 'conn-badge conn-disconnected';
       setText('conn-badge', 'DISCONNECTED');
       setText('conn-detail', 'no API base configured — add ?api=https://… to the address');

@@ -1,15 +1,4 @@
 /* FloodPulse dashboard styling — dark storm command-centre, no external assets.
- *
- * The guaranteed base is a dark storm-blue gradient on <body>; the optional WebP backdrop
- * sits on a decorative layer above it and never blocks first paint (CSS background images
- * are fetched after paint, and the gradient is visible immediately).
- *
- * Colour roles, used consistently everywhere:
- *   cyan/teal   — live, fresh, REAL provider data, NORMAL band
- *   amber       — WATCH band, stale data, degraded feed, simulated/model-derived data
- *   orange      — WARNING band
- *   red         — CRITICAL band, errors, disconnected API
- *   slate       — unknown, unavailable, no reading yet
  */
 
 :root {
@@ -93,10 +82,6 @@ body {
   font-family: var(--sans);
   color: var(--slate-200);
   /* The photograph is the atmosphere and it paints on `.bg-layer`, one step above this. What is
-   * left here is the base the picture sits on: a flat, opaque navy, so the canvas is never white
-   * while the 60 KB image is decoding or if it never arrives at all. It used to be a four-stop
-   * 168deg gradient with `background-attachment: fixed` - a second, competing "atmosphere" under
-   * the real one, which repainted the whole page on every scroll on mobile Safari and served no
    * purpose the photograph does not serve better. */
   background: var(--navy-900);
   line-height: 1.45;
@@ -105,10 +90,6 @@ body {
 }
 
 /* Decorative backdrop: local WebP, loaded non-blocking, decorative only. This rule fixes the size,
- * the anchor and the layering; how the photograph is washed and vignetted is decided by the M10.2
- * layer at the end of this file, which is also where the two declarations that used to sit here
- * went: an `opacity` of 0.42 and a `screen` blend mode. Both are deleted rather than overridden -
- * they were the reason the picture read as a haze, and a dead declaration that hides the backdrop
  * is exactly how it comes back. */
 .bg-layer {
   position: fixed;
@@ -412,9 +393,6 @@ main {
 }
 .band-tile.band-unknown { border-left-color: var(--slate-400); }
 /* An empty band stays visible but recedes: its absence is information too.
- * This used to be `opacity: 0.55`, which dimmed the label colours with the tile and dropped
- * four of five of them to 3.6-4.5:1 (measured against the tile's own gradient). The tile
- * recedes by losing its gradient and its band colour instead, so every label on it keeps its
  * contrast: slate-300 on this background is 12:1. */
 .band-tile.is-zero {
   background: rgba(148, 163, 184, 0.06);
@@ -478,8 +456,6 @@ main {
   color: var(--cyan-400);
 }
 /* The spotlight sentence: prose, in the text face, at reading size with a comfortable measure.
- * It used to be a monospace box holding the model's own output line ("risk_score 0.3877 =
- * weighted base 0.3877 (soil_saturation_pct=0.1807, ...)"), which is what made the front page
  * of a public flood monitor look like a debug console. */
 .hero-reason {
   margin: 12px 0 0;
@@ -612,8 +588,6 @@ main {
 }
 .zone-card:hover { transform: translateY(-2px); box-shadow: 0 22px 46px rgba(2, 6, 23, 0.6); }
 /* `.zone-card .pill { color: currentColor }` used to live here and, sitting after the
- * `.pill.band-*` rules at equal specificity, it won: the card's severity pill rendered in the
- * vivid band colour (CRITICAL #ef4444 = 4.90:1) while this stylesheet and the checks both
  * claim small band text always uses the light variant. Only the unknown band inherits now. */
 .zone-card .pill.band-unknown { color: var(--slate-300); }
 .zone-card.is-empty,
@@ -1230,8 +1204,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .tech[open] > summary { border-bottom: 1px solid var(--stroke); margin-bottom: 12px; }
 .tech-kv { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); display: grid; gap: 10px; margin-bottom: 14px; }
 /* The six-column technical table has a min-content width of roughly 410 px, so it used to
- * push the whole page sideways below a 500 px viewport. It scrolls in its own box like the
- * incident list does, and the box is focusable so a keyboard user can reach the columns that
  * are off-screen. */
 .table-scroll {
   overflow-x: auto;
@@ -1631,16 +1603,12 @@ body {
 .footer-nav a { font-size: var(--text-sm); font-weight: 600; }
 
 /* Touch targets: a nav link is a finger target on a phone, so it gets height, not padding
- * tricks. `min-height` also keeps the active underline in a predictable place. The 44px lives
  * on the base rule above; this only documents the intent for the letter-spacing pass. */
 .nav-link { letter-spacing: 0; }
 
 /* --------------------------------------------------------------- surfaces --- */
 
 /* Calmer surfaces than the M6 glass: a deep gradient card reads as a document rather than a
- * panel of frosted glass, which is what a public page wants. The `border` shorthand is
- * deliberately NOT used here - the band colour lives in the left accent stripe of a city card,
- * a stat and an alert row, and a shorthand would flatten 4px to 1px and quietly delete the
  * strongest non-colour-band cue on the page. */
 .card {
   background: var(--surface);
@@ -1648,7 +1616,6 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-soft);
   /* The M6 cards were frosted glass over a photo. On a public page the content should win, so the
-   * surface is now a deep gradient and the blur is halved: enough to keep the header readable
    * while scrolling, not enough to make a reader work at a paragraph. */
   backdrop-filter: blur(6px);
 }
@@ -1791,7 +1758,6 @@ body {
 .btn-quiet { color: var(--cyan-200); background: rgba(15, 33, 64, 0.6); border-color: var(--stroke-strong); }
 
 /* The one primary action on a public page: reserving a place in the alerting flow. It is
- * filled rather than tinted so it is unmistakably the thing to press, and it is the only
  * solid button in the product. */
 .btn-primary {
   color: #04222c;
@@ -2250,8 +2216,6 @@ main, .topbar, .footer { max-width: 100%; }
 /* ------------------------------------------------- the model, folded away --- */
 
 /* Everything below appears only inside a collapsed technical section (the city page and the
- * methodology page), so it may look like the model it describes: monospace for identifiers and
- * arithmetic, because that is what they are. Keeping it inside a fold rather than on a public
  * view is the point - the words a visitor reads are the ones at reading size. */
 .var-name {
   font-family: var(--mono);
@@ -2485,9 +2449,6 @@ main, .topbar, .footer { max-width: 100%; }
 .hero-cta { justify-self: start; }
 
 /* ------------------------------------------------------------- summary cards ---
- *
- * Four cards, each with the same shape: an icon, the label, the value, one supporting
- * sentence. The left accent stripe that carries the band colour is the M9 rule and stays.
  */
 
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--gap); }
@@ -2602,9 +2563,6 @@ main, .topbar, .footer { max-width: 100%; }
 .preview-actions { margin: 14px 0 0; }
 
 /* -------------------------------------------------------------- how it works ---
- *
- * Three steps, one sentence each. This is the whole explanation a visitor needs before
- * they read a score, and it is the doorway to the methodology page.
  */
 
 .works { margin: 4px 0 26px; }
@@ -2801,8 +2759,6 @@ main, .topbar, .footer { max-width: 100%; }
 }
 
 /* ----------------------------------------------------------------- city cards ---
- *
- * The band is the image; the body under it is the answer. Everything the body holds is text,
  * so nothing in the card depends on the photograph being there. */
 
 .city-cards {
@@ -2951,14 +2907,9 @@ main, .topbar, .footer { max-width: 100%; }
 }
 
 /* ----------------------------------------------------------------- grids ---
- *
- * One row of five on a wide desktop, three at 1024, two at 768, one on a phone. Every track is
  * minmax(0, ...) so a long city name can never push the page sideways. */
 
 /* The card grid at every width the site is checked at. auto-fit put three cards on a 768px
- * tablet and could put two on a phone, which is not the ladder the milestone names: five down to
- * three on a desktop, two on a tablet, one on a phone. Every track is minmax(0, ...) so a long
- * city name can never push the page sideways; the base rules (auto-fit, 248px and 340px) still
  * cover the widths between these steps. */
 @media (min-width: 1320px) { .city-cards { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 @media (min-width: 1080px) and (max-width: 1319px) { .city-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
@@ -2975,8 +2926,6 @@ main, .topbar, .footer { max-width: 100%; }
 @media (max-width: 759px) { .zone-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* ------------------------------------------------------- the city list cards ---
- *
- * The Cities page keeps its full readings - the ring, the five channels, the session
  * sparkline - and gains the same image band, from the same builder as the Overview cards. */
 
 .zone-card {
@@ -3048,7 +2997,6 @@ main, .topbar, .footer { max-width: 100%; }
 
 .bg-layer {
   /* Still fixed and still at z-index 0: above the body's own paint, below every panel. Both of
-   * the multiplications that killed the picture are gone - what is left is one wash and the
    * vignette, at alphas low enough to be seen through. */
   opacity: 1;
   mix-blend-mode: normal;
@@ -3071,7 +3019,6 @@ main, .topbar, .footer { max-width: 100%; }
 }
 
 /* The vignette, and only the vignette: transparent in the middle of the viewport, dark in the
- * corners, with the faintest lift at the top edge where the city lights are. It sits above the
  * wash, so the two multiply into something filmic rather than flat. */
 .bg-layer::after {
   background:
@@ -3184,8 +3131,6 @@ main, .topbar, .footer { max-width: 100%; }
 }
 
 /* M11: the city toolbar, the place lines and the plate's coast label - the pieces the
- * fifteen-city expansion needed. The fleet is now the twelve coastal cities in README,
- * "Cities monitored"; the shell itself is unchanged.
  */
 
 .city-card .city-place,
@@ -3284,7 +3229,6 @@ main, .topbar, .footer { max-width: 100%; }
 .city-cards-more[hidden] { display: none; }
 
 /* Same four columns and the same one row, in tracks that fit a 1200px viewport. The row has to be
- * declared here as well: without it this tier inherits the stacked areas from the base rule, which is
  * exactly what a real browser showed at 1280px before this line existed. */
 @media (min-width: 1200px) and (max-width: 1319px) {
   .cities-toolbar {
@@ -3322,3 +3266,41 @@ main, .topbar, .footer { max-width: 100%; }
   .metric-value { grid-area: value; text-align: left; }
   .metric-track { grid-area: track; }
 }
+
+/* Coastal coverage map: the outline ships with the page, the markers come from the zone payload. */
+.map-panel { margin: 0 0 22px; padding: 16px 16px 14px; border: 1px solid var(--stroke); border-radius: var(--radius); background: var(--surface); }
+.map-panel .section-title { margin: 0 0 4px; }
+.map-purpose { margin: 0 0 10px; color: var(--slate-400); font-size: var(--text-xs); }
+.map-split { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.coast-map { display: block; width: 100%; height: auto; border-radius: var(--radius-sm); background: rgba(8, 24, 40, .5); }
+.map-land { fill: rgba(148, 163, 184, .17); stroke: rgba(148, 163, 184, .46); stroke-width: .7; }
+.map-island { fill: rgba(148, 163, 184, .13); stroke: rgba(148, 163, 184, .4); stroke-width: .6; }
+.map-label { fill: var(--slate-400); font-size: 7px; letter-spacing: .08em; text-transform: uppercase; }
+.map-markers a { text-decoration: none; }
+.map-fallback { margin: 10px 2px 0; color: var(--state-stale-text); font-size: var(--text-sm); }
+.map-marker { cursor: pointer; }
+.map-marker .map-hit { fill: transparent; r: 15px; }
+.map-marker .map-dot { fill: currentColor; stroke: rgba(8, 24, 40, .9); stroke-width: 1.2; r: 6px; }
+.map-marker.is-top .map-dot { r: 7.5px; }
+.map-marker .map-ring { fill: none; stroke: currentColor; stroke-width: 1.4; opacity: .5; r: 12px; }
+.map-marker.is-stale { color: var(--state-stale); }
+.map-marker.is-stale .map-dot { fill: none; stroke: currentColor; stroke-width: 1.8; }
+.map-marker.is-dim { opacity: .3; }
+.map-marker.is-selected .map-dot, .map-marker:hover .map-dot { stroke: #ffffff; stroke-width: 2; }
+.map-marker:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 2px; }
+.map-key, .map-band { font-size: var(--text-xs); letter-spacing: .06em; text-transform: uppercase; }
+.map-key { display: inline-flex; align-items: center; gap: 6px; color: var(--slate-400); }
+.map-key::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.map-key.is-stale::before { background: none; box-shadow: inset 0 0 0 1.5px currentColor; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; padding: 0; list-style: none; }
+.map-detail { min-width: 0; padding: 14px; border-radius: var(--radius-sm); background: var(--surface-flat); }
+.map-city { margin: 0; font-size: var(--text-lg); font-weight: 600; }
+.map-place, .map-top { margin: 2px 0 8px; color: var(--slate-400); font-size: var(--text-xs); }
+.map-band { display: inline-block; margin: 0 0 10px; padding: 2px 10px; border: 1px solid currentColor; border-radius: 999px; }
+.map-detail .kv { margin: 0 0 12px; }
+.map-marker.band-normal, .map-band.band-normal, .map-key.band-normal { color: var(--band-normal-text); }
+.map-marker.band-watch, .map-band.band-watch, .map-key.band-watch { color: var(--band-watch-text); }
+.map-marker.band-warning, .map-band.band-warning, .map-key.band-warning { color: var(--band-warning-text); }
+.map-marker.band-critical, .map-band.band-critical, .map-key.band-critical { color: var(--band-critical-text); }
+.map-band.is-stale, .map-key.is-stale { color: var(--state-stale-text); }
+@media (max-width: 899px) { .map-split { grid-template-columns: minmax(0, 1fr); } }

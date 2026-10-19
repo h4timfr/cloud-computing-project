@@ -267,6 +267,35 @@
     <!-- polite, and rewritten only when the sentence changes: a poll that changes nothing
          announces nothing -->
     <p class="cities-count" id="cities-count" role="status" aria-live="polite"></p>
+    <!-- Coastal coverage: schematic outline drawn for this page, markers from the payload. -->
+    <section class="map-panel" aria-labelledby="map-title">
+      <h3 class="section-title" id="map-title">Coastal coverage</h3>
+      <p class="map-purpose">City locations only, not a flood-risk surface.</p>
+      <div class="map-split">
+        <div>
+          <svg class="coast-map" id="coast-map" viewBox="0 0 269 205" role="img"
+               aria-labelledby="map-svg-title" aria-describedby="map-svg-desc">
+            <title id="map-svg-title">Monitored coastal cities</title>
+            <desc id="map-svg-desc">Schematic coastline, one marker per monitored coastal city.</desc>
+            <path class="map-land" d="M22 23L33 34L46 50L57 45L58 56L59 69L63 81L67 97L70 111L74 121L78 131L83 141L86 147L89 155L91 161L93 170L97 177L102 179L109 172L115 167L120 157L124 141L128 129L127 115L126 102L134 95L137 90L147 87L155 83L167 72L179 62L186 57L190 50L198 44L203 34L209 40L207 15L195 -5L172 -20L125 -35L70 -30L37 -5L17 14Z"/>
+            <path class="map-island" d="M243 124L247 134L249 146L251 160L252 176L249 190L247 194L243 189L245 175L246 160L244 145L242 133L240 125Z"/>
+            <text class="map-label" x="14" y="108" text-anchor="start">Arabian Sea</text>
+            <text class="map-label" x="181" y="136" text-anchor="start">Bay of Bengal</text>
+            <text class="map-label" x="240" y="105" text-anchor="end">Andaman &amp; Nicobar</text>
+            <g class="map-markers" id="map-markers"></g>
+          </svg>
+          <p class="map-fallback" id="map-fallback" hidden>City risk data is temporarily unavailable.</p>
+        </div>
+        <div class="map-detail" id="map-detail"></div>
+      </div>
+      <ul class="map-legend" id="map-legend">
+        <li class="map-key band-normal">NORMAL</li>
+        <li class="map-key band-watch">WATCH</li>
+        <li class="map-key band-warning">WARNING</li>
+        <li class="map-key band-critical">CRITICAL</li>
+        <li class="map-key is-stale">NO RECENT READING</li>
+      </ul>
+    </section>
     <section id="zones" class="zone-grid" aria-labelledby="zones-title"></section>
     <!-- The grid holds cards only; the sentence that explains an empty list sits beside it. -->
     <div class="cities-empty" id="cities-empty" hidden></div>

@@ -1,9 +1,4 @@
 /* FloodPulse dashboard helpers.
- *
- * Deliberately dependency-free and DOM-free: every function here is pure so the same
- * file can be loaded by the browser (as a classic script defining window.FP) and by the
- * node check in tools/dashboard_check.mjs. Nothing in this file invents a risk value:
- * scores, classes, drivers, explanations and thresholds all come from the API payload.
  */
 (function (root) {
   'use strict';
@@ -120,7 +115,6 @@
   }
 
   /* How many zones sit in each band right now. Counted from the effective (post-hysteresis)
-   * risk_class the API reports, never from a guess: a zone with no reading is counted as
    * "no reading", not as NORMAL. */
   function bandCounts(payload) {
     var zones = (payload && payload.zones) || [];
@@ -281,7 +275,6 @@
   }
 
   /* How the water level moved since the last lookback window - or a plain statement that the page
-   * cannot know yet. "no lookback" was the model's own shorthand for a missing delta: true, but a
    * phrase only the model's author understands, and it sat on two public views. */
   function trendLabel(trend) {
     if (!trendHasHistory(trend)) return 'not enough history yet';
@@ -381,8 +374,6 @@
     }
     var age = Math.max(0, nowMs - lastSuccessMs);
     // A successful poll proves the API answered, not that the weather in it is new: in live
-    // mode the detail always states the feed's own age, so "LIVE" can never be read as
-    // "this second's measurement".
     var liveDetail = feed && feed.live ? liveFeedDetail(feed) : null;
     var feedNote = feed && feed.live ? ' · ' + liveFeedAnnouncement(feed) : '';
     // The most recent request error is part of the state, not a one-off message: a board
@@ -517,7 +508,6 @@
   }
 
   /* How many metrics carry each provenance tag, in the same order as zoneSources, for the
-   * technical footnote. zoneSources itself returns tag keys, not objects: reading .label off
    * one of those produced "Provenance per metric: undefined = undefined". */
   function sourceCounts(zone) {
     var counts = {};
@@ -629,8 +619,6 @@
   }
 
   // The banner detail is deliberately short: one sentence on what is real, plus the
-  // freshness line. The long "not a validated model" wording belongs in the footer, not
-  // in a banner a demo visitor has to read from across the room.
   function dataNotice(payload) {
     var data = payload || {};
     var weather = data.weather || {};
@@ -838,8 +826,6 @@
       return renderMetricRow(zone, metric);
     }).join('');
     // The one thing a card of numbers cannot say for itself: which channel moved the score, in
-    // words. It used to sit on the Overview card; the Overview is now five photographs and five
-    // answers, so the sentence lives here, where the numbers that explain it already are.
     var summary = plainRiskSummary(zone);
     var noun = (options && options.noun) || 'city';
     var driverLine = summary.driverLabel
@@ -1481,8 +1467,6 @@
       leaderName: leader ? leader.name : '',
       leaderScore: leader ? formatScore(leader.risk_score) : '–',
       // How old the reading behind the leading score is, and whether the fleet itself says
-      // that zone is out of date. Without this, "highest risk: Chennai 0.72" reads as a
-      // present-tense fact even when Chennai stopped reporting half an hour ago.
       leaderAge: leaderAgeSeconds(payload, leader),
       leaderStale: !!(payload && leader && leader.zone_id &&
         (payload.stale_zone_ids || []).indexOf(leader.zone_id) >= 0),
@@ -1567,8 +1551,6 @@
     var noun = (options && options.noun) || 'city';
     var stale = !!(options && options.staleZoneIds && options.staleZoneIds.indexOf(zone.zone_id) >= 0);
     // Which data is this? The card answers it in its own corner, as it always has: the fleet
-    // banner says what the payload is, and each card repeats the provenance of the numbers on it,
-    // because a page that shows a live number beside a simulated one has to say which is which.
     var provenance = zoneSources(zone).map(function (tag) { return sourceChip(tag); }).join('');
     return (
       '<a class="card city-card band-' + band + (latest ? '' : ' is-empty') + (stale ? ' is-stale' : '') +
@@ -2043,8 +2025,6 @@
     var evidence = (payload && payload.weather) || {};
     var provider = evidence.provider || 'open-meteo';
     // The attribution link is built from the payload, so it is origin-checked before it ever
-    // becomes an href: the provider's documentation is the only external destination this
-    // dashboard has any reason to point at.
     var docs = safeExternalUrl(evidence.docs, 'https://open-meteo.com/');
     // CC BY requires attribution *while provider data is displayed*: a simulated board shows
     // no provider data, so it must not credit a provider it never used.
@@ -2076,8 +2056,6 @@
     var cards = '';
     for (var index = 0; index < total; index += 1) {
       // Deliberately NOT a `.city-card`: a placeholder that carries the class of a real card is
-      // indistinguishable from data to anything reading the page (a screen reader, a harness, or
-      // a user whose connection is slow). The skeleton has its own shape and its own class.
       cards += '<div class="skel-card" aria-hidden="true">' +
         '<span class="skel skel-photo"></span>' +
         '<span class="skel skel-title"></span>' + skeletonLines(2) + '</div>';
@@ -2099,8 +2077,6 @@
   }
 
   /* ----------------------------------------------------------- empty states ---
-   * Used for "nothing is wrong", "nothing has happened yet", "we cannot reach the API" and
-   * "that city does not exist". Every one of them says what the reader should do next.
    */
   function emptyState(options) {
     var opt = options || {};
@@ -2121,8 +2097,6 @@
       }).join('') + '</ul>';
     }
     // Deliberately NOT a live region: an empty state is a paragraph the reader arrives at, and
-    // several of them can appear in one poll. The polite regions in the header and the view lede
-    // already announce the state change once, which is what a screen-reader user needs.
     return '<div class="empty-state' + tone + '"' + key + '>' +
       (opt.icon ? '<span class="empty-icon">' + icon(opt.icon, 26) + '</span>' : '') +
       '<p class="empty-title">' + escapeHtml(opt.title || 'Nothing to show') + '</p>' +
@@ -2137,8 +2111,6 @@
   /* Trend as an icon plus words. The arrow alone would be colour-and-shape only information. */
   function trendIcon(trend, extraClass) {
     // trendDirection() answers "which way is this going" - 'up', 'down' or 'flat'. This compared
-    // it against 'rising'/'falling', which it never returns, so every trend arrow on the board was
-    // the flat one no matter which way the water was moving.
     var direction = trendDirection(trend);
     var name = direction === 'up' ? 'up' : (direction === 'down' ? 'down' : 'flat');
     return '<span class="trend trend-' + escapeHtml(direction) + (extraClass ? ' ' + extraClass : '') + '">' +
@@ -2146,7 +2118,6 @@
   }
 
   /* A metric's plain-language explanation, behind a native disclosure so it is keyboard
-   * reachable and needs no JavaScript. Never inside an <a> card: the city page is where these
    * live, because a card in the grid is one big link. */
   function metricHelp(metric) {
     var text = hasOwn(METRIC_HELP, metric) ? METRIC_HELP[metric] : null;
@@ -2497,7 +2468,6 @@
   }
 
   /* Highest risk, A-Z or freshest first. A city with no reading sorts last in the two
-   * reading-based orders, so it cannot sit at the top of a list that reads as freshest first;
    * A-Z stays alphabetical, which is what A-Z means. */
   function sortCities(zones, sortKey) {
     var key = sortKey || 'risk';
@@ -2515,6 +2485,58 @@
       return aValue === bValue ? fallback : (key === 'fresh' ? aValue - bValue : bValue - aValue);
     });
     return list;
+  }
+
+  /* Coverage-map projection: bounded equirectangular over the fleet's own coast. Bounds lat 5.5..26 N,
+     lon 66.5..95.5 E, 10 units per degree of latitude, x scaled by cos(22 deg) so the peninsula is not
+     stretched sideways. viewBox 0 0 269 205. No inset: Port Blair keeps a 25-unit margin. */
+  var MAP_BOUNDS = { latTop: 26, lonLeft: 66.5, unit: 10, xScale: 0.92718 };
+
+  function projectCoast(latitude, longitude) {
+    var lat = toNumber(latitude);
+    var lon = toNumber(longitude);
+    if (lat === null || lon === null || !isFinite(lat) || !isFinite(lon)) return null;
+    var factor = MAP_BOUNDS.xScale * MAP_BOUNDS.unit * 10;
+    return { x: Math.round((lon - MAP_BOUNDS.lonLeft) * factor) / 10,
+             y: Math.round((MAP_BOUNDS.latTop - lat) * MAP_BOUNDS.unit * 10) / 10 };
+  }
+
+  /* One marker: colour carries the band, the shape carries staleness, the title says both in words. */
+  function renderMapMarker(zone, options) {
+    var settings = options || {};
+    var latest = zone && zone.latest ? zone.latest : null;
+    if (!zone || !projectCoast(zone.latitude, zone.longitude)) return '';
+    var stale = settings.stale || !latest;
+    var score = latest ? formatScore(latest.risk_score) : '';
+    var name = zone.city ? zone.city + (zone.state ? ', ' + zone.state : '') : String(zone.zone_id);
+    return '<a class="map-marker ' + (stale ? 'is-stale' : 'band-' + bandKey(latest.risk_class)) +
+      (settings.top ? ' is-top' : '') + (settings.matches ? '' : ' is-dim') + '" data-zone="' +
+      escapeHtml(zone.zone_id) + '" href="#/cities/' + encodeURIComponent(zone.zone_id) + '">' +
+      '<title>' + escapeHtml(name + ' - ' + (stale ? 'no recent reading' : classLabel(latest.risk_class)) +
+        (score ? ', risk score ' + score : '')) + '</title><circle class="map-hit"/>' +
+      (settings.top ? '<circle class="map-ring"/>' : '') + '<circle class="map-dot"/></a>';
+  }
+
+  /* The selected-city panel: the payload's own fields, not a copy of a card. */
+  function renderMapDetail(zone, options) {
+    if (!zone) return '';
+    var settings = options || {};
+    var latest = zone.latest || null;
+    var stale = settings.stale || !latest;
+    var rain = latest && latest.readings ? latest.readings.rainfall_mm_per_hr : null;
+    return '<p class="map-city">' + escapeHtml(zone.city || zone.zone_id) + '</p>' +
+      '<p class="map-place">' + escapeHtml((zone.state || '') + ' - ' +
+        (zone.coast_group ? String(zone.coast_group) : 'coast not reported')) + '</p>' +
+      '<p class="map-band ' + (stale ? 'is-stale' : 'band-' + bandKey(latest.risk_class)) + '">' +
+      escapeHtml(stale ? 'No recent reading' : classLabel(latest.risk_class)) + '</p><dl class="kv">' +
+      '<div><dt>Risk score</dt><dd>' + escapeHtml(latest ? formatScore(latest.risk_score) : 'no reading') +
+      '</dd></div><div><dt>Rainfall</dt><dd>' +
+      escapeHtml(rain === null || rain === undefined || rain === '' ? 'not reported'
+        : formatValueWithUnit('rainfall_mm_per_hr', rain)) + '</dd></div><div><dt>Updated</dt><dd>' +
+      escapeHtml(latest ? ageLabel(latest.age_seconds) : 'no recent reading') + '</dd></div></dl>' +
+      '<a class="btn" href="#/cities/' + encodeURIComponent(zone.zone_id) + '">Open ' +
+      escapeHtml(zone.city || zone.zone_id) + '</a>' +
+      (settings.top ? '<p class="map-top">Highest monitored score in the fleet</p>' : '');
   }
 
   function visibleCities(zones, criteria) {
@@ -2600,7 +2622,6 @@
   }
 
   /* The monitoring sentence under the hero headline. Every clause follows a count from the
-   * payload, and the calm branch is only used when the payload really has nothing above
    * NORMAL - the same rule the headline follows. */
   function monitorLine(payload, overview) {
     var ov = overview || {};
@@ -2637,8 +2658,6 @@
     'city-hyderabad': 'hyderabad-nightscape.webp',
     'city-kochi': 'kochi-nightscape.webp',
     // M11: a photograph for each of the ten cities the milestone added, so every monitored city
-    // has one. A zone id that is not a key here has none, which is what draws the plate instead
-    // of a broken request - that is the demo fleet now, not the live one.
     'city-delhi': 'delhi.webp',
     'city-kolkata': 'kolkata.webp',
     'city-guwahati': 'guwahati.webp',
@@ -2680,14 +2699,12 @@
         (eager ? '' : 'loading="lazy" ') + 'decoding="async">'
       // A city with no photograph keeps a drawn plate, so the card's shape and band height do
       // not depend on an image existing. Since M11 the plate also carries the city's coast:
-      // seven of the twelve have no photograph, and a bare icon says very little.
       : icon('city', (options && options.size) || 24) + cityThumbCoast(zone);
     return '<span class="city-thumb band-' + band + '" data-band="' + escapeHtml(band) +
       '" aria-hidden="true">' + inner + '</span>';
   }
 
   /* A short progress meter for the risk score: the fill is the score, the ticks are the
-   * documented band boundaries. Decorative - the score is written next to it in figures, and
    * the band in words - so a reader who cannot see the bar loses nothing. */
   function cityMeter(zone) {
     var latest = zone && zone.latest;
@@ -2840,6 +2857,10 @@
     renderIncidents: renderIncidents,
     renderMetricRow: renderMetricRow,
     renderZoneCard: renderZoneCard,
+    projectCoast: projectCoast,
+    MAP_BOUNDS: MAP_BOUNDS,
+    renderMapMarker: renderMapMarker,
+    renderMapDetail: renderMapDetail,
     // The city image mapping is exported as data plus one lookup, so a check can assert the
     // mapping itself and that every mapped file is really in web/ - without rebuilding the table.
     cityImageFor: cityImageFor,
