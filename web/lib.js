@@ -2680,7 +2680,7 @@
         (eager ? '' : 'loading="lazy" ') + 'decoding="async">'
       // A city with no photograph keeps a drawn plate, so the card's shape and band height do
       // not depend on an image existing. Since M11 the plate also carries the city's coast:
-      // ten of the fifteen cities have no photograph, and a bare icon says very little.
+      // seven of the twelve have no photograph, and a bare icon says very little.
       : icon('city', (options && options.size) || 24) + cityThumbCoast(zone);
     return '<span class="city-thumb band-' + band + '" data-band="' + escapeHtml(band) +
       '" aria-hidden="true">' + inner + '</span>';

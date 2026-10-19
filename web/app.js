@@ -2094,7 +2094,7 @@
 
   /* -------------------------------------------------------------- Cities page ---
    *
-   * Fifteen cities on one page: find one, filter the list, order it - all client-side from the
+   * Twelve cities on one page: find one, filter the list, order it - all client-side from the
    * payload already in memory, so no filter change costs a request.
    */
 
@@ -2180,7 +2180,7 @@
   }
 
   function bindCityControls() {
-    // typing filters the list in place: no request, and no debounce needed for fifteen rows
+    // typing filters the list in place: no request, and no debounce needed for twelve rows
     bindTo('cities-search', 'input', function (event) {
       cityFilters().query = String(event.target.value || '');
       renderCitiesPage();

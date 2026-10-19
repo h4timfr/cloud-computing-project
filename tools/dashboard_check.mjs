@@ -3473,8 +3473,21 @@ check('M11.2: the chips wrap, and nothing in the bar is set to nowrap', () => {
 check('M11.2: one metric is four columns, and the phone gets two lines', () => {
   assert.match(cssSource, /\.metric \{\s*display: grid;/,
     'a metric row is not a grid');
-  assert.match(cssSource, /\.metric \{\s*display: grid;\s*grid-template-columns:\s*minmax\(130px, 1fr\) auto minmax\(90px, auto\)/,
+  // Four declared tracks, and floors that fit the narrowest desktop card. The earlier version of this
+  // check pinned the exact numbers (130, 90, 72), which is how a row needing about 356px of a 322px
+  // column passed the suite while the browser clipped it. This is arithmetic now, so the numbers may
+  // move as long as they keep fitting.
+  const declared = cssSource.match(/\.metric \{\s*display: grid;\s*grid-template-columns:\s*([^;]+);/);
+  const columns = declared ? declared[1].trim() : '';
+  const tracks = columns.match(/minmax\([^)]*\)/g) || [];
+  assert.ok(tracks.length === 3 && /(^|\s)auto(\s|$)/.test(columns),
     'the metric row does not declare four columns: name, chip, value, bar');
+  const floors = tracks.reduce((total, track) => {
+    const floor = track.match(/^minmax\((\d+)px/);
+    return total + (floor ? Number(floor[1]) : 0);
+  }, 0);
+  assert.ok(floors + 44 + 20 <= 322,
+    `the metric row's floors and chip need ${floors + 44 + 20}px, and the narrowest desktop card gives 322px`);
   assert.match(cssSource, /\.metric-name \{[^}]*min-width: 0/, 'a metric name is not allowed to shrink');
   assert.match(cssSource, /\.metric-name \{[^}]*overflow-wrap: break-word/, 'a long metric name cannot wrap');
   assert.match(cssSource, /\.metric-value \{[^}]*font-variant-numeric: tabular-nums/,
