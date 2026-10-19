@@ -378,8 +378,8 @@
             </svg>
           </span>
           <div>
-            <h3 class="block-title" id="subscribe-title">Get flood alerts by email</h3>
-            <p>Receive an email when FloodPulse detects WARNING or CRITICAL flood risk.</p>
+            <h3 class="block-title" id="subscribe-title">Get flood-risk alerts by email</h3>
+            <p>Receive an email when a monitored city reaches WARNING or CRITICAL.</p>
           </div>
         </div>
 
@@ -396,13 +396,9 @@
         </form>
 
         <div class="subscribe-notes">
-          <p id="subscribe-note" class="muted small">You’ll receive a confirmation email from Amazon Web Services.
-            Your subscription becomes active only after you confirm it.</p>
-          <p class="muted small">FloodPulse does not send marketing email. Email addresses are used only for this SNS
-            notification subscription: Amazon SNS holds the address, and FloodPulse itself keeps no address at all —
-            just a count that limits how often one address can ask.</p>
-          <p class="muted small">Amazon SNS includes its own unsubscribe link in the alert emails it sends for this
-            topic, so you can stop them from the email itself. FloodPulse has no unsubscribe page of its own.</p>
+          <p id="subscribe-note" class="muted small">You’ll receive a confirmation email.
+            Confirm it to activate alerts.</p>
+          <p class="muted small">No marketing email. You can unsubscribe from any alert email.</p>
         </div>
       </div>
     </section>
@@ -442,11 +438,9 @@
         </ul>
       </div>
       <p class="muted small">
-        Source: <code>GET /incidents?limit=20</code>. A city opens exactly one incident when its
-        hysteresis-filtered class reaches WARNING or CRITICAL, escalates in place if it later reaches
-        CRITICAL, and closes once the city is back to NORMAL — the record is kept as history either way.
-        Alerts are published to one notification topic, rate-limited per city and severity; the topic
-        itself is never exposed to this page.
+        A city opens one incident when its risk reaches WARNING or CRITICAL, escalates in place if it
+        later reaches CRITICAL, and closes once the city is back to NORMAL — the record is kept as
+        history either way. Alert delivery uses one alert service, rate-limited per city and severity.
       </p>
     </details>
   </section>

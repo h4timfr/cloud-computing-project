@@ -829,7 +829,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
   check('the alerts view shows the alerting status and every incident the API returned', () => {
     clickNav(dom, 'alerts');
     assert.ok(dom.text('incidents-alerting').length > 0, 'the SNS status line is empty');
-    assert.match(dom.text('incidents-alerting'), /SNS alerts/);
+    assert.match(dom.text('incidents-alerting'), /Email alerts are active/);
     const all = incidents ? incidents.incidents || [] : [];
     const openCount = all.filter((incident) => incident.current_status === 'OPEN').length;
     const closedCount = all.length - openCount;
@@ -1126,8 +1126,8 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     const panel = dom.html('alerts-delivery');
     assert.match(panel, /Alert publishing/, 'the panel does not state the publishing state');
     assert.match(panel, /Configured|Not configured/, 'the publishing state has no value');
-    assert.match(panel, /publishe?d? to the notification topic/i,
-      'the panel does not use the wording the record supports');
+  assert.ok(!/notification topic|Amazon SNS/i.test(panel),
+    'the panel names the operator service instead of the state it can see');
     // the two things the browser must never claim
     assert.ok(!/email (was )?sent|delivered to|received by/i.test(panel),
       'the panel claims a delivery it cannot know about');
@@ -1137,7 +1137,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     const active = dom.html('alerts-active');
     const openIncidents = (incidents ? incidents.incidents || [] : []).filter((i) => i.current_status === 'OPEN');
     if (openIncidents.some((i) => (i.alert_count || 0) > 0)) {
-      assert.match(active, /Alert published to the notification topic/,
+assert.match(active, /An alert was published for this incident/,
         'an incident with a recorded publish does not say so');
     }
     if (openIncidents.some((i) => (i.alert_count || 0) === 0)) {

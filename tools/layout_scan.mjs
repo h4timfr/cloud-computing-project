@@ -44,6 +44,8 @@ const MEASURE = {
         height: Math.round(rect(card).height),
         thumb: thumb ? [Math.round(thumb.width), Math.round(thumb.height)] : null,
         photo: Boolean(card.querySelector('.city-photo')),
+        natural: (() => { const img = card.querySelector('.city-photo'); return img ? [img.naturalWidth, img.naturalHeight] : null; })(),
+        plate: Boolean(card.querySelector('.city-thumb-coast')),
         title: off(card.querySelector('h3'), top),
         place: off(card.querySelector('.zone-place'), top),
         pill: off(card.querySelector('.pill'), top),
@@ -133,17 +135,30 @@ const MEASURE = {
     const sections = [...document.querySelectorAll('#view-data .about-card, #view-data .card, #view-data > section')]
       .filter((node) => getComputedStyle(node).display !== 'contents');
     const insets = sections.map((node) => ({
-      cls: String(node.className).slice(0, 34),
+      cls: (node.id ? '#' + node.id + ' ' : '') + String(node.className).slice(0, 34),
       paddingLeft: getComputedStyle(node).paddingLeft,
+      first: (() => {
+        const child = node.querySelector('h3, h4, p');
+        return child ? child.tagName.toLowerCase() + ':' + (child.textContent || '').trim().slice(0, 28) : null;
+      })(),
       inner: (() => {
-        const first = node.querySelector('h3, h4, p, .kv');
-        return first ? Math.round(rect(first).left - rect(node).left) : null;
+        const first = node.querySelector('h3, h4, p');
+        if (!first) return null;
+        // Against the panel's own border box: a line inside the padding is an inset, and only a line
+        // that leaves the box is an overflow.
+        return Math.round(rect(first).left - rect(node).left);
       })()
     }));
     const flagged = [...document.querySelectorAll('#view-data p, #view-data li')]
       .map((node) => (node.textContent || '').trim().replace(/\\s+/g, ' '))
       .filter((line) => /university cloud-computing/i.test(line));
-    return { route: '/data', insets, university: flagged.slice(0, 4), overflow: document.documentElement.scrollWidth - window.innerWidth };
+    const insetOf = (selector) => {
+      const node = document.querySelector(selector);
+      return node ? getComputedStyle(node).paddingLeft : null;
+    };
+    return { route: '/data', insets, university: flagged.slice(0, 4),
+      named: { selection: insetOf('#city-selection + .card'), architecture: insetOf('.tech .card') },
+      overflow: document.documentElement.scrollWidth - window.innerWidth };
   })()`
 };
 
@@ -203,8 +218,15 @@ for (const width of widths) {
   await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: width < 768 });
   for (const [name, route] of Object.entries(ROUTES)) {
     await send('Page.navigate', { url: 'about:blank' });
-    await send('Page.navigate', { url: `${site}/#${route.hash}${suffix}` });
+    await send('Page.navigate', { url: `${site}/${suffix}#${route.hash}` });
     await sleep(2600);
+    // A photograph below the fold is not loaded until something asks for it. Ask, then wait for the
+    // decode, so "naturalWidth > 0" means "this file is a real image" rather than "this one was visible".
+    await evaluate(`(async () => {
+      document.querySelectorAll('img[loading="lazy"]').forEach((img) => { img.loading = 'eager'; });
+      await Promise.all([...document.images].map((img) => img.decode().catch(() => {})));
+      return true;
+    })()`);
     const ready = await evaluate(`Boolean(document.querySelector(${JSON.stringify(route.needs)}))`);
     if (!ready) {
       note(name, width, `nothing rendered for ${route.needs}`);
@@ -220,6 +242,14 @@ for (const width of widths) {
       if (data.cards.some((card) => !card.photo)) {
         note(name, width, `a monitored city has no photograph: ` +
           data.cards.filter((card) => !card.photo).map((card) => card.key).join(', '));
+      }
+      const undecoded = data.cards.filter((card) => !card.natural || !card.natural[0]);
+      if (undecoded.length) {
+        note(name, width, `photograph(s) never decoded: ${undecoded.map((card) => card.key).join(', ')}`);
+      }
+      const plated = data.cards.filter((card) => card.plate);
+      if (plated.length) {
+        note(name, width, `the drawn plate is standing in for: ${plated.map((card) => card.key).join(', ')}`);
       }
       if (spread(thumbs) > 1) note(name, width, `photograph boxes differ by ${spread(thumbs)}px`);
       if (new Set(ratios).size > 1) note(name, width, `photograph ratios differ: ${[...new Set(ratios)].join(' ')}`);
@@ -265,14 +295,21 @@ for (const width of widths) {
       note(name, width, `operator wording is visible: "${data.flagged[0]}"`);
     }
     if (name === 'data') {
-      const paddings = data.insets.map((row) => row.paddingLeft);
-      if (new Set(paddings).size > 2) {
-        note(name, width, `sections use ${new Set(paddings).size} different insets: ${[...new Set(paddings)].join(' ')}`);
+      const thin = data.insets.filter((row) => parseFloat(row.paddingLeft) < 16);
+      if (thin.length) {
+        note(name, width, `${thin.length} panel(s) are inset by less than 16px: ` +
+          thin.map((row) => `${row.cls || 'section'} ${row.paddingLeft}`).join(', '));
       }
-      const nested = data.insets.filter((row) => row.inner !== null && parseFloat(row.paddingLeft) - row.inner > 1);
-      if (nested.length) {
-        note(name, width, `${nested.length} section(s) start their first child left of the section inset: ` +
-          nested.map((row) => `${row.cls || 'section'} -${Math.round(parseFloat(row.paddingLeft) - row.inner)}px`).join(', '));
+      const flush = data.insets.filter((row) => row.inner !== null && row.inner < -1);
+      if (flush.length) {
+        note(name, width, `${flush.length} panel(s) put their first line left of their own content edge: ` +
+          flush.map((row) => `${row.cls || 'section'} ${row.inner}px [${row.first}]`).join(', '));
+      }
+      for (const [label, measure] of [['City selection', data.named && data.named.selection],
+                                    ['Architecture', data.named && data.named.architecture]]) {
+        if (!measure || parseFloat(measure) < 16) {
+          note(name, width, `the ${label} panel has no shared inset (${measure})`);
+        }
       }
       if (data.university.length) {
         note(name, width, `"university cloud-computing project" is still on the Data page: "${data.university[0].slice(0, 60)}"`);

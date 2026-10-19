@@ -1015,7 +1015,8 @@
     var rate = cooldown === null ? '' : ' — at most one email per city every ' + formatDuration(cooldown);
     // Publishing being armed is not the same as somebody receiving it, and the browser is
     // never told about subscribers, so the copy must not promise delivery.
-    return 'Email alerts are active' + rate;
+    return 'Email alerts are active' + rate +
+      ' \u00b7 whether an email reached an inbox is not confirmed here';
   }
 
   function incidentsMeta(payload) {
@@ -2255,7 +2256,7 @@
     var armed = !!(alerting && alerting.enabled);
     var count = toNumber(incident && incident.alert_count);
     if (count !== null && count > 0) {
-      return { tone: 'ok', label: 'An email alert was sent for this incident',
+      return { tone: 'ok', label: 'An alert was published for this incident',
         detail: 'Accepted by the alert service. Whether an email reached a subscriber is not visible from this page.' };
     }
     if (!armed) {
@@ -2287,7 +2288,7 @@
       row(armed ? 'check' : 'info', 'Alert publishing',
         armed ? 'Configured' : 'Not configured',
         armed ? 'ok' : 'quiet',
-        armed ? 'Incidents at WARNING or CRITICAL publish to the notification topic.' : '') +
+        armed ? 'Incidents at WARNING or CRITICAL are sent to the alert service.' : '') +
       row('bell', 'Alert rate limit',
         cooldown === null ? 'not reported' : 'At most one alert per city every ' + formatDuration(cooldown) + ' per severity',
         'quiet', severities ? 'Alerting severities: ' + severities + '.' : '') +

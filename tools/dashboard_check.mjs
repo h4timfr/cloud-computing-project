@@ -2741,9 +2741,9 @@ check('M10: the subscription card sits after the alerts and before the system st
   // it stands out without reading as an advertisement: a mail icon, a heading, one sentence
   const card = subscriptionCard();
   assert.match(card, /class="subscribe-glyph" aria-hidden="true"/, 'the card has no icon');
-  assert.match(card, /<h3 class="block-title" id="subscribe-title">Get flood alerts by email<\/h3>/,
+  assert.match(card, /<h3 class="block-title" id="subscribe-title">Get flood-risk alerts by email<\/h3>/,
     'the card heading is not the one the brief asks for');
-  assert.match(card, /Receive an email when FloodPulse detects WARNING or CRITICAL flood risk\./,
+  assert.match(card, /Receive an email when a monitored city reaches WARNING or CRITICAL flood risk\./,
     'the card does not say what the alerts are');
   assert.ok(!/buy|free trial|upgrade|subscribe now|newsletter/i.test(card),
     'the card reads like marketing');
@@ -2769,14 +2769,13 @@ check('M10: the subscription form is labelled, bounded and honest', () => {
   assert.match(card, /<p id="subscribe-result" class="subscribe-result" role="status" aria-live="polite" hidden>/,
     'the outcome is not announced politely, or is not hidden until there is one');
   // the three sentences the brief requires, verbatim
-  assert.match(card, /You[’']ll receive a confirmation email from Amazon Web Services\.\s*Your subscription becomes active only after you confirm it\./,
+assert.match(card, /You[\u2019']ll receive a confirmation email\.\s*Confirm it to activate alerts\./,
     'the confirmation note is missing or reworded');
-  assert.match(card, /FloodPulse does not send marketing email\. Email addresses are used only for this SNS\s*notification subscription/,
-    'the privacy note is missing or reworded');
-  assert.match(card, /Amazon SNS includes its own unsubscribe link/, 'there is no unsubscribe instruction');
+  assert.match(card, /No marketing email\. You can unsubscribe from any alert email\./, 'the privacy note is missing or reworded');
+  assert.match(card, /You can unsubscribe from any alert email\./, 'there is no unsubscribe instruction');
   // and it must not promise something AWS has not done yet
   assert.ok(!/you are subscribed|subscribed successfully|you will now receive/i.test(card),
-    'the card claims a subscription before SNS has confirmed anything');
+    'the card claims a subscription that has not been confirmed');
   // No infrastructure detail on a public page. The API's own region and host are necessarily
   // present (the `data-api` attribute and the policy's connect-src), so they are allowed as
   // origins and nothing more: no ARN, no account id, no topic name, no SDK field name.
@@ -2807,7 +2806,7 @@ check('M10: the four outcome messages exist once, in one place', () => {
       || appSource.includes(message.replace(/\u2019/g, '\\u2019'));
     assert.ok(!inApp, `"${message}" is duplicated in app.js`);
   });
-  assert.match(libSource, /We sent a subscription confirmation request through Amazon SNS\. Click/,
+  assert.match(libSource, /receive a confirmation email[\s\S]{0,90}Confirm it to activate/,
     'the accepted state does not explain the confirmation email');
   assert.match(libSource, /function subscriptionKindForStatus\(status\)/,
     'there is no single mapping from an HTTP outcome to a message');
@@ -2823,7 +2822,7 @@ check('M10: the page never claims a subscription the API did not confirm', () =>
       `${name} claims a subscription that SNS has not confirmed`);
   });
   // and the one accepted wording is the confirmation request, not the subscription
-  assert.ok(libSource.includes('We sent a subscription confirmation request through Amazon SNS'),
+  assert.ok(libSource.includes('receive a confirmation email'),
     'the accepted state no longer describes a confirmation request');
 });
 

@@ -1,4 +1,4 @@
-# Offline verifier for the deployment script's safety logic.
+﻿# Offline verifier for the deployment script's safety logic.
 #
 # infra/deploy.ps1 is the only file that can change the live stack, and the one file the test
 # suite cannot simply execute: a real run needs credentials and an account. So this script lifts
@@ -209,7 +209,29 @@ $webDir = Join-Path $repoRoot 'web'
 $DashboardBucket = 'floodpulse-dashboard-probe'
 $DryRun = $true
 $assets = @(Get-DashboardAssets)
-Assert-True ($assets.Count -eq 20) "the dashboard table lists twenty objects - the M10 ten (four code files, the backdrop and five nightscapes) plus the ten photographs M11 added (got $($assets.Count))"
+# M15.2: the monitored fleet grew, so a fixed object count is no longer the contract it was meant to be.
+# What matters is that the four code files and every active city's own photograph are in the table, that
+# each photograph ships with the Content-Type a browser will draw, and that nothing in web/ is left
+# behind: a missing row is a city card that ships without its picture.
+$activeImages = @(
+    'mumbai-nightscape.webp', 'surat.webp', 'kochi-nightscape.webp', 'mangaluru.webp',
+    'kozhikode.webp', 'kolkata.webp', 'puri.webp', 'paradip.webp',
+    'visakhapatnam.webp', 'chennai-nightscape.webp', 'puducherry.webp', 'portblair.webp'
+)
+foreach ($code in @('index.html', 'styles.css', 'lib.js', 'app.js')) {
+    Assert-True (@($assets | Where-Object { $_.File -eq $code }).Count -eq 1) "the dashboard table lists web/$code exactly once"
+}
+foreach ($image in $activeImages) {
+    $rows = @($assets | Where-Object { $_.File -eq $image })
+    Assert-True ($rows.Count -eq 1) "the dashboard table lists web/$image for its active city"
+    if ($rows.Count -eq 1) {
+        Assert-True ($rows[0].Type -eq 'image/webp') "web/$image ships as image/webp (got '$($rows[0].Type)')"
+    }
+}
+$webImages = @(Get-ChildItem (Join-Path $webDir '*.webp') | ForEach-Object { $_.Name })
+foreach ($image in $webImages) {
+    Assert-True (@($assets | Where-Object { $_.File -eq $image }).Count -eq 1) "web/$image is in the dashboard table"
+}
 foreach ($asset in $assets) {
     Assert-True (Test-Path (Join-Path $webDir $asset.File)) "web/$($asset.File) exists"
     Assert-False ($asset.Cache -match 'immutable') "web/$($asset.File) is not marked immutable"
