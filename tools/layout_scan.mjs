@@ -204,6 +204,10 @@ const evaluate = async (expression) => {
 
 await send('Page.enable');
 await send('Runtime.enable');
+// What is measured must be what the site published, not what this profile happens to remember: the
+// public assets carry a day of max-age, and a stale script would look like a mapping failure.
+await send('Network.enable');
+await send('Network.setCacheDisabled', { cacheDisabled: true });
 
 const failures = [];
 const note = (route, width, message) => failures.push(`${route} @${width}px: ${message}`);
