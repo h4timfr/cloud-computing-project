@@ -2743,7 +2743,7 @@ check('M10: the subscription card sits after the alerts and before the system st
   assert.match(card, /class="subscribe-glyph" aria-hidden="true"/, 'the card has no icon');
   assert.match(card, /<h3 class="block-title" id="subscribe-title">Get flood-risk alerts by email<\/h3>/,
     'the card heading is not the one the brief asks for');
-  assert.match(card, /Receive an email when a monitored city reaches WARNING or CRITICAL flood risk\./,
+  assert.match(card, /Receive an email when a monitored city reaches WARNING or CRITICAL\./,
     'the card does not say what the alerts are');
   assert.ok(!/buy|free trial|upgrade|subscribe now|newsletter/i.test(card),
     'the card reads like marketing');
