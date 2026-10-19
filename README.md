@@ -1927,6 +1927,43 @@ deployment those two entries fail, which is how they were confirmed to bite.
 4. **The backdrop is still a 930×312 source** upscaled 2.06× at 1920 px, so it is soft before any of
    this is considered. That is unchanged from M10.1 and still not fixed by inventing pixels.
 
+## M15 - Coastal coverage map
+
+The Cities page opens with a coastal coverage map of the monitored fleet: where the cities are, which
+coast each one belongs to, which one currently carries the highest monitored risk, which ones match the
+active search and filters, and how to jump into a city's detail page. The legend carries the same five
+risk states as the rest of the page. The map is a navigation and coverage visual, not a hazard product.
+
+The map visualizes monitored city locations only; it is not a state or national flood-risk surface.
+
+Projection: one bounded equirectangular window, latitude 5.5 to 26 N and longitude 66.5 to 95.5 E, ten
+units per degree of latitude, longitude scaled by cos(22 deg) so the peninsula is not stretched
+sideways, drawn in a 269 x 205 viewBox. Marker positions come from each zone's own latitude and
+longitude in the API payload, so changing the grid's sort order never moves a marker.
+
+Andaman and Nicobar: no inset and no second frame. The window is wide enough to hold Port Blair with a
+25-unit margin (about a tenth of the height), so the mainland coast and the islands share one frame and
+neither is displaced.
+
+Outline source and licence: the coastline is a schematic drawn for this page from the fleet's own
+coordinate range; it is not a survey, a chart or a political boundary. No external map service, tile
+server, outline file or third-party script is used, and no attribution is invented for data that was
+not used. Web Mercator (EPSG:3857) tiles can also only be read as national/state risk surfaces when a
+provider is involved, so they are out of scope here.
+
+Interaction: markers are real links to #/cities/<zone_id> and stand on the same risk colour tokens as
+the cards, with the band named in text as well as colour. Keyboard focus and pointer hover both select
+a city, and the panel beside the map shows its city, state, coast, risk level, score, rainfall and
+freshness, plus a route into the detail page. Stale markers are hollow rather than coloured, matched
+markers are solid, filtered-out markers dim, and the highest monitored score is emphasised by size and
+a thin ring. If the payload is missing, the map dims, the markers clear and the panel says "City risk
+data is temporarily unavailable." - no placeholder markers are drawn.
+
+Limitations: the fleet is twelve monitored coastal cities, so coverage follows the fleet and not the
+whole coast; the outline is schematic; the map adds no data of its own, makes no separate API call and
+does not predict, forecast or represent inundation, rainfall radar, weather warnings or government
+advice.
+
 ## M14 overnight quality pass (frontend only, deployed)
 
 Two halves: measure the product properly, and make byte room for what the measuring found.

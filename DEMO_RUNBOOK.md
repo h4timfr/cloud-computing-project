@@ -420,3 +420,5 @@ coasts, with no coast-wide and no national risk score anywhere in the system, an
 page's City selection section saying so. Do not accept the framing that these are "the most
 flood-prone cities in India": the sources document exposure for each city, and none of them
 ranks the fleet.
+
+Cities -> coastal coverage map -> select highest-risk city -> open city detail
