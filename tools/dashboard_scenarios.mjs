@@ -322,12 +322,18 @@ async function main() {
     await runtime.settle();
 
     await check('a partial provider failure is per zone and never blanks the fleet', () => {
-      assert.match(dom.text('conn-detail'), /latest weather fetch failed \(http_503\)/);
+      const detail = dom.text('conn-detail');
+      assert.match(detail, /weather refresh is temporarily delayed/i,
+        'a provider failure is explained in plain words on the public banner');
+      assert.ok(!/http_\d\d\d/i.test(detail), 'a provider status code must not reach the public sentence');
       const ranking = dom.html('ranking');
       live.payload.zones.forEach((zone) => {
         assert.ok(ranking.includes(zone.name), `the ranking lost ${zone.name} because one zone failed`);
       });
-      assert.match(dom.text('summary-weather'), /fetch failing on 1 zone|http_503/);
+      // the code itself is not lost: the technical line on the Data page still names it, which is where
+      // the brief keeps provider diagnostics.
+      assert.match(dom.text('summary-weather'), /fetch failing on 1 zone/);
+      assert.match(dom.text('summary-weather'), /http_503/, 'the technical line keeps the provider code');
       assert.equal(dom.node('summary-freshness').getAttribute('data-feed-state'), 'failed');
       const card = dom.stub('zones', '[data-zone="' + failedZone + '"]');
       assert.match(card.querySelector('[data-f="provenance"]').innerHTML, /fetch failed/,

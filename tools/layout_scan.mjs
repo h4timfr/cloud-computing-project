@@ -133,7 +133,13 @@ const MEASURE = {
   data: `(() => {
     const rect = (node) => node ? node.getBoundingClientRect() : null;
     const sections = [...document.querySelectorAll('#view-data .about-card, #view-data .card, #view-data > section')]
-      .filter((node) => getComputedStyle(node).display !== 'contents');
+      .filter((node) => getComputedStyle(node).display !== 'contents')
+      // A panel inside a collapsed disclosure is not on screen: its text has no box at all, so measuring
+      // it against the panel reported a phantom inset of minus the panel's own left edge.
+      .filter((node) => {
+        const disclosure = node.closest('details');
+        return !disclosure || disclosure.open;
+      });
     const insets = sections.map((node) => ({
       cls: (node.id ? '#' + node.id + ' ' : '') + String(node.className).slice(0, 34),
       paddingLeft: getComputedStyle(node).paddingLeft,
