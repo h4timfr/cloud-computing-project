@@ -199,7 +199,11 @@ NEEDLES = {
         "the desktop bar is one row": "grid-template-areas: 'search coast risk sort';",
         "the tablet bar is two rows": "grid-template-areas: 'search sort' 'coast risk';",
         "the phone bar is one column": "grid-template-areas: 'search' 'coast' 'risk' 'sort';",
-        "a metric row declares four columns": "grid-template-columns: minmax(130px, 1fr) auto minmax(90px, auto)",
+        # M14: pinned to the measured floors. That the floors fit the narrowest desktop card is
+        # asserted as arithmetic in tools/dashboard_check.mjs, where a layout change is made; this
+        # file only checks that what S3 serves is what the repository holds.
+        "a metric row declares four columns that fit a 768px card":
+        "grid-template-columns: minmax(84px, 1fr) auto minmax(64px, auto) minmax(44px, 1.1fr)",
         "the phone metric row is two lines": "grid-template-areas: 'name source' 'value track';",
         # M10: the spotlight sentence is set as prose, and the model's own words are set apart
         "the spotlight sentence is styled": ".hero-reason",
