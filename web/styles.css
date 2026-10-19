@@ -3319,5 +3319,16 @@ main, .topbar, .footer { max-width: 100%; }
 
 /* The Data page's selection and architecture panels are .card elements used as text panels, and .card
    carries no padding of its own: their copy sat against the border while every sibling panel was inset. */
-#city-selection + .card, .tech .card, #methodology + .card, #provenance + .card, #references + .card {
+#city-selection + .card, .tech .card {
   padding: 20px 22px; }
+
+/* The pipeline reads as stages, not as a sentence: each stage is a chip, the arrows are their own items
+   so a line can break between two stages and never inside one. */
+.pipeline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pipe-arrow { color: var(--slate-400); font-size: 0.74rem; }
+
+/* A city card is a two-row grid, and the grid default (align-content: stretch) shares the row's spare
+   height out to the picture row as well as the text: a card whose state and coast line wraps to a second
+   line then starts its picture lower, so the titles across one row sit 16-18px apart. The rows keep their
+   own height instead and any slack stays at the foot of the card. */
+.city-card { align-content: start; }
