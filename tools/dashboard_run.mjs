@@ -1840,8 +1840,10 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     assert.ok(request.startsWith(apiBaseForRun), `the request went to "${request}"`);
     const words = resultText(form.dom);
     assert.match(words, /Check your inbox/, `the accepted state reads "${words}"`);
-    assert.match(words, /confirmation request through Amazon SNS/, 'the accepted state does not name SNS');
-    assert.match(words, /Confirm subscription/, 'the accepted state does not tell the visitor what to click');
+    assert.match(words, /confirmation email/i, 'the accepted state does not explain the confirmation email');
+    assert.match(words, /Confirm it to activate/i, 'the accepted state does not tell the visitor what to do');
+    assert.ok(!/Amazon|SNS|notification topic/i.test(words),
+      `the accepted state names the provider's service: "${words}"`);
     // the claim the brief forbids: nothing may say the address is subscribed
     assert.ok(!/you are subscribed|subscribed successfully|you will now receive/i.test(words),
       `the form claims a subscription that has not happened: "${words}"`);

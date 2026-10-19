@@ -2530,6 +2530,14 @@ check('M9: the front-end budget still holds', () => {
     'patna.webp',
     'pune.webp',
     'visakhapatnam.webp',
+    // M15.2: the coastal fleet's own photographs, one per monitored city
+    'surat.webp',
+    'mangaluru.webp',
+    'kozhikode.webp',
+    'puri.webp',
+    'paradip.webp',
+    'puducherry.webp',
+    'portblair.webp',
     'weather-rain.svg',
   ];
   const files = fs.readdirSync(webDir).sort();
@@ -2921,7 +2929,14 @@ check('M10.1: the zone -> image mapping is explicit, complete and closed', () =>
     'city-pune': 'pune.webp',
     'city-ahmedabad': 'ahmedabad.webp',
     'city-jaipur': 'jaipur.webp',
-    'city-lucknow': 'lucknow.webp'
+    'city-lucknow': 'lucknow.webp',
+    'city-surat': 'surat.webp',
+    'city-mangaluru': 'mangaluru.webp',
+    'city-kozhikode': 'kozhikode.webp',
+    'city-puri': 'puri.webp',
+    'city-paradip': 'paradip.webp',
+    'city-puducherry': 'puducherry.webp',
+    'city-port-blair': 'portblair.webp'
   };
   // copied into this realm before comparing: the sandbox's objects have another prototype
   const table = Object.fromEntries(Object.entries(FP.CITY_IMAGES));
@@ -2940,6 +2955,28 @@ check('M10.1: the zone -> image mapping is explicit, complete and closed', () =>
   assert.match(libSource, /var src = cityImageFor\(zone\);/, 'the image is not read from the table');
   assert.ok(!/['"][a-z-]*' \+\s*zone/.test(libSource) && !/\+\s*['"]-nightscape/.test(libSource),
     'an image path is assembled from a zone field instead of read from the table');
+});
+
+check('M15.2: every active coastal city resolves to its own photograph', () => {
+  // the twelve monitored coastal cities, by zone id exactly as the payload names them
+  const fleet = ['city-mumbai', 'city-surat', 'city-kochi', 'city-mangaluru', 'city-kozhikode',
+    'city-kolkata', 'city-puri', 'city-paradip', 'city-visakhapatnam', 'city-chennai',
+    'city-puducherry', 'city-port-blair'];
+  assert.equal(fleet.length, 12, 'the monitored coastal fleet is twelve cities');
+  const files = fleet.map((id) => FP.cityImageFor({ zone_id: id }));
+  files.forEach((file, index) => {
+    assert.ok(file, `${fleet[index]} has no image and would fall back to the drawn plate`);
+  });
+  assert.equal(new Set(files).size, fleet.length, 'two coastal cities share one photograph');
+  files.forEach((file, index) => {
+    const bytes = fs.readFileSync(path.join(webDir, file));
+    assert.equal(bytes.subarray(0, 4).toString('ascii'), 'RIFF', `${file} is not a RIFF container`);
+    assert.equal(bytes.subarray(8, 12).toString('ascii'), 'WEBP', `${file} is not WebP`);
+    assert.ok(!bytes.includes(Buffer.from('EXIF')), `${file} still carries an EXIF block`);
+    assert.ok(!bytes.includes(Buffer.from('ICCP')), `${file} still carries an ICC profile`);
+    assert.ok(!bytes.includes(Buffer.from('XMP ')), `${file} still carries an XMP packet`);
+    assert.equal(FP.cityImageFor({ zone_id: fleet[index] }), file, `${fleet[index]} is unstable`);
+  });
 });
 
 check('M10.1: every mapped image is a real WebP inside its cap and its slot', () => {

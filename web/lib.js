@@ -413,7 +413,7 @@
   function liveFeedDetail(feed) {
     if (!feed.enabled) return 'weather provider disabled — serving the last fetched values';
     if (feed.failedZones.length) {
-      return 'latest weather fetch failed (' + feed.failedZones[0].error + ') — showing the last fetched values';
+      return 'live weather refresh is temporarily delayed — showing the latest available readings';
     }
     if (feed.feedAgeSeconds === null) return 'no weather fetched yet for this fleet';
     var parts = ['weather feed ' + agePhrase(feed.feedAgeSeconds)];
@@ -431,7 +431,7 @@
   function liveFeedAnnouncement(feed) {
     if (!feed.enabled) return 'weather provider disabled — serving the last fetched values';
     if (feed.failedZones.length) {
-      return 'latest weather fetch failed (' + feed.failedZones[0].error + ') — showing the last fetched values';
+      return 'live weather refresh is temporarily delayed — showing the latest available readings';
     }
     if (feed.feedAgeSeconds === null) return 'no weather fetched yet for this fleet';
     if (feed.state === 'stale') return 'weather feed is live but the provider has missed a full refresh cycle';
@@ -1009,13 +1009,13 @@
      rate-limited. */
   function alertingNote(alerting) {
     if (!alerting || !alerting.enabled) {
-      return 'SNS alerts: not configured yet — incidents are still recorded';
+      return 'Email alerts are not configured yet — incidents are still recorded';
     }
     var cooldown = toNumber(alerting.cooldown_seconds);
-    var rate = cooldown === null ? '' : ' — max 1 alert per zone and severity every ' + formatDuration(cooldown);
+    var rate = cooldown === null ? '' : ' — at most one email per city every ' + formatDuration(cooldown);
     // Publishing being armed is not the same as somebody receiving it, and the browser is
     // never told about subscribers, so the copy must not promise delivery.
-    return 'SNS alerts armed' + rate + ' · delivery to a subscriber is not confirmed here';
+    return 'Email alerts are active' + rate;
   }
 
   function incidentsMeta(payload) {
@@ -2013,7 +2013,7 @@
         'It is not a forecast. It describes the current reading; it does not predict when or whether flooding will occur.',
         'No real drain, water-level or flow sensors exist in this project, so three of the five inputs are simulated.',
         'The live rainfall comes from a provider grid point near the city centre, not from a street-level gauge, and has the provider\'s own update latency (up to about an hour for the hourly field).',
-        'The bands are illustrative levels for a university project. FloodPulse is not an official flood warning service and must never be used as one.'
+        'The bands are illustrative levels for an experimental prototype. FloodPulse is not an official flood warning service and must never be used as one.'
       ],
       whySimulated: 'A real telemetry network for drains, water level and flow would need physical sensors in each city. ' +
         'FloodPulse drives those channels from a simulator so the whole pipeline (ingest, scoring, incidents, alerts) can be ' +
@@ -2255,8 +2255,8 @@
     var armed = !!(alerting && alerting.enabled);
     var count = toNumber(incident && incident.alert_count);
     if (count !== null && count > 0) {
-      return { tone: 'ok', label: 'Alert published to the notification topic',
-        detail: 'Accepted by the notification service. Whether an email reached a subscriber is not visible from this page.' };
+      return { tone: 'ok', label: 'An email alert was sent for this incident',
+        detail: 'Accepted by the alert service. Whether an email reached a subscriber is not visible from this page.' };
     }
     if (!armed) {
       return { tone: 'quiet', label: 'Alert publishing not configured',
@@ -2652,6 +2652,13 @@
     /* City imagery: an explicit, trusted, local mapping from a zone_id to a file. */
 
   var CITY_IMAGES = {
+    'city-surat': 'surat.webp',
+    'city-mangaluru': 'mangaluru.webp',
+    'city-kozhikode': 'kozhikode.webp',
+    'city-puri': 'puri.webp',
+    'city-paradip': 'paradip.webp',
+    'city-puducherry': 'puducherry.webp',
+    'city-port-blair': 'portblair.webp',
     'city-chennai': 'chennai-nightscape.webp',
     'city-mumbai': 'mumbai-nightscape.webp',
     'city-bengaluru': 'bengaluru-nightscape.webp',
@@ -2781,8 +2788,8 @@
       pending: {
         tone: 'good',
         title: 'Check your inbox',
-        body: 'We sent a subscription confirmation request through Amazon SNS. Click ' +
-          '\u201cConfirm subscription\u201d in that email to activate FloodPulse alerts.'
+        body: 'You\u2019ll receive a confirmation email. ' +
+          'Confirm it to activate FloodPulse alerts.'
       },
       invalid: {
         tone: 'warn',

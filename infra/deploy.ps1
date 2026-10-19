@@ -432,15 +432,15 @@ function Test-S3PublicReadStatement {
 #>
 function Get-DashboardAssets {
     return @(
-        @{ File = 'index.html';                   Type = 'text/html; charset=utf-8';              Cache = 'no-cache' },
-        @{ File = 'styles.css';                   Type = 'text/css; charset=utf-8';               Cache = 'no-cache' },
-        @{ File = 'lib.js';                       Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
-        @{ File = 'app.js';                       Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
-        @{ File = 'bg-storm.webp';                Type = 'image/webp';                            Cache = 'public, max-age=86400' },
-        @{ File = 'chennai-nightscape.webp';      Type = 'image/webp';                            Cache = 'public, max-age=86400' },
-        @{ File = 'mumbai-nightscape.webp';       Type = 'image/webp';                            Cache = 'public, max-age=86400' },
-        @{ File = 'bengaluru-nightscape.webp';    Type = 'image/webp';                            Cache = 'public, max-age=86400' },
-        @{ File = 'hyderabad-nightscape.webp';    Type = 'image/webp';                            Cache = 'public, max-age=86400' },
+        @{ File = 'index.html';                    Type = 'text/html; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'styles.css';                    Type = 'text/css; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'lib.js';                        Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'app.js';                        Type = 'application/javascript; charset=utf-8'; Cache = 'no-cache' },
+        @{ File = 'bg-storm.webp';                 Type = 'image/webp';              Cache = 'public, max-age=86400' },
+        @{ File = 'chennai-nightscape.webp';       Type = 'image/webp';              Cache = 'public, max-age=86400' },
+        @{ File = 'mumbai-nightscape.webp';        Type = 'image/webp';              Cache = 'public, max-age=86400' },
+        @{ File = 'bengaluru-nightscape.webp';     Type = 'image/webp';              Cache = 'public, max-age=86400' },
+        @{ File = 'hyderabad-nightscape.webp';     Type = 'image/webp';              Cache = 'public, max-age=86400' },
         @{ File = 'kochi-nightscape.webp';        Type = 'image/webp';                            Cache = 'public, max-age=86400' }
         @{ File = 'delhi.webp';                   Type = 'image/webp';                            Cache = 'public, max-age=86400' }
         @{ File = 'kolkata.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
@@ -452,6 +452,13 @@ function Get-DashboardAssets {
         @{ File = 'ahmedabad.webp';               Type = 'image/webp';                            Cache = 'public, max-age=86400' }
         @{ File = 'jaipur.webp';                  Type = 'image/webp';                            Cache = 'public, max-age=86400' }
         @{ File = 'lucknow.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'surat.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'mangaluru.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'kozhikode.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'puri.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'paradip.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'puducherry.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
+        @{ File = 'portblair.webp';                 Type = 'image/webp';                            Cache = 'public, max-age=86400' }
     )
 }
 
