@@ -1,0 +1,9 @@
+# Shipped frontend: one line ending, on every machine.
+#
+# core.autocrlf is true in this repository, so a Windows checkout would hand these files back with CRLF
+# and change the byte total the frontend budget is measured against - 9,181 B of pure terminators at
+# M14.1. The patterns name the four files the deployed site serves as text. The images and icons beside
+# them in web/ are not matched and are untouched.
+web/*.html text eol=lf
+web/*.css  text eol=lf
+web/*.js   text eol=lf
