@@ -1454,7 +1454,7 @@ check('small band text always uses the light variant, never the vivid one', () =
     assert.match(htmlSource, /FloodPulse Coastal India/, 'the product name is not the approved one');
     assert.match(htmlSource, /Monitoring selected flood-exposed coastal cities across India/,
       'the approved fleet sentence is missing');
-    assert.match(htmlSource, /academic cloud-computing prototype focused on\s+selected coastal urban flood-risk locations/,
+    assert.match(htmlSource, /experimental monitoring prototype focused on\s+selected coastal urban flood-risk locations/,
       'the About page does not describe the prototype in the approved words');
     assert.ok(!/most flood-prone|most vulnerable|riskiest|number one|the deadliest/i.test(htmlSource),
       'the copy claims a ranking no source supports');

@@ -400,7 +400,10 @@ const ROUTES = [
   { hash: '#/data', label: 'Data', view: '#view-data',
     needs: ['.legend-grid', '.legend-card'], styles: ['.legend-grid', '.legend-card'] },
   { hash: '#/about', label: 'About', view: '#view-about',
-    needs: ['.about-grid', '.about-card'], styles: ['.about-grid', '.about-card'] },
+    // scoped to the view: about-card is also the class of the "Why these cities?" panel on the Cities
+    // route, and the first match in document order is that hidden panel, not the About page's own cards.
+    needs: ['#view-about .about-grid', '#view-about .about-card'],
+    styles: ['#view-about .about-grid', '#view-about .about-card'] },
 ];
 
 const shipped = ['index.html', 'styles.css', 'lib.js', 'app.js'];
