@@ -1927,6 +1927,66 @@ deployment those two entries fail, which is how they were confirmed to bite.
 4. **The backdrop is still a 930×312 source** upscaled 2.06× at 1920 px, so it is soft before any of
    this is considered. That is unchanged from M10.1 and still not fixed by inventing pixels.
 
+## M14 overnight quality pass (frontend only, deployed)
+
+Two halves: measure the product properly, and make byte room for what the measuring found.
+
+### Four layouts were hiding their own content
+
+`tools/clipping_scan.mjs` asks every visible element on six routes at 320/390/768/1280 px whether it
+holds more content than its own box. Four did, three of them hidden by the card around them, which is
+why the page-overflow check (and the browser probe, which by design ignores a box an ancestor clips)
+never saw them:
+
+| element | measured | cause |
+| --- | --- | --- |
+| `.spark-row` | 459 px of content in a 322 px box at 390 px, 155 px out at 1280 px | `display: flex` with no `flex-wrap`, beside a `width: 100%` canvas |
+| `.metric` | floors of 130 + 90 + 72 px plus a content-sized chip and two gaps: about 356 px in a 322 px column | floors written for a wide card |
+| `.rank-class` | a 49 px word in a 46 px track | the track was sized for the shorter band names |
+| `.alert-severity` | the CRITICAL pill needs 95 px, the track gave 92 px | same |
+
+The sparkline caption was cut mid-word at **every** width, not only on a phone. It appears once a
+session trend exists, so a probe run in the first seconds after a deploy would not have seen it either.
+
+The static harness had pinned those exact metric floors, so it passed while the browser clipped the
+row. It now checks the arithmetic - four tracks, floors plus chip plus gaps inside the 322 px that a
+768 px card gives - and fails on the old numbers.
+
+### Verified negatives (measured, not assumed)
+
+* navigation: the phone menu closes on a route change, focus lands on the new view, Back and Forward
+  both re-render, scroll returns to the top, `aria-current` follows the route (`build/m14_behaviour.mjs`);
+* accessibility: one `main`, one visible `h1`, six polite live regions, no unnamed control, every image
+  with an `alt`, `prefers-reduced-motion` handled, and a rejected address sets `aria-invalid` and points
+  `aria-describedby` at the live result (`build/m14_a11y.mjs`);
+* contrast: the faded resolved rows still measure 4.96:1 for body text and 6.49:1 for the CRITICAL
+  label, by compositing page, row and opacity rather than reading tokens (`build/m14_contrast.py`);
+* no dead code: no uncalled function, no unwritten id, no styled-but-unemitted class
+  (`build/m14_deadcode.py`, `build/m14_ids.py`, `build/m14_dead_css.py`);
+* bytes: 322 B of CSS for five never-emitted classes removed, five comments still describing the
+  fifteen-city fleet repaired, and the phone menu button raised from a 40 px to a 44 px touch target.
+
+### Bytes
+
+| | before | after |
+| --- | --- | --- |
+| `web/` total | 409,073 B | 408,791 B |
+| comments in `web/` | 62,666 B (15.3%) | 62,349 B (15.3%) |
+
+Line endings are CRLF in the working tree and in the repository, so the byte ceiling measures what the
+browser downloads. Normalising the four shipped files to LF would release 9,185 B of pure line-ending
+overhead. It is deliberately not taken: that is not reclaimed content, and the ceiling is a content
+discipline. One command if the trade ever becomes worth it.
+
+### Checking it
+
+| command | expectation |
+| --- | --- |
+| `node tools/clipping_scan.mjs <url>` | 0 elements hidden by an ancestor that clips (exit 0) |
+| `node tools/dashboard_check.mjs` | 130 checks passed |
+| `node tools/dashboard_scenarios.mjs` | 49 checks passed |
+| `node tools/story_check.mjs` | 29 checks passed |
+| `python -m pytest tests -q` | 597 passed, 2096 subtests |
 ## Repository layout
 
 ```
