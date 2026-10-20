@@ -994,11 +994,46 @@ check('index.html keeps a permanent, mode-driven data-provenance notice', () => 
     assert.ok(htmlSource.includes(tag), `index.html must explain the ${tag} provenance tag`);
   }
   assert.match(htmlSource, /heuristic/);
-  assert.match(htmlSource, /shared secret/);
+  // the ingestion wording this used to assert is gone from the page; the information-hygiene check
+  // below is what proves that now, and that the read-only routes stayed.
   // and the banner text itself must come from the payload, not from a constant
   assert.match(appSource, /FP\.dataNotice\(payload\)/);
   assert.ok(!/banner-title'\]\.textContent = 'SIMULATED DATA';/.test(appSource),
     'the banner title must be chosen per mode, not hardcoded');
+});
+
+check('the public Data page keeps the backend to itself', () => {
+  const section = /<section id="view-data"[\s\S]*?<\/section>/.exec(htmlSource);
+  assert.ok(section, 'the Data section is missing from index.html');
+  // the visible half: the section with any collapsed technical block taken out of it
+  const visible = section[0].replace(/<details[\s\S]*?<\/details>/g, '');
+  for (const banned of ['execute-api', 'shared secret', 'POST /readings', '/readings', 'x-fp-key']) {
+    assert.ok(!visible.includes(banned), `the visible Data page still shows "${banned}"`);
+  }
+  assert.match(visible, /served through its backend API/,
+    'the default Data copy does not say the data comes through the backend API');
+  assert.match(visible, /current city state, recent historical readings and incident information/,
+    'the default Data copy does not say what the dashboard reads');
+
+  // the collapsed half: the read-only routes stay so the architecture is still understandable
+  const technical = /<details[\s\S]*?<\/details>/.exec(section[0]);
+  assert.ok(technical, 'the technical block is missing from the Data section');
+  for (const route of ['GET /zones<', 'GET /zones/{zone_id}/history<', 'GET /incidents<']) {
+    assert.ok(technical[0].includes(route), `the technical block no longer lists ${route}`);
+  }
+  assert.ok(!/_route|POST|write|ingest/i.test(technical[0]),
+    'the technical block still describes a write or ingestion route');
+
+  // and the hostname lives only in the head: as page data, and as the origin the policy allows
+  assert.match(htmlSource, /data-api="https:\/\//, 'the page no longer carries its API origin as data');
+  const policy = /<meta http-equiv="Content-Security-Policy"[^>]*>/.exec(htmlSource);
+  assert.ok(policy && policy[0].includes('execute-api'), 'the policy no longer allows the API origin');
+  const body = htmlSource.slice(htmlSource.indexOf('<body'));
+  assert.ok(body.length > 0 && !body.includes('execute-api'),
+    'the hostname appears inside the body, where a reader could see it');
+  assert.ok(!/setText\('api-base'|el\['api-base'\]/.test(appSource),
+    'app.js still binds and prints the API base into the page');
+  assert.match(appSource, /dataset\.api|FLOODPULSE_API_BASE/, 'app.js no longer reads its API origin');
 });
 
 check('every element id app.js uses exists in index.html', () => {

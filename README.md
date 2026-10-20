@@ -3678,14 +3678,14 @@ drift apart. Measured on 2026-10-20 against this commit:
 | --- | --- |
 | `python -m pytest tests -q` | **683 passed, 2,275 subtests** |
 | `node tools/temporal_check.mjs` | **138 assertion groups, 0 failed** (fixture cases, chart geometry, window slicing, incidents) |
-| `node tools/dashboard_check.mjs` | **131 checks, 0 failed** (including the four shipped files' byte ceiling) |
+| `node tools/dashboard_check.mjs` | **132 checks, 0 failed** (including the four shipped files' byte ceiling, and the public Data page's information hygiene) |
 | `node tools/dashboard_run.mjs --site … --api …` | **80 runtime checks, 0 failed** |
 | `node tools/dashboard_scenarios.mjs --site … --api …` | **58 scenario checks, 0 failed** (0/1/2 samples, empty and flat windows, a 40-minute gap, a failing history route, a city switch with a request in flight, no history on other routes) |
-| `node tools/m16_browser_check.mjs --site …` | **28 checks, 0 failed** in a real browser, against the frozen local API *and* the deployed site: one history request per city view, none on the other four routes, a re-entered city re-using its loaded series, window switching re-slicing with no second request, the disabled window explaining itself, both charts and summaries agreeing with the change block, in/out-of-window incidents, and no console error, failed request, sideways scroll or clipped text at 390/768/1280 px |
+| `node tools/m16_browser_check.mjs --site …` | **32 checks, 0 failed** in a real browser, against the frozen local API *and* the deployed site: one history request per city view, none on the other four routes, a re-entered city re-using its loaded series, window switching re-slicing with no second request, the disabled window explaining itself, both charts and summaries agreeing with the change block, in/out-of-window incidents, and no console error, failed request, sideways scroll or clipped text at 390/768/1280 px. Four of the checks are the public Data page's information hygiene: the rendered page (collapsed blocks removed) names no API host, no shared secret and no write route, says in plain words where its data comes from, links nowhere near the API origin, and still lists the three read routes once the technical block is expanded |
 | `node tools/layout_scan.mjs` / `node tools/clipping_scan.mjs` | 12 widths (320…1440), **0 contract failures**, locally and against the deployed site |
 | `node tools/browser_probe.mjs <deployed>` | everything checked: **0 script errors, 0 failed requests** |
 | `python tools/verify_deployed_code.py` | deployed Lambda code **byte-identical** to `src/` |
-| `python tools/verify_deployed_page.py` | **all deployed page contracts hold** |
+| `python tools/verify_deployed_page.py` | **all deployed page contracts hold**, including the four public-copy ones: the backend is named in plain words, and the write route, the ingest header and the shared secret are absent from the deployed file |
 | `python tools/live_acceptance.py` | **62 checks, 0 failed**; no poll over 1.75 s |
 | `python tools/history_audit.py --api … --minutes 1440` | 12/12 cities audited; 0 duplicates, 0 unusable rows, 0 missing readings in 235 rows |
 | `python tools/history_analysis.py --api … --minutes 1440` | the per-city table quoted above; **0 rising, 12 steady, 0 falling** |
@@ -3698,8 +3698,8 @@ M16 — an old `<canvas>` element and AWS-branded subscription wording that the 
 Those needles were repointed at the shipped wording rather than deleted, so each check still asks for the
 same thing: a focusable chart, a confirmation that arrives, no marketing, a way out of every email.
 
-**Bytes.** The four shipped files total **406,951 B** against the unchanged 409,600 B ceiling — headroom
-**2,649 B**, a net **+4,096 B** over M15.3. The room came out of shipped commentary, least informative
+**Bytes.** The four shipped files total **406,760 B** against the unchanged 409,600 B ceiling — headroom
+**2,840 B**, a net **+3,905 B** over M15.3. The room came out of shipped commentary, least informative
 first and in whole blocks only: decoration banners, then section banners, then paragraphs that only
 pointed at this README, then the longest remaining narratives. Rules, copy and behaviour were not touched,
 `dashboard_check.mjs` still finds the stylesheet section markers it locates sections by, and everything
@@ -3707,3 +3707,36 @@ removed is still in git history and in this README. The first pass at this wrote
 mode, which silently turned every newline into CRLF and added 9,024 B of terminators to the total — caught
 by measuring the files it had just written, and fixed by writing bytes with LF, the ending
 `.gitattributes` pins for `web/`.
+
+### Information hygiene on the public Data page
+
+The Data page is a visitor-facing page, so the default view now says what it needs to and no more. This is
+a front-end copy change only: no route was renamed, no API Gateway setting was touched, ingestion
+authentication was not changed, the key was not rotated, CORS was not altered and the Lambda was not
+redeployed.
+
+* **Default view.** "Where the live data comes from" now carries one sentence: *"FloodPulse dashboard data
+  is served through its backend API. The dashboard reads current city state, recent historical readings and
+  incident information."* The raw `execute-api` hostname, the `POST /readings` route and the shared-secret
+  wording are gone from the page. The data-source row in the folded technical block reads "the FloodPulse
+  backend API" instead of linking to the host.
+* **Technical block.** The folded *Architecture and endpoints (technical)* disclosure — which a reader has
+  to open, and which is not page text until they do — still lists the three read routes the dashboard
+  actually calls (`GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents`) and says they are
+  read-only and public, so the architecture stays legible without a route dump. The write path stays
+  documented where it belongs — in this README (the route table, the accepted/rejected payloads, the
+  `x-fp-key` requirement) and in `tools/live_simulator.py`, the ingest client that uses it.
+* **The page still needs its origin.** The origin stays where it was always carried as *data*, in the
+  `<html data-api="…">` attribute and the policy's `connect-src`; nothing renders it as copy. `app.js` no
+  longer writes it into the page at all.
+* **What now enforces it.** `dashboard_check.mjs` has a check that strips the folded blocks out of
+  `#view-data` and asserts the remaining copy carries none of it (and that no occurrence of the hostname
+  survives below `<body>`); `m16_browser_check.mjs` makes the same assertions against the *rendered* page
+  in a real browser, on top of the deployed URL; and `verify_deployed_page.py` fetches the deployed file and
+  requires the plain-words sentence while forbidding the write route, the ingest header and the shared
+  secret. Each of these replaced a check that asserted the opposite, so nothing was quietly deleted:
+  `dashboard_run.mjs` now asserts the data-source row is *not* a link, where it used to require one.
+* **Unchanged behaviour, as evidence.** `verify_deployed_code.py` reports the deployed Lambda
+  byte-identical to `src/`, and `live_acceptance.py` passes 62/0 against the live API afterwards, including
+  `POST /readings` still answering 401 without its key. The front-end deploy reported Lambda, API Gateway,
+  DynamoDB, IAM, SNS and log groups untouched.

@@ -815,13 +815,23 @@ async function main() {
 
     await check('choosing a window re-slices the loaded series without asking again', async () => {
       const before = runtime.count(historyRoute);
+      // Pin the starting window to AVAILABLE: a window click only proves something when it changes the
+      // slice, and on a series with a gap in it the newest hour and the newest six hours can cover the very
+      // same samples. The browser check pins the same starting window, for the same reason.
+      dom.fire(dom.node('history-range'), 'click', {
+        target: dom.targetWith('[data-range]', 'data-range', 'all')
+      });
+      await runtime.settle();
       const summary = dom.text('history-summary');
+      const beforeNote = dom.text('history-window-note');
       dom.fire(dom.node('history-range'), 'click', {
         target: dom.targetWith('[data-range]', 'data-range', '360')
       });
       await runtime.settle();
       assert.equal(runtime.count(historyRoute), before, 'a window must be a slice of the series already loaded');
       assert.notEqual(dom.text('history-summary'), summary, 'the chart summary did not follow the window');
+      assert.notEqual(dom.text('history-window-note'), beforeNote,
+        'the panel did not restate what the chosen window covers');
       assert.match(dom.node('history-range').innerHTML, /data-range="360"[^>]*aria-pressed="true"/);
       // and the window the history cannot cover yet explains itself instead of going quiet
       const note = dom.text('history-window-note');

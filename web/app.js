@@ -523,15 +523,6 @@
     setText('summary-weather', FP.weatherSummary(payload));
     renderFreshness(payload);
     renderDataNotice(payload);
-    if (el['api-base']) {
-      setText('api-base', API_BASE || 'not configured');
-      if (API_BASE) {
-        el['api-base'].setAttribute('href', API_BASE + '/zones');
-      } else {
-        el['api-base'].removeAttribute('href');
-        el['api-base'].title = 'the dashboard has no valid API origin to point at';
-      }
-    }
   }
 
   /* Data freshness is its own panel row, not a footnote: it is the difference between

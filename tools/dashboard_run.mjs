@@ -904,7 +904,12 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     // every chip is accounted for: either "Used for: …" or an explicit "not used here"
     assert.equal((legend.match(/legend-used/g) || []).length, 3,
       'each legend card must say what it is used for on this board');
-    assert.match(dom.node('api-base').getAttribute('href'), /^https?:\/\//);
+    // The data-source row names the backend without publishing its host: the row is a label now, not a
+    // link, so nothing on the public page points a reader at the API host. (The label's text is markup in
+    // index.html, which this fake DOM never parses — the rendered wording is checked against the real page
+    // in dashboard_check.mjs and m16_browser_check.mjs.)
+    assert.equal(dom.node('api-base').getAttribute('href'), null,
+      'the data-source row still links readers to the API host');
 
     // CC BY only applies while provider data is displayed. A simulated board must not
     // credit a provider it never fetched, and a live board must.

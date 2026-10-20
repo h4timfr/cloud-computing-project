@@ -427,6 +427,8 @@
     <div id="provenance-legend" class="legend-grid"></div>
 
     <h3 class="block-title">Where the live data comes from</h3>
+    <p id="data-api-note">FloodPulse dashboard data is served through its backend API. The dashboard reads
+      current city state, recent historical readings and incident information.</p>
     <div class="card" id="attribution-block">
       <p id="attribution-detail"></p>
       <p class="muted small">Provider: <b id="summary-weather-provider">–</b> · observation times and cache age per city are on the
@@ -474,11 +476,11 @@
           <div><dt>Model</dt><dd><b id="summary-model-data">heuristic-v1</b> (deterministic, hand-tuned)</dd></div>
           <div><dt>Snapshot generated</dt><dd id="summary-generated">–</dd></div>
           <div><dt>Buffered samples</dt><dd id="poll-count">0</dd></div>
-          <div><dt>Data source</dt><dd><a id="api-base" href="#" target="_blank" rel="noopener noreferrer">–</a></dd></div>
+          <div><dt>Data source</dt><dd id="api-base">the FloodPulse backend API</dd></div>
         </dl>
-        <p class="muted small">Read routes used by this page: <code>GET /zones</code>, <code>GET /zones/{zone_id}/history</code>,
-          <code>GET /incidents</code>. Ingestion (<code>POST /readings</code>) requires a shared secret and is never called from the
-          browser.</p>
+        <p class="muted small">Read routes the dashboard uses: <code>GET /zones</code>,
+          <code>GET /zones/{zone_id}/history</code>, <code>GET /incidents</code>. They are read-only and
+          public; nothing else about the backend is served to the browser.</p>
       </div>
     </details>
   </section>

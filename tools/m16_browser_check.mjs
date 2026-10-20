@@ -138,6 +138,9 @@ await send('Log.enable');
 // from a session where the API override was missing. Clearing it keeps this run's verdict its own.
 await send('Log.clear');
 await send('Network.enable');
+// The profile outlives a run, and a cached index.html would let this check pass against copy that is no
+// longer in the repository: the page under test has to be the bytes on disk.
+await send('Network.setCacheDisabled', { cacheDisabled: true });
 
 const goto = async (hash, width) => {
   await send('Emulation.setDeviceMetricsOverride', { width: width.w, height: width.h, deviceScaleFactor: 1, mobile: width.w < 768 });
@@ -186,6 +189,14 @@ const panel = () => evaluate(`(() => {
   };
 })()`);
 
+/* The profile's HTTP cache outlives the repository: load once, reload past the cache, and only then start
+ * counting, so the page under test is the build that is actually on disk. */
+await send('Page.navigate', { url: urlFor('#/') });
+await sleep(1200);
+await send('Page.reload', { ignoreCache: true });
+await sleep(1800);
+historyRequests.length = 0;
+
 const cityId = city || await (async () => {
   // the leader of the fleet the page is showing, read from the page itself rather than guessed.
   // Against the deployed site the first /zones call can be a cold Lambda plus a provider refresh, so
@@ -206,6 +217,59 @@ if (!cityId) {
   process.exit(2);
 }
 console.log(`city under test: ${cityId}`);
+
+/* --------------------------------------------- what the public Data page says --- */
+
+/* Rendered, not echoed: the strings below are read out of the live DOM, with every collapsed technical
+ * block removed first, so "visible on the normal public page" means exactly that. */
+await goto('#/data', WIDTHS[2]);
+const publicData = await evaluate(`(() => {
+  const view = document.getElementById('view-data');
+  if (!view) return null;
+  const clone = view.cloneNode(true);
+  [...clone.querySelectorAll('details:not([open])')].forEach((node) => node.remove());
+  const text = clone.textContent.replace(/\\s+/g, ' ').trim();
+  const links = [...view.querySelectorAll('a[href]')].map((a) => a.getAttribute('href'));
+  const opened = [...view.querySelectorAll('details')].map((d) => d.hasAttribute('open'));
+  return JSON.stringify({ text: text, links: links, opened: opened });
+})()`);
+const dataPage = JSON.parse(publicData || '{}');
+check('the default Data page does not name the API host, the secret or the write route', () => {
+  for (const banned of ['execute-api', 'amazonaws.com', 'shared secret', 'POST /readings', 'readings?', 'x-fp-key']) {
+    assert.ok(!String(dataPage.text || '').includes(banned), `the visible Data page shows "${banned}"`);
+  }
+});
+check('the default Data page says where its data comes from, in plain words', () => {
+  assert.match(String(dataPage.text || ''), /served through its backend API/, 'the backend sentence is missing');
+  assert.match(String(dataPage.text || ''), /current city state, recent historical readings and incident information/,
+    'the sentence does not say what the dashboard reads');
+});
+check('the public Data page links nowhere near the API origin', () => {
+  const bad = (dataPage.links || []).filter((href) => /execute-api|amazonaws\.com/.test(href));
+  assert.equal(bad.length, 0, `the Data page links to ${bad.join(', ')}`);
+});
+const technical = await (async () => {
+  // the Data view can hold more than one disclosure, so the technical one is found by its summary
+  await evaluate(`(() => {
+    const d = [...document.querySelectorAll('#view-data details')].find((n) => /technical/i.test(n.textContent));
+    if (d) d.open = true;
+    return true;
+  })()`);
+  await sleep(200);
+  return evaluate(`(() => {
+    const d = [...document.querySelectorAll('#view-data details')].find((n) => /technical/i.test(n.textContent));
+    return d ? d.textContent.replace(/\\s+/g, ' ').trim() : null;
+  })()`);
+})();
+check('expanding the technical block still explains the architecture, and stops at the reads', () => {
+  assert.ok(technical, 'the technical block is missing');
+  for (const route of ['GET /zones', 'GET /zones/{zone_id}/history', 'GET /incidents']) {
+    assert.ok(technical.includes(route), `the technical block no longer lists ${route}`);
+  }
+  assert.ok(!/POST|shared secret|execute-api|amazonaws/.test(technical),
+    'the technical block still describes the write path or the host');
+  assert.match(technical, /read-only and public/, 'the technical block does not describe the routes it lists');
+});
 
 /* ------------------------------------------------- the single-request rule --- */
 

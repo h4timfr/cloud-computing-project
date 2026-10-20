@@ -35,6 +35,8 @@ EXPECTED = {
     "the API origin is still reachable": "connect-src 'self' https://",
     "referrer policy": '<meta name="referrer" content="strict-origin-when-cross-origin">',
     "the API base is page data, not a script": 'data-api="https://',
+    # information hygiene: the public page describes the backend in plain words
+    "the public Data copy names the backend API, not the hostname": "served through its backend API",
     "external links cannot reach back through window.opener": 'rel="noopener noreferrer"',
     # M9: the fifth section, the status surface and the guidance the About page carries
     "the About section is deployed": 'id="view-about"',
@@ -75,6 +77,11 @@ EXPECTED = {
 }
 
 FORBIDDEN = {
+    # information hygiene: the public page describes the backend in plain words, and the ingestion
+    # route, its secret and the raw hostname have no place in any part of the file
+    "the page names the write route": "POST /readings",
+    "the page mentions a shared secret": "shared secret",
+    "the page mentions the ingest header": "x-fp-key",
     # a marker left over from the fix would mean the ticking line is still being announced
     "the ticking status line is a live region": 'class="conn" role="status"',
     # the lists are re-rendered whole every poll and their rows carry reading ages and
