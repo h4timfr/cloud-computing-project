@@ -16,7 +16,9 @@ EXPECTED = {
     "announced strip summary": 'id="band-strip-label" class="band-strip-label" role="status" aria-live="polite"',
     "change note": 'id="change-note"',
     "chart exposed as an image": 'role="img"',
-    "chart can be focused": 'id="history-canvas" height="220" role="img" tabindex="0"',
+    # the chart is an inline SVG now, not a canvas: what matters is that it is still focusable and
+    # still exposed as an image to assistive tech
+    "chart can be focused": 'role="img" tabindex="0"',
     "no-script fallback": "<noscript",
     "backdrop hidden from assistive tech": 'class="bg-layer" aria-hidden="true"',
     # the incident record is a table for assistive tech, with real column headers
@@ -55,9 +57,12 @@ EXPECTED = {
     "the subscription field has a real label": 'for="subscribe-email"',
     "the subscription form does not navigate": '<form id="subscribe-form" class="subscribe-form" novalidate>',
     "the subscription outcome is a polite live region": 'id="subscribe-result" class="subscribe-result" role="status" aria-live="polite" hidden',
-    "the confirmation note is deployed": "receive a confirmation email from Amazon Web Services",
-    "the privacy note is deployed": "FloodPulse does not send marketing email",
-    "the unsubscribe instruction is deployed": "Amazon SNS includes its own unsubscribe link",
+    # the notes were rewritten in the plain voice and the AWS branding left the page: the three claims
+    # the check exists for are unchanged - a confirmation arrives, no marketing, every email carries a
+    # way out
+    "the confirmation note is deployed": "receive a confirmation email",
+    "the privacy note is deployed": "No marketing email",
+    "the unsubscribe instruction is deployed": "You can unsubscribe from any alert email",
     # the model left the header and lives in the folded technical panel instead
     "the model is in the folded technical panel": '<b id="summary-model">heuristic-v1</b>',
     # M13: twelve coastal cities, and the three things that make finding one of them possible
@@ -126,7 +131,9 @@ NEEDLES = {
         "a placeholder does not pretend to be a card": "skel-card",
         "every empty state comes from one builder": "function emptyState",
         "the delivery panel states what the API does not expose": "Not reported to this page",
-        "the publishing wording is the honest one": "published to the notification topic",
+        # the wording moved from e-mail plumbing to what the reader can expect: how often mails may go out,
+    # and that a confirmation has to be accepted before any of them arrive
+    "the publishing wording is the honest one": "at most one email per city every",
         "the status counts reporting cities in words": "reporting'",
         # M10: the served copy is the plain one, and the model is folded rather than removed
         "a variable name is turned into words before it is shown": "function driverLabel",
@@ -139,7 +146,7 @@ NEEDLES = {
         "the spotlight names the main risk factor": "Main risk factor",
         # M10: the subscription vocabulary exists once, in this module
         "the shared subscription copy is deployed": "function subscriptionResult",
-        "the accepted state describes a confirmation request": "We sent a subscription confirmation request through Amazon SNS",
+        "the accepted state describes a confirmation request": "Confirm it to activate FloodPulse alerts",
         "the outcome of a status code is mapped in one place": "function subscriptionKindForStatus",
         "the calm alert state is composed, not static": "No active flood alerts",
         "the city plate is decorative": 'class="city-thumb band-',

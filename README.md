@@ -3534,3 +3534,176 @@ union territories / 3 coast groups (5 West Coast, 6 East Coast, 1 Island), every
   hydraulic measurements remain simulated for every monitored city.
 * The World Bank 2010 synthesis is not used as an Indian city ranking, and the "top ten cities exposed to
   flooding" line sometimes attributed to it is not in the document.
+
+## M16 - retrospective temporal intelligence (backend and frontend deployed; no new AWS resources)
+
+The city page has always answered "what is happening now?". M16 makes it answer six more questions, and all
+six are about the past: what changed, by how much, when did it peak, how much history do we actually have,
+were there meaningful gaps, and which incidents happened during that history.
+
+Nothing in this milestone predicts anything. There is no forecast, no flood probability, no machine
+learning, no change to the risk model, no synthetic history, and no invented 24-hour series. Every number is
+computed from history rows the API has already stored, and the page says which window it used.
+
+### The quantities, defined once
+
+A **sample** is one stored history row: `ts_epoch`, `risk_score` (heuristic-v1, 0..1), `risk_class` and the
+readings stored with it, including `readings.rainfall_mm_per_hr`. A **window** is a slice of the stored
+series, and it is measured back from the **newest stored sample**, never from the wall clock, so opening the
+page late cannot slide the newest row out of a one-hour window.
+
+| Quantity | Definition |
+| --- | --- |
+| `risk change` | `r_last − r_first`, the net change across the window |
+| duration | `t_last − t_first`, the span the window actually covers |
+| peak, minimum | the largest and smallest valid score in the window; the earlier row wins a tie |
+| slope | `sum((t_i − t_mean)(r_i − r_mean)) / sum((t_i − t_mean)^2)`, with `t` in hours and `r` the score |
+| trend | `RISING`, `FALLING`, `STEADY` or `INSUFFICIENT`, from the slope and the minimums below |
+| median interval | the median of the positive intervals between consecutive samples |
+| gap | any interval longer than `max(3 x median interval, 900 s)` |
+| largest gap | the longest interval in the window, reported whether or not it qualifies as a gap |
+| history sufficiency | a window is offered only if the available span covers it; a direction needs at least 3 valid samples spanning at least 600 s |
+
+The net change and the slope are computed over the **valid** rows in the window, after the filtering
+described below, and both are rounded only for display (two decimals for the score, one for rainfall in
+mm/h).
+
+### The trend tolerance, stated so it can be argued with
+
+A direction is only claimed when the least-squares slope leaves a band of **± 0.02 score per hour**; inside
+that band the page says *steady*. The tolerance exists because a stored series that drifts by 0.01 per hour
+is indistinguishable on screen from one that does not move, and describing either as "rising" would be a
+claim the data does not support. It is a presentation choice, it is disclosed here and on the Data page, and
+it is the same number in the browser module, the analysis tool and the tests. A window needs at least three
+valid samples and at least ten minutes of span before any direction is named; below that the page says how
+many samples it has instead of guessing.
+
+A window that rose and then eased is still reported by its slope, with its peak and its net change printed
+beside it, rather than being bent to agree with the shape. A single mid-window peak that closes lower is
+neither "rising" nor "falling" in plain language, and the page shows the peak, the close and the slope
+separately instead of picking one word for all three.
+
+### Windows
+
+`1H`, `6H`, `24H` and `AVAILABLE` are offered per city, and each button is enabled only when the stored
+history actually covers it. Depth moves with ingestion, so the reason is read off the payload and never
+hard-coded: on 2026-10-20 at 03:05 IST every one of the twelve monitored cities held **21 h 43 min** of
+history (33–35 rows) and `24H` was disabled; at 19:00 IST the same endpoint held **23 h 25 min** (19–21
+rows, after the ingestion gap below) and `24H` was still disabled, one hour short of switching itself on.
+The button carries the data's own sentence ("only 23 h 25 min of history so far"), never a hidden or
+hard-coded rule. `AVAILABLE` is whatever the endpoint returns.
+
+Narrower windows are served from the series already in memory. The page makes **exactly one** history
+request per city view; switching from `AVAILABLE` to `1H` does not make a second one. No request is made on
+the Overview, Cities, Alerts, Data or About routes.
+
+### Rows that are not usable
+
+Before anything is measured, the series is cleaned deterministically:
+
+* a row whose timestamp cannot be read, or whose score is not a finite number inside `0..1`, is **dropped**,
+  counted in the quality line and never interpolated - a gap stays a gap;
+* rows are sorted by timestamp before measurement, and the count of out-of-order arrivals is reported;
+* two rows sharing a timestamp keep the later one in arrival order, and the merge is reported.
+
+No smoothing, no filling and no averaging across cities is applied to any of these numbers, in the browser
+or in the analysis tool. History is stored and read for one city at a time.
+
+### What it costs to load (measured)
+
+`GET /zones/{zone_id}/history?minutes=N` returns a compact row per sample. Measured against the deployed API
+on 2026-10-19: **672 B** for the default 60-minute window (1 row, Chennai) and **9,131 B / 9,357 B** for
+`minutes=1440` (33 rows Chennai, 34 rows Port Blair). At roughly 277 B per row, a full day at the observed
+cadence would be about 40 KB, so **downsampling is unnecessary and is not used**: the endpoint's existing
+`downsampled`/`stride` fields stay in the payload, but no M16 feature turns thinning on. The earlier
+"thinning dropped the newest sample" bug class is covered by a regression test rather than by avoiding the
+code path.
+
+### A worked example
+
+Using the synthetic fixture case `rising` (fixture data, not live data): samples at `+0 s` score `0.10`,
+`+600 s` `0.16`, `+1200 s` `0.22`, `+1800 s` `0.31`.
+
+* net change `0.31 − 0.10 = +0.21`, duration 30 min, peak `0.31` at `+1800 s`, minimum `0.10`.
+* mean time `t_mean = 0.25 h`, mean score `r_mean = 0.1975`.
+* `sum((t_i − t_mean)(r_i − r_mean)) = 0.0575`, `sum((t_i − t_mean)^2) = 0.138889`, so the slope is
+  `+0.414` per hour.
+* `+0.414` is far outside the ± 0.02 band, so the trend is `RISING`; the sentence under the chart reports
+  the range, the ending value, the net change, the slope and the duration.
+
+### What M16 does not claim
+
+* No forecast, prediction, probability, time-to-threshold or expected peak. The trend describes the stored
+  past and stops there.
+* No trend is named from fewer than three valid samples or less than ten minutes of span, and no direction
+  is named at all for a series inside the tolerance band.
+* No interpolation across a gap, and no estimate of what happened inside one.
+* No accumulation of rainfall: the rainfall chart is an instantaneous rate in mm/h, and the page says so.
+* No causal claim: a rising score is not evidence that rain caused it. The current driver is shown as the
+  weighted contribution the model already publishes, not as a diagnosis.
+* No claim that a stored series is complete. It is what the API stored, and the quality line says how much
+  of it there is.
+
+### Limitations (recorded, not smoothed over)
+
+* **Provider observation time is not in the payload.** A history row carries the score timestamp and the
+  readings, but no weather-observation timestamp, so whether a reading was a cached provider response
+  cannot be determined from the API. What can be said is that the engine already suppresses an exact replay
+  at write time, so an unchanged reading does not silently become a second row; and that two samples with
+  identical rainfall are *not* presented as proof of a repeated observation.
+* **History depth is shallow, and it is the binding constraint.** 21 h 43 min of history at 2026-10-20 03:05
+  IST across all twelve cities, 33 to 35 stored rows each; 23 h 25 min at 19:00 IST after the ingestion gap
+  below had aged older rows out of the window. The 24-hour window stays disabled until the stored span
+  reaches it, and nothing in the page pretends otherwise.
+* **The series is not evenly sampled, and ingestion can stop.** Every city showed the same ~20,113 s
+  (5 h 35 min) interval in the 03:05 audit — the largest of **9 intervals that exceed the gap threshold**
+  in Chennai's window (the threshold there is `max(3 x 601 s, 900 s) = 1,803 s`), with a median interval of
+  601 s and no duplicate timestamps. A second audit at 19:00 IST measured a single **33,845 s (9 h 24 min)**
+  interval common to all twelve cities: ingestion had stopped at 09:01 IST and resumed when the probe called
+  the endpoint, which is why the milestone reports gaps instead of assuming a cadence. The gap is surfaced
+  rather than filled, and M16 does not assert why the ingestion paused; M4 and M8 record how it is triggered.
+* **Scores are heuristic, not validated.** `heuristic-v1` is an explainable weighted heuristic, not a
+  calibrated flood model, and the hydraulic readings remain simulated for every monitored city. A trend
+  computed from it inherits that status.
+* **The tolerance is a judgement.** ± 0.02 per hour is disclosed rather than hidden, and a reader who
+  disagrees can read the slope itself, which the page prints.
+
+### How it is checked
+
+The temporal rules live in exactly one implementation per language and are asserted against a single shared
+fixture, `tests/fixtures/m16_temporal_cases.json`, so the browser module and the Python analysis tool cannot
+drift apart. Measured on 2026-10-20 against this commit:
+
+| Command | Result |
+| --- | --- |
+| `python -m pytest tests -q` | **683 passed, 2,275 subtests** |
+| `node tools/temporal_check.mjs` | **138 assertion groups, 0 failed** (fixture cases, chart geometry, window slicing, incidents) |
+| `node tools/dashboard_check.mjs` | **131 checks, 0 failed** (including the four shipped files' byte ceiling) |
+| `node tools/dashboard_run.mjs --site … --api …` | **80 runtime checks, 0 failed** |
+| `node tools/dashboard_scenarios.mjs --site … --api …` | **58 scenario checks, 0 failed** (0/1/2 samples, empty and flat windows, a 40-minute gap, a failing history route, a city switch with a request in flight, no history on other routes) |
+| `node tools/m16_browser_check.mjs --site …` | **28 checks, 0 failed** in a real browser, against the frozen local API *and* the deployed site: one history request per city view, none on the other four routes, a re-entered city re-using its loaded series, window switching re-slicing with no second request, the disabled window explaining itself, both charts and summaries agreeing with the change block, in/out-of-window incidents, and no console error, failed request, sideways scroll or clipped text at 390/768/1280 px |
+| `node tools/layout_scan.mjs` / `node tools/clipping_scan.mjs` | 12 widths (320…1440), **0 contract failures**, locally and against the deployed site |
+| `node tools/browser_probe.mjs <deployed>` | everything checked: **0 script errors, 0 failed requests** |
+| `python tools/verify_deployed_code.py` | deployed Lambda code **byte-identical** to `src/` |
+| `python tools/verify_deployed_page.py` | **all deployed page contracts hold** |
+| `python tools/live_acceptance.py` | **62 checks, 0 failed**; no poll over 1.75 s |
+| `python tools/history_audit.py --api … --minutes 1440` | 12/12 cities audited; 0 duplicates, 0 unusable rows, 0 missing readings in 235 rows |
+| `python tools/history_analysis.py --api … --minutes 1440` | the per-city table quoted above; **0 rising, 12 steady, 0 falling** |
+| live history edge cases | `minutes=1` → 200 with 0 rows; `0`, `-60`, `abc`, `100000` → **400** `invalid_query`; unknown zone → **404** with the known-zone list; no response carried `NaN` or `Infinity` |
+
+Two defects were found by running things rather than reading them, and both are fixed: the chart's band
+shading never applied (the stylesheet selected `.chart-fill-band-*` while the markup emitted
+`class="chart-fill band-normal"`), and `verify_deployed_page.py` had six needles that had gone stale before
+M16 — an old `<canvas>` element and AWS-branded subscription wording that the page had already replaced.
+Those needles were repointed at the shipped wording rather than deleted, so each check still asks for the
+same thing: a focusable chart, a confirmation that arrives, no marketing, a way out of every email.
+
+**Bytes.** The four shipped files total **406,951 B** against the unchanged 409,600 B ceiling — headroom
+**2,649 B**, a net **+4,096 B** over M15.3. The room came out of shipped commentary, least informative
+first and in whole blocks only: decoration banners, then section banners, then paragraphs that only
+pointed at this README, then the longest remaining narratives. Rules, copy and behaviour were not touched,
+`dashboard_check.mjs` still finds the stylesheet section markers it locates sections by, and everything
+removed is still in git history and in this README. The first pass at this wrote the files back in text
+mode, which silently turned every newline into CRLF and added 9,024 B of terminators to the total — caught
+by measuring the files it had just written, and fixed by writing bytes with LF, the ending
+`.gitattributes` pins for `web/`.

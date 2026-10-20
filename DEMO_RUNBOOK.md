@@ -422,3 +422,93 @@ flood-prone cities in India": the sources document exposure for each city, and n
 ranks the fleet.
 
 Cities -> coastal coverage map -> select highest-risk city -> open city detail
+
+## M16 demo path - what changed, over how much history (two minutes, recommended after M13's)
+
+The point of this path is that the page can now answer questions about the *past* without pretending to
+know the future. It is a good segment to show because the honest limitations are themselves the story.
+
+### Pre-flight (30 seconds, before anyone is watching)
+
+```
+python tools/history_analysis.py                     # per-city samples, span, gaps, trend
+python tools/history_analysis.py --json build/m16_history_analysis.json
+node tools/temporal_check.mjs                        # the temporal rules, 100+ assertions
+```
+
+If every city shows roughly 32 to 34 rows spanning about 21 hours, the demo below will read exactly as
+described. If any city shows far fewer rows, say so rather than reading the numbers.
+
+### The path
+
+1. **Open the highest-risk city** from the Cities page. Read **CURRENT STATUS** in one breath: what the
+   score is now, in words.
+2. **"What changed."** Read the net change across the window, the direction as a *retrospective* slope, and
+   the peak with the time it happened. Say the sentence the page prints: the score ranged between two
+   values over a stated span and ended at a third. Then read the quality line out loud - the number of
+   samples, the span actually available and the largest gap - because that line is what makes the rest
+   credible.
+3. **"Risk over time."** Point at the line, the band guides, the peak marker and the newest-sample marker.
+   Say that every point is a row the API already stored.
+4. **Switch the window** from `1H` to `AVAILABLE` and back. Mention that nothing was re-fetched: the page
+   already had this city's series, and a window is just a slice of what it holds. Press `24H`: it is
+   **disabled**, and the reason is computed from the data ("only 21 h 17 min of history so far"). This is
+   the moment to say the honest thing - the system has less than a day of history, and a control that lies
+   about that would be worse than a control that is switched off.
+5. **"Rainfall over time."** Say the word *rate*: mm/h at each stored sample, never a total, and the series
+   is the same stored rows as the risk chart.
+6. **"Recent incidents."** Two live cases, both honest. Open **Kochi**: it carries four CRITICAL incidents
+   recorded on 2026-10-15 and 2026-10-16, every one marked on screen as falling *outside* the window being
+   viewed, each with its duration - and say what that duration means, because it is the honest part: 8 to
+   51 seconds, since an incident here is a band crossing recorded by the poll loop, not a flood report from
+   an authority. Then open any other city: the timeline shows its empty state and says plainly that no
+   incident is recorded for it. If someone asks whether the fleet is quiet, that is the answer - no city was
+   in WARNING or CRITICAL in the newest sample of the audited window.
+7. **"Technical details."** Name the endpoint (`GET /zones/{zone_id}/history?minutes=N`) and say the page
+   makes exactly one history request per city view.
+
+### Numbers you can quote, because they were measured (2026-10-20)
+
+Read the panel's own sentence on the day and quote that: depth moves with ingestion, so the figures below
+are the two measurements this milestone took, not a constant.
+
+* History depth per city: **33 to 35 stored rows spanning 21 h 43 min** at 03:05 IST, and **19 to 21 rows
+  spanning 23 h 25 min** at 19:00 IST — the same endpoint, and the second set is shorter in rows because
+  older rows had aged out of the 1440-minute window while ingestion was stopped.
+* Median interval between stored samples: **601 s** (about ten minutes) in the 03:05 audit and **1,260 to
+  1,464 s** (about 21-24 minutes) at 19:00; no duplicate timestamps; 0 unusable rows in any city, both times.
+* Gaps: Chennai's 03:05 window held **9 intervals above the gap threshold**, the largest **20,113 s
+  (5 h 35 m)** and common to every city. The 19:00 audit measured one **33,845 s (9 h 24 m)** interval in all
+  twelve cities — ingestion stopped at 09:01 IST and restarted when the endpoint was called. The series is
+  *not* evenly sampled, and the page says so by reporting a count and the largest gap instead of implying a
+  fixed cadence.
+* Payload: **672 B** for a 60-minute window (1 row), **9,131 B / 9,357 B** for 33 / 34 rows.
+* Trends on this data: **0 rising, 12 steady, 0 falling** at the 1440-minute window, and at the 60-minute
+  window every city has too few samples to name a direction at all - which is the honest reason the
+  enough-samples rule exists.
+* Incidents: **4 recorded in total, all for Kochi, all CRITICAL, all closed, durations of 8 to 51 seconds**
+  - and **none inside the stored history window**, which is why the timeline is shown marked as
+  out-of-window for Kochi and empty for the other eleven cities.
+* Windows: `24H` is **disabled** in both measurements (21 h 43 min then, 23 h 25 min now, both under 24 h)
+  and the button explains the shortfall in the data's own words.
+
+### Do not say
+
+* Not "it is going to rise", not "the model predicts", not "flood probability", not "the trend suggests".
+  The direction is a description of stored scores, and the page's own wording says so.
+* Not "the gap was a sensor outage" or "the provider was down". The gap is a gap; M16 does not assert why.
+* Not "24-hour history". There is less than a day of it, and the disabled control says how much there is.
+* Not "rainfall total". The chart is an instantaneous rate. Anything that adds it up is a new claim.
+* Not "these are flood incidents". They are risk-band incidents the engine recorded.
+
+### Recovery
+
+* If history fails to load, the page prints one short line and the rest of the city page still works - demo
+  the current status and say plainly that the history route is not answering. Do not retry in a loop or
+  reload repeatedly.
+* If the 24H control is pressed and nothing happens, that is correct behaviour: read the reason line under
+  the controls.
+* If someone asks how much history the *system* keeps, the honest answer is: rows are written per city as
+  readings arrive and expire under the table's TTL, so "available" is what the endpoint returns right now,
+  and the page states the span it actually received instead of promising a window.
+
