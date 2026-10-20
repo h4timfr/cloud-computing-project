@@ -6,23 +6,6 @@
 <title>FloodPulse — Live flood monitoring</title>
 <meta name="description" content="FloodPulse Coastal India monitors flood risk for selected flood-exposed coastal cities across India.">
 <meta name="color-scheme" content="dark">
-<!-- The dashboard is a static page that talks to exactly one origin: this API. The policy below
-     allows no inline script at all (the API base is a data attribute on <html>, not a script
-     tag), no plugins, no form posts and no base-tag rewriting. 'unsafe-inline' is granted for
-     styles only, because the renderers set a handful of style attributes for bar widths; script
-     -src stays strict, which is what stops an injected payload string from ever executing.
-     A different API origin (or a local server) has to be added to connect-src to be reachable:
-     see the security section of README.md.
-
-     `frame-ancestors` is deliberately NOT here. A browser ignores it when the policy arrives in a
-     <meta> element (it logs "The Content Security Policy directive 'frame-ancestors' is ignored
-     when delivered via a <meta> element"), so keeping it bought no protection and put a warning in
-     every visitor's console. A meta policy cannot stop this page being framed at all: that needs a
-     real HTTP response header, and this dashboard is served by S3 static website hosting, which
-     emits no custom headers. Adding one would mean a header-injecting layer in front of the bucket
-     (CloudFront), i.e. a new AWS resource - out of scope for this pass. README.md, security
-     section, records the gap and why it is acceptable here. If a header layer is ever added, put
-     `frame-ancestors 'none'` (and `X-Frame-Options: DENY`) there, not here. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com https://*.execute-api.eu-north-1.amazonaws.com http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23071129'/%3E%3Cpath d='M16 4c3.6 4.6 5.6 7.6 5.6 9.8A5.6 5.6 0 0 1 16 19.4a5.6 5.6 0 0 1-5.6-5.6C10.4 11.6 12.4 8.6 16 4Z' fill='%2338bdf8'/%3E%3Cpath d='M4 24c3-3.4 5.6-3.4 8.6 0s5.6 3.4 8.6 0 5.6-3.4 8.6 0' fill='none' stroke='%2322d3ee' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -66,8 +49,6 @@
   </nav>
 
   <div class="topbar-status">
-    <!-- One plain sentence about the system, for a reader who will never open a menu: "is it
-         working, and is anything wrong right now?" The detail lives behind the summary. -->
     <details class="health" id="health">
       <summary class="health-summary" id="health-pill">
         <span class="health-dot" id="health-dot" aria-hidden="true"></span>
@@ -82,11 +63,6 @@
     <div class="conn">
       <span id="conn-badge" class="conn-badge conn-connecting">CONNECTING</span>
       <span id="conn-detail" class="conn-detail">waiting for the first successful poll</span>
-      <!--
-        The status line above carries a seconds-resolution age and countdown, so it must NOT
-        be a live region: announcing it re-read the top bar once per second forever. The
-        polite region below is off-screen and only changes on a real transition.
-      -->
       <span id="conn-announce" class="sr-only" role="status" aria-live="polite"></span>
     </div>
     <div class="topbar-meta">
@@ -102,12 +78,7 @@
 
 <main id="main" tabindex="-1">
 
-  <!-- ============================================================= Overview -->
   <section id="view-overview" class="view" tabindex="-1" data-view="overview" aria-labelledby="ov-title">
-    <!-- The hero answers the first question on the page. It is complete in the HTML, not built by
-         script: a reader who arrives before the first poll, or with scripting blocked, still gets
-         the icon, the headline, the monitoring sentence and the way to the method. renderHero()
-         only rewrites the text inside it and swaps one band class. -->
     <div id="hero" class="card hero hero-live" data-band="unknown">
       <div class="hero-main">
         <p class="hero-kicker">
@@ -157,7 +128,6 @@
     <section id="city-cards" class="city-cards" aria-labelledby="city-cards-title">
       <p class="muted" data-f="loading">waiting for data…</p>
     </section>
-    <!-- What the cards are, and where the rest of the fleet is: both from the payload. -->
     <p class="city-cards-note" id="city-cards-note"></p>
     <p class="city-cards-more-row"><a class="city-cards-more ghost-link" id="city-cards-more" href="#/cities" hidden>View all cities</a></p>
 
@@ -214,7 +184,6 @@
           <a href="#/data">Data &amp; Methodology</a> page.</p>
       </div>
     </details>
-        <!-- Why these cities? The five highest-risk cities are already on this page. -->
     <section class="card about-card" id="why-these-cities" aria-labelledby="why-cities-title">
       <h3 class="block-title" id="why-cities-title">Why these cities?</h3>
       <p id="why-cities-lede">Selected for documented exposure to coastal flooding, extreme rainfall,
@@ -228,7 +197,6 @@
 
   </section>
 
-  <!-- =============================================================== Cities -->
   <section id="view-cities" class="view" tabindex="-1" data-view="cities" aria-labelledby="cities-title" hidden>
     <header class="view-head">
       <h2 class="view-title" id="cities-title">Cities</h2>
@@ -240,7 +208,6 @@
 
     <h3 class="section-title" id="zones-title">All cities</h3>
 
-    <!-- The Controls: in the page, not built by script, so they work before any payload. -->
     <div class="cities-toolbar" id="cities-toolbar" role="search" aria-labelledby="cities-search-label">
       <div class="toolbar-field toolbar-field-search">
         <label class="toolbar-label" id="cities-search-label" for="cities-search">Search city or state</label>
@@ -303,44 +270,52 @@
     <div class="cities-empty" id="cities-empty" hidden></div>
   </section>
 
-  <!-- ========================================================== City detail -->
   <section id="view-city" class="view" tabindex="-1" data-view="city" aria-labelledby="city-crumb" hidden>
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="#/cities">Cities</a><span aria-hidden="true"> / </span><span id="city-crumb">city</span>
     </nav>
     <div id="city-detail" class="city-detail-slot"></div>
 
-    <section class="card history-panel" aria-labelledby="history-title">
+    <section class="card history-panel" id="history-panel" aria-labelledby="history-title">
       <header class="panel-head">
         <div>
-          <h3 class="panel-title" id="history-title">Risk history</h3>
-          <p class="muted" id="history-meta">loading history…</p>
+          <h3 class="panel-title" id="history-title">What changed</h3>
+          <p class="muted" id="history-meta">loading the stored history…</p>
         </div>
 
         <div class="panel-controls">
           <div id="history-zone" class="button-group" role="group" aria-label="City"></div>
-          <div id="history-range" class="button-group" role="group" aria-label="Time range"></div>
+          <div id="history-range" class="button-group" role="group" aria-label="Time window"></div>
         </div>
       </header>
+      <p class="muted small" id="history-window-note"></p>
+      <div id="history-facts" class="history-facts"></div>
+      <h3 class="block-title">Risk over time</h3>
       <div class="chart-wrap">
-        <canvas id="history-canvas" height="220" role="img" tabindex="0" aria-label="Risk score history chart"></canvas>
+        <svg id="history-canvas" class="chart-svg" viewBox="0 0 640 190" role="img" tabindex="0" aria-label="Risk score history chart"></svg>
         <div id="history-tooltip" class="chart-tooltip" hidden></div>
       </div>
       <p class="chart-summary" id="history-summary"></p>
+      <h3 class="block-title">Rainfall over time</h3>
+      <div class="chart-wrap">
+        <svg id="rain-chart" class="chart-svg" viewBox="0 0 640 190" role="img" aria-label="Rainfall rate history chart"></svg>
+      </div>
+      <p class="chart-summary" id="rain-summary"></p>
       <p class="muted small">
-        Source: <code>GET /zones/{zone_id}/history</code>. The shaded bands are the documented
-        <code>heuristic-v1</code> class boundaries (NORMAL &lt; 0.35 · WATCH 0.35–0.60 ·
-        WARNING 0.60–0.80 · CRITICAL ≥ 0.80). With the chart focused, the arrow keys read out
-        each point.
+        Source: <code>GET /zones/{zone_id}/history</code>, asked for the widest window the API keeps and
+        sliced to the window buttons above, so one request serves all four. The shaded bands are the
+        documented <code>heuristic-v1</code> class boundaries (NORMAL &lt; 0.35 · WATCH 0.35–0.60 ·
+        WARNING 0.60–0.80 · CRITICAL ≥ 0.80). With the risk chart focused, the arrow keys read out each
+        stored point.
       </p>
     </section>
 
     <div id="city-incidents" class="city-incidents-slot">
-      <p class="muted" data-f="loading">alert history for this city will appear here…</p>
+      <p class="muted" data-f="loading">this city's recent incidents will appear here…</p>
     </div>
+    <div id="city-context"></div>
   </section>
 
-  <!-- =============================================================== Alerts -->
   <section id="view-alerts" class="view" tabindex="-1" data-view="alerts" aria-labelledby="alerts-title" hidden>
     <header class="view-head hero-head">
       <p class="hero-kicker">Alert centre</p>
@@ -365,10 +340,6 @@
       <p class="muted small" id="incidents-meta">loading incidents…</p>
     </section>
 
-    <!-- The public subscription form. It belongs to SNS, not to FloodPulse: the page asks the
-         API to subscribe the address, AWS sends the confirmation message, and nothing is stored
-         here but a hashed counter. The copy therefore never says an address is subscribed - only
-         that a confirmation request was sent. -->
     <section class="alert-section" aria-labelledby="subscribe-title">
       <div class="card subscribe" id="subscribe-card">
         <div class="subscribe-lead">
@@ -445,7 +416,6 @@
     </details>
   </section>
 
-  <!-- ================================================== Data & Methodology -->
   <section id="view-data" class="view" tabindex="-1" data-view="data" aria-labelledby="data-title" hidden>
     <header class="view-head hero-head">
       <p class="hero-kicker">Data &amp; Methodology</p>
@@ -513,7 +483,6 @@
     </details>
   </section>
 
-  <!-- =============================================================== About -->
   <section id="view-about" class="view" tabindex="-1" data-view="about" aria-labelledby="about-title" hidden>
     <header class="view-head hero-head">
       <p class="hero-kicker">About</p>

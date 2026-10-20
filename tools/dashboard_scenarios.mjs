@@ -77,8 +77,10 @@ async function check(name, fn) {
 
 const group = (title) => console.log(`\n${title}`);
 
-function boot(runtime) {
+function boot(runtime, hash) {
   const dom = createFakeDom();
+  // M16: the stored history is fetched once per city view, so a history scenario starts on the city page
+  if (hash) dom.window.location.hash = hash;
   dom.window.location.search = '?api=https://floodpulse-api.example.invalid';
   dom.window.FLOODPULSE_API_BASE = 'https://floodpulse-api.example.invalid';
   const sandbox = runtime.sandbox(dom);
@@ -366,7 +368,7 @@ async function main() {
     runtime.on(incidentsRoute, () => ({ body: live.incidents }));
     runtime.on(historyRoute, () => ({ status: 404, body: { error: 'unknown_zone' } }));
 
-    const dom = boot(runtime);
+    const dom = boot(runtime, '#/city/city-kochi');
     await runtime.settle();
 
     await check('a failing history route reports the reason and the retry backoff', () => {
@@ -412,7 +414,7 @@ async function main() {
     runtime.on(incidentsRoute, () => ({ body: live.incidents }));
     runtime.on(historyRoute, () => historyAnswer);
 
-    const dom = boot(runtime);
+    const dom = boot(runtime, '#/city/city-kochi');
     await runtime.settle();
 
     await check('an empty history window states 0 points instead of showing a broken chart', () => {
@@ -426,9 +428,12 @@ async function main() {
         points: [{ timestamp: '2026-10-15T17:00:00Z', risk_score: 0.5, risk_class: 'WATCH' }]
       }
     };
-    runtime.advance(31000);
-    await runtime.driveTimers();
+    // the panel fetches once per city view, so a reader asks for the new data by picking the city again
+    dom.fire(dom.node('history-zone'), 'click', {
+      target: dom.targetWith('[data-zone-pick]', 'data-zone-pick', 'city-kochi')
+    });
     await runtime.settle();
+    assert.equal(runtime.count(historyRoute), 2, 'picking the city again should reload its history');
 
     await check('hovering a history point that carries no readings does not throw', () => {
       // regression: an unguarded point.readings.X dereference threw inside mousemove
@@ -445,6 +450,129 @@ async function main() {
       assert.equal(dom.node('history-tooltip').hidden, false);
       dom.fire(canvas, 'mouseleave', {});
       assert.equal(dom.node('history-tooltip').hidden, true, 'the tooltip did not hide on mouseleave');
+    });
+  })();
+
+
+  /* --------------------------------------------------- the retrospective panel --- */
+
+  group('The retrospective panel answers what changed, and invents no history');
+
+  await (async () => {
+    const base = 1792400000;
+    const classOf = (score) => (score >= 0.8 ? 'CRITICAL' : score >= 0.6 ? 'WARNING' : score >= 0.35 ? 'WATCH' : 'NORMAL');
+    const rows = (list) => list.map(([offset, score, rain]) => ({
+      timestamp: new Date((base + offset) * 1000).toISOString(),
+      ts_epoch: base + offset,
+      risk_score: score,
+      risk_class: classOf(score),
+      readings: { rainfall_mm_per_hr: rain }
+    }));
+    const document = (points, extra) => ({
+      body: Object.assign({
+        zone_id: 'city-kochi', name: 'Kochi', minutes: 1440, since_epoch: base,
+        point_count: points.length, downsampled: false, model: 'heuristic-v1', points
+      }, extra || {})
+    });
+    const panel = async (body) => {
+      const runtime = createRuntime();
+      runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
+      runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+      runtime.on(historyRoute, () => body);
+      const dom = boot(runtime, '#/city/city-kochi');
+      await runtime.settle();
+      return { runtime, dom };
+    };
+
+    await check('a window holding one sample says so and names no direction', async () => {
+      const { dom } = await panel(document(rows([[0, 0.42, 0.4]])));
+      assert.match(dom.html('history-facts'), /not named: only 1 usable sample/);
+      assert.match(dom.text('history-summary'), /no direction is described/);
+      assert.match(dom.text('history-summary'), /1 usable historical sample/);
+      assert.ok(!/rising|falling|steady/i.test(dom.html('history-facts')), 'a single sample claimed a direction');
+    });
+
+    await check('a window holding two samples says so as well', async () => {
+      const { dom } = await panel(document(rows([[0, 0.3, 0.1], [1800, 0.5, 0.2]])));
+      assert.match(dom.html('history-facts'), /only 2 usable samples/);
+      assert.match(dom.text('history-summary'), /samples are available/);
+    });
+
+    await check('an empty history window shows the empty state, not a broken chart', async () => {
+      const { dom } = await panel(document([]));
+      assert.match(dom.text('history-meta'), /0 points/);
+      assert.match(dom.text('history-meta'), /full resolution/);
+      assert.match(dom.text('history-summary'), /No stored history in this window yet/);
+      assert.match(dom.html('history-canvas'), /chart-note|No stored readings/);
+      assert.match(dom.text('rain-summary'), /No stored rainfall reading in this window/);
+    });
+
+    await check('a flat window is called steady rather than rising', async () => {
+      const flat = [[0, 0.5, 0.1], [1800, 0.5, 0.1], [3600, 0.5, 0.1], [5400, 0.5, 0.1], [7200, 0.5, 0.1]];
+      const { dom } = await panel(document(rows(flat)));
+      assert.match(dom.html('history-facts'), /steady · least-squares slope within/);
+      assert.match(dom.text('history-summary'), /Steady: the least-squares slope stays inside/);
+      assert.match(dom.text('history-summary'), /Net change 0\.00/);
+    });
+
+    await check('a rising window is marked up and its net change stated', async () => {
+      const rising = [[0, 0.3, 0.1], [1800, 0.4, 0.2], [3600, 0.55, 0.3], [5400, 0.7, 0.4], [7200, 0.82, 0.6]];
+      const { dom } = await panel(document(rows(rising)));
+      assert.match(dom.html('history-facts'), /data-dir="up" ·|rising · least-squares slope \+0\./);
+      assert.match(dom.html('history-facts'), /rising · least-squares slope \+0\./);
+      assert.match(dom.text('history-summary'), /Rising: least-squares slope \+0\./);
+      assert.match(dom.html('history-facts'), /Peak/);
+    });
+
+    await check('a falling window is marked up the other way', async () => {
+      const falling = [[0, 0.82, 0.6], [1800, 0.7, 0.4], [3600, 0.55, 0.3], [5400, 0.4, 0.2], [7200, 0.3, 0.1]];
+      const { dom } = await panel(document(rows(falling)));
+      assert.match(dom.html('history-facts'), /data-dir="down"|falling · least-squares slope -0\./);
+      assert.match(dom.html('history-facts'), /falling · least-squares slope -0\./);
+      assert.match(dom.text('history-summary'), /Falling: least-squares slope -0\./);
+    });
+
+    await check('a window with one large gap discloses it and disables the windows it cannot cover', async () => {
+      // five samples across 50 minutes, with 40 minutes missing in the middle: inside the hour the
+      // window control can offer, above max(3 x median, 900 s), and disclosed in both sentences
+      const gapped = [[0, 0.35, 0.1], [300, 0.4, 0.2], [600, 0.45, 0.3], [3000, 0.5, 0.2], [3000 + 300, 0.55, 0.1]];
+      const { dom } = await panel(document(rows(gapped)));
+      assert.match(dom.text('history-summary'), /Read with care/);
+      assert.match(dom.text('history-window-note'), /largest gap/);
+      assert.match(dom.text('history-window-note'), /not offered yet: only 55 min of history so far/);
+      const range = dom.node('history-range').innerHTML;
+      assert.match(range, /data-range="1440"[^>]*disabled/, 'the 24H window should be shown disabled');
+      assert.match(range, /data-range="all"[^>]*aria-pressed="true"/, 'the widest covered window should be selected');
+      assert.match(range, /data-range="60"[^>]*disabled/, 'the 1H window is not covered by 55 minutes either');
+    });
+
+    await check('switching city while a history request is in flight never shows the other city', async () => {
+      const runtime = createRuntime();
+      const cityA = live.payload.zones[0].zone_id;
+      const cityB = live.payload.zones[1].zone_id;
+      runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
+      runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+      runtime.on(historyRoute, (path) => ({ body: Object.assign(document(rows([
+        [0, 0.61, 0.5], [1800, 0.62, 0.6], [3600, 0.63, 0.7], [5400, 0.64, 0.8]
+      ])).body, { zone_id: /^\/zones\/([^/]+)\/history$/.exec(path)[1] }) }));
+      // city A's answer never arrives until it is far too late
+      runtime.hold('/zones/' + cityA + '/history',
+        document(rows([[0, 0.11, 0.9], [1800, 0.12, 0.95]]), { zone_id: cityA }));
+      const dom = boot(runtime, '#/city/' + cityA);
+      await runtime.settle();
+      assert.equal(runtime.count(historyRoute), 1, 'the first city view asked once');
+      dom.window.location.hash = '#/city/' + cityB;
+      dom.fire(dom.window, 'hashchange', {});
+      await runtime.settle();
+      assert.match(runtime.lastRequest(), new RegExp('/zones/' + cityB + '/history'),
+        'the new city did not ask for its own history');
+      assert.match(dom.text('history-meta'), /4 points/, `the panel did not show the new city payload: ${dom.text('history-meta')}`);
+      runtime.release();
+      await runtime.settle();
+      assert.ok(!/0\.1[12]/.test(dom.html('history-facts')), 'the late answer painted another city history');
+      assert.ok(!/0\.1[12]/.test(dom.text('history-summary')), 'the late answer reached the chart summary');
+      assert.match(dom.html('history-facts'), /0\.64/, 'the panel is not showing the city the reader is on');
+      assert.match(dom.text('history-meta'), /4 points/, 'the panel lost the city it is showing');
     });
   })();
 
@@ -654,23 +782,51 @@ async function main() {
     runtime.on(incidentsRoute, () => ({ body: live.incidents }));
     runtime.on(historyRoute, () => ({ body: live.history }));
 
-    const dom = boot(runtime);
+    const leader = live.payload.highest_risk_zone ? live.payload.highest_risk_zone.zone_id : live.payload.zones[0].zone_id;
+    const dom = boot(runtime, '#/city/' + leader);
     await runtime.settle();
 
-    await check('the history panel defaults to the highest-risk city', () => {
-      const expected = live.payload.highest_risk_zone ? live.payload.highest_risk_zone.zone_id : live.payload.zones[0].zone_id;
-      assert.match(runtime.lastRequest(), new RegExp('/zones/' + expected + '/history'),
-        `history should default to ${expected}, saw ${runtime.lastRequest()}`);
+    await check('the history panel follows the city the page is showing', () => {
+      assert.equal(runtime.count(historyRoute), 1, `expected one history request, saw ${runtime.count(historyRoute)}`);
+      assert.match(runtime.lastRequest(), new RegExp('/zones/' + leader + '/history'),
+        `history should follow ${leader}, saw ${runtime.lastRequest()}`);
+      assert.match(runtime.lastRequest(), /minutes=1440/, 'the panel should ask once for the widest window');
     });
 
-    await check('clicking a range button switches the window and reloads', async () => {
+    await check('the other routes ask for no history at all', () => {
+      // the milestone's own rule: the panel exists on the city page only
+      const quiet = createRuntime();
+      quiet.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
+      quiet.on(incidentsRoute, () => ({ body: live.incidents }));
+      quiet.on(historyRoute, () => ({ body: live.history }));
+      const quietDom = boot(quiet);
+      return quiet.settle().then(() => {
+        assert.equal(quiet.count(historyRoute), 0, `the overview asked for history ${quiet.count(historyRoute)} times`);
+        ['#/cities', '#/alerts', '#/data', '#/about'].forEach((hash) => {
+          quietDom.window.location.hash = hash;
+          quietDom.fire(quietDom.window, 'hashchange', {});
+        });
+        return quiet.settle().then(() => {
+          assert.equal(quiet.count(historyRoute), 0,
+            `a non-city route asked for history ${quiet.count(historyRoute)} times`);
+        });
+      });
+    });
+
+    await check('choosing a window re-slices the loaded series without asking again', async () => {
       const before = runtime.count(historyRoute);
+      const summary = dom.text('history-summary');
       dom.fire(dom.node('history-range'), 'click', {
         target: dom.targetWith('[data-range]', 'data-range', '360')
       });
       await runtime.settle();
-      assert.equal(runtime.count(historyRoute), before + 1);
-      assert.match(runtime.lastRequest(), /minutes=360/);
+      assert.equal(runtime.count(historyRoute), before, 'a window must be a slice of the series already loaded');
+      assert.notEqual(dom.text('history-summary'), summary, 'the chart summary did not follow the window');
+      assert.match(dom.node('history-range').innerHTML, /data-range="360"[^>]*aria-pressed="true"/);
+      // and the window the history cannot cover yet explains itself instead of going quiet
+      const note = dom.text('history-window-note');
+      assert.match(note, /24H/, `the disabled window is not explained: ${note}`);
+      assert.match(note, /only/, `the reason should come from the data: ${note}`);
     });
 
     await check('resizing the window repaints both canvases without throwing', () => {

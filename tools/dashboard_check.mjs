@@ -2074,10 +2074,10 @@ check('the incident record is a table for assistive tech, not just a grid of spa
 });
 
 check('the chart is exposed as an image with a label', () => {
-  const canvas = /<canvas id="history-canvas"[^>]*>/.exec(htmlSource);
-  assert.ok(canvas, 'the history canvas was not found');
-  assert.match(canvas[0], /role="img"/, 'the canvas is not exposed as an image');
-  assert.match(canvas[0], /aria-label="[^"]+"/, 'the canvas has no accessible label');
+  const canvas = /<(?:canvas|svg) id="history-canvas"[^>]*>/.exec(htmlSource);
+  assert.ok(canvas, 'the history chart was not found');
+  assert.match(canvas[0], /role="img"/, 'the chart is not exposed as an image');
+  assert.match(canvas[0], /aria-label="[^"]+"/, 'the chart has no accessible label');
 });
 
 check('both canvases size their bitmap from the layout, not from the markup', () => {
@@ -2108,8 +2108,8 @@ check('a chart that cannot be drawn says so instead of staying blank', () => {
 
 check('the chart can be read without a mouse', () => {
   // regression: the values existed only behind mousemove, and the canvas was not focusable.
-  const canvas = /<canvas id="history-canvas"[^>]*>/.exec(htmlSource);
-  assert.ok(canvas, 'the history canvas was not found');
+  const canvas = /<(?:canvas|svg) id="history-canvas"[^>]*>/.exec(htmlSource);
+  assert.ok(canvas, 'the history chart was not found');
   assert.match(canvas[0], /tabindex="0"/, 'the chart cannot be focused with a keyboard');
   // The listener is registered through bindTo(), which skips a missing element instead of
   // aborting start(): what matters is that the canvas gets a keydown handler either way.

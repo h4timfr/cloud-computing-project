@@ -46,6 +46,12 @@ const libPath = option('--lib') || path.join('web', 'lib.js');
 
 /* ------------------------------------------------------------------ harness --- */
 
+/* M16: the city page is written in two halves, either side of the static retrospective panel, so a
+ * check that reads "the city page" reads both hosts in document order. */
+function cityPage(dom) {
+  return dom.html('city-detail') + dom.html('city-context');
+}
+
 let passed = 0;
 const failures = [];
 
@@ -162,9 +168,16 @@ function boot({ payload, incidents, history, hash = '', viewport = 1280, overrid
   runtime.on('/zones', () => overrides.zones
     ? overrides.zones(payload)
     : { body: payload });
-  runtime.on(/^\/zones\/[^/]+\/history$/, () => overrides.history
-    ? overrides.history(history)
-    : { body: history });
+  runtime.on(/^\/zones\/[^/]+\/history$/, (path) => {
+    const answer = overrides.history ? overrides.history(history) : { body: history };
+    // The API answers for the zone that was asked about; a stub that served one city's document for
+    // every city would hide the page rendering another city's history.
+    const asked = /^\/zones\/([^/]+)\/history$/.exec(path);
+    if (answer && answer.body && asked && answer.body.zone_id && answer.body.zone_id !== asked[1]) {
+      return { body: Object.assign({}, answer.body, { zone_id: asked[1] }) };
+    }
+    return answer;
+  });
   runtime.on('/incidents', () => overrides.incidents
     ? overrides.incidents(incidents)
     : { body: incidents });
@@ -636,7 +649,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
       assert.equal(dom.text('city-crumb'), zone.name, `the breadcrumb reads "${dom.text('city-crumb')}"`);
       assert.match(dom.title(), new RegExp(zone.name));
 
-      const detail = dom.html('city-detail');
+      const detail = cityPage(dom);
       assert.ok(detail.includes(zone.name), 'the detail panel does not name the city');
       if (!zone.latest) return;
 
@@ -694,7 +707,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
 
   check('a city page keeps the technical detail folded away', () => {
     openCity(dom, payload.zones[0].zone_id);
-    const detail = dom.html('city-detail');
+    const detail = cityPage(dom);
     assert.match(detail, /<details class="tech"/, 'the technical section is not a native details element');
     assert.ok(!/<details[^>]*\sopen/.test(detail), 'the technical section is expanded by default');
     assert.match(detail, /<summary>Technical details/, 'the technical section has no summary to click');
@@ -717,7 +730,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     await down.runtime.settle();
     assert.equal(up.loadError, null, `the page did not load: ${up.loadError && up.loadError.message}`);
     const whyOf = (built) => {
-      const match = /data-f="why">([^<]*)</.exec(built.dom.html('city-detail'));
+      const match = /data-f="why">([^<]*)</.exec(cityPage(built.dom));
       return match ? match[1] : '';
     };
     const upWhy = whyOf(up);
@@ -788,7 +801,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
     odd.zones[0].latest.top_drivers = ['mystery_sensor'];
     const built = boot({ payload: odd, incidents, history, hash: `#/cities/${odd.zones[0].zone_id}` });
     await built.runtime.settle();
-    const detail = built.dom.html('city-detail');
+    const detail = cityPage(built.dom);
     assert.match(detail, new RegExp(odd.zones[0].name), 'the city page did not render at all');
     assert.match(detail, /data-f="why"/, 'the plain-language explanation is missing');
     assert.ok(detail.length > 200, 'the city page rendered almost nothing');
@@ -819,7 +832,7 @@ const fleetNounPlural = payload.zone_mode === 'live_weather' ? 'cities' : 'zones
 
   check('an unknown city id is reported instead of showing an empty page', () => {
     openCity(dom, 'city-does-not-exist');
-    const detail = dom.html('city-detail');
+    const detail = cityPage(dom);
     assert.match(detail, /not in the current fleet/, 'the unknown city is not reported');
     assert.ok(detail.includes('city-does-not-exist'), 'the unknown id is not shown');
     assert.match(detail, new RegExp('Back to all ' + fleetNounPlural), 'there is no way back to the list');
@@ -1356,7 +1369,7 @@ assert.match(active, /An alert was published for this incident/,
     const FP = app.sandbox.window.FP;
     const leader = payload.zones.find((zone) => zone.latest);
     openCity(dom, leader.zone_id);
-    const detail = dom.html('city-detail');
+    const detail = cityPage(dom);
     const foldAt = detail.indexOf('<details class="tech"');
     assert.ok(foldAt > 0, 'the city page has no technical fold');
     const visible = detail.slice(0, foldAt);
@@ -1683,7 +1696,7 @@ assert.match(active, /An alert was published for this incident/,
     assert.ok(first, 'no city in this payload states why it is monitored');
     const detail = boot({ payload, incidents, history, hash: `#/cities/${first.zone_id}` });
     await detail.runtime.settle();
-    const markup = detail.dom.html('city-detail');
+    const markup = cityPage(detail.dom);
     assert.match(markup, /Why this city is monitored/, 'the city page does not say why it is monitored');
     assert.ok(markup.includes(first.selection_reason.split(',')[0].slice(0, 30)),
       `the city page does not carry the payload's reason for ${first.zone_id}`);

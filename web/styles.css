@@ -2,36 +2,30 @@
  */
 
 :root {
-  /* surfaces */
   --navy-900: #04091a;
   --navy-800: #071129;
   --navy-700: #0b1c3a;
   --storm-600: #12325c;
   --ink: #020617;
 
-  /* text */
   --slate-400: #94a3b8;
   --slate-300: #cbd5e1;
   --slate-200: #e2e8f0;
   --white: #f8fafc;
 
-  /* brand + accents */
   --cyan-400: #22d3ee;
   --cyan-500: #06b6d4;
   --cyan-200: #a5f3fc;
 
-  /* risk bands (graphics: rings, bars, borders — WCAG 3:1 on the page background) */
   --band-normal: #22d3ee;
   --band-watch: #fbbf24;
   --band-warning: #f97316;
   --band-critical: #ef4444;
-  /* text-safe variants: the vivid colours above carry small text at 4.5:1+ */
   --band-normal-text: #67e8f9;
   --band-watch-text: #fcd34d;
   --band-warning-text: #fdba74;
   --band-critical-text: #fca5a5;
 
-  /* data-state roles */
   --state-live: #4ade80;
   --state-live-text: #86efac;
   --state-stale: #fbbf24;
@@ -39,13 +33,11 @@
   --state-error: #ef4444;
   --state-error-text: #fecaca;
 
-  /* provenance roles */
   --src-real: #5eead4;
   --src-model: #a5b4fc;
   --src-simulated: #fbbf24;
   --src-unknown: #94a3b8;
 
-  /* glass surfaces */
   --glass: rgba(15, 33, 64, 0.62);
   --glass-strong: rgba(11, 28, 58, 0.90);
   --glass-flat: rgba(2, 6, 23, 0.38);
@@ -55,14 +47,12 @@
   --shadow: 0 18px 40px rgba(2, 6, 23, 0.55);
   --shadow-soft: 0 8px 20px rgba(2, 6, 23, 0.40);
 
-  /* geometry */
   --radius: 16px;
   --radius-sm: 10px;
   --gap: 20px;
   --pad-x: 28px;
   --pad: 20px 22px;
 
-  /* type */
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --track-wide: 0.14em;
@@ -135,7 +125,6 @@ code { font-family: var(--mono); font-size: 0.92em; color: var(--cyan-400); }
   font-size: 0.9rem;
 }
 
-/* ------------------------------------------------------------------ topbar --- */
 
 .topbar {
   position: sticky;
@@ -211,7 +200,6 @@ code { font-family: var(--mono); font-size: 0.92em; color: var(--cyan-400); }
   50% { box-shadow: 0 0 0 6px rgba(134, 239, 172, 0); }
 }
 
-/* ------------------------------------------------------------------ banner --- */
 
 .simulation-banner {
   position: relative;
@@ -236,9 +224,6 @@ code { font-family: var(--mono); font-size: 0.92em; color: var(--cyan-400); }
 #banner-detail { color: var(--slate-300); }
 #attribution { font-size: 0.76rem; color: var(--slate-400); }
 
-/* Live-weather mode: the same banner, but blue rather than amber, because part of the
-   data is real now. The colours differ only in hue; contrast against the page stays the
-   same in both modes. */
 .simulation-banner.is-live-data {
   background: repeating-linear-gradient(135deg, rgba(56, 189, 248, 0.12) 0 12px, rgba(56, 189, 248, 0.04) 12px 24px);
   border-bottom-color: rgba(56, 189, 248, 0.32);
@@ -260,7 +245,6 @@ code { font-family: var(--mono); font-size: 0.92em; color: var(--cyan-400); }
 }
 .simulation-banner.is-feed-off strong { color: var(--slate-300); }
 
-/* -------------------------------------------------------------- provenance --- */
 
 .src-chip {
   display: inline-block;
@@ -304,7 +288,6 @@ code { font-family: var(--mono); font-size: 0.92em; color: var(--cyan-400); }
 .zone-sources .src-chip, .metric-source .src-chip { margin-left: 0; }
 .metric-source { display: inline-flex; align-items: center; }
 
-/* ------------------------------------------------------------------- shell --- */
 
 main {
   position: relative;
@@ -349,7 +332,6 @@ main {
   overflow: hidden;
 }
 
-/* --------------------------------------------------------- fleet band strip --- */
 
 .band-strip-bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 16px 20px; }
 /* The heading and the change note each own a full line, so neither can squeeze the tiles. */
@@ -428,7 +410,6 @@ main {
 .change-note.band-watch { color: var(--band-watch-text); }
 .change-note.band-normal { color: var(--band-normal-text); }
 
-/* ------------------------------------------------------------------ hero row --- */
 
 
 
@@ -548,7 +529,6 @@ main {
 .rank-score { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
 .rank-class { font-size: 0.66rem; letter-spacing: 0.08em; text-align: right; color: currentColor; }
 
-/* ------------------------------------------------------------------- bands --- */
 
 .band-normal { color: var(--band-normal); }
 .band-watch { color: var(--band-watch); }
@@ -568,13 +548,11 @@ main {
   white-space: nowrap;
 }
 
-/* small band text needs the lighter variants to stay readable */
 .pill.band-critical, .rank-class.band-critical, .band-name.band-critical { color: var(--band-critical-text); }
 .pill.band-warning, .rank-class.band-warning, .band-name.band-warning { color: var(--band-warning-text); }
 .pill.band-watch, .rank-class.band-watch, .band-name.band-watch { color: var(--band-watch-text); }
 .pill.band-normal, .band-name.band-normal { color: var(--band-normal-text); }
 
-/* ------------------------------------------------------------------- zones --- */
 
 .zone-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: var(--gap); align-items: start; }
 
@@ -587,16 +565,12 @@ main {
   transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 .zone-card:hover { transform: translateY(-2px); box-shadow: 0 22px 46px rgba(2, 6, 23, 0.6); }
-/* `.zone-card .pill { color: currentColor }` used to live here and, sitting after the
- * claim small band text always uses the light variant. Only the unknown band inherits now. */
 .zone-card .pill.band-unknown { color: var(--slate-300); }
 .zone-card.is-empty,
 .zone-card.band-unknown { border-top-color: var(--slate-400); }
 
 .zone-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .zone-title h3 { margin: 0; font-size: 1.16rem; color: var(--white); letter-spacing: 0.01em; }
-/* The whole card is the target: the link sits in the heading and stretches over the card, so
- * the hover lift the card has always had is now backed by a real click and a real tab stop. */
 .zone-card { position: relative; }
 .zone-link { color: inherit; text-decoration: none; }
 .zone-link::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
@@ -646,8 +620,6 @@ main {
 .kv dd[data-dir="down"] { color: var(--state-live-text); }
 
 .metrics { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-/* Four declared columns - name, chip, value, bar - and four siblings to fill them. The chip used
- * to be nested inside the name (see README, "Interface notes: one metric, one row"). */
 .metric {
   display: grid;
   grid-template-columns: minmax(84px, 1fr) auto minmax(64px, auto) minmax(44px, 1.1fr);
@@ -697,7 +669,6 @@ main {
 .zone-empty { display: grid; gap: 6px; color: var(--slate-300); align-content: start; }
 .zone-empty p { margin: 0; font-size: 0.86rem; }
 
-/* --------------------------------------------------------------- incidents --- */
 
 
 .alert-chip {
@@ -794,7 +765,6 @@ main {
   white-space: nowrap;
 }
 
-/* ----------------------------------------------------------------- history --- */
 
 .history-panel { padding: var(--pad); display: grid; gap: 14px; }
 .panel-head { display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-between; align-items: flex-start; }
@@ -821,13 +791,35 @@ main {
 .ghost.is-active { background: rgba(34, 211, 238, 0.18); border-color: var(--cyan-400); color: #e0f7ff; font-weight: 600; }
 
 .chart-wrap { position: relative; }
-#history-canvas {
+/* M16: one SVG chart rule for both charts, sized from the panel's layout width rather than markup. */
+.chart-svg {
   width: 100%;
+  height: auto;
   display: block;
   border-radius: var(--radius-sm);
   background: var(--glass-flat);
   border: 1px solid var(--stroke);
 }
+.chart-fill { fill: rgba(148, 163, 184, 0.06); }
+.chart-fill.band-normal { fill: rgba(34, 197, 94, 0.07); }
+.chart-fill.band-watch { fill: rgba(250, 204, 21, 0.07); }
+.chart-fill.band-warning { fill: rgba(251, 146, 60, 0.09); }
+.chart-fill.band-critical { fill: rgba(248, 113, 113, 0.12); }
+.chart-guide { stroke: rgba(148, 163, 184, 0.22); stroke-width: 1; stroke-dasharray: 3 4; }
+.chart-line { fill: none; stroke: var(--cyan-400); stroke-width: 2; stroke-linejoin: round; }
+.chart-dot { fill: var(--cyan-400); }
+.chart-dot.is-peak { fill: #fbbf24; }
+.chart-tick { fill: var(--slate-400); font-family: var(--mono); font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart-tick.chart-tick-end { text-anchor: end; }
+.chart-tick.chart-note { font-family: inherit; font-size: 11px; }
+.change-facts { margin-top: 12px; }
+.change-facts dd[data-dir="up"] { color: #fca5a5; }
+.change-facts dd[data-dir="down"] { color: #86efac; }
+#history-window-note { margin: 4px 0 0; }
+.history-facts { margin: 12px 0 0; }
+.city-context { display: grid; gap: 18px; }
+.incident-outside { margin: 6px 0 0; color: var(--slate-400); }
+.alert-row.is-outside { opacity: 0.74; }
 /* The chart is focusable because it is the only place some values can be read. */
 #history-canvas:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 2px; }
 .chart-tooltip {
@@ -847,7 +839,6 @@ main {
   color: var(--slate-200);
 }
 
-/* ------------------------------------------------------------------ footer --- */
 
 .footer {
   position: relative;
@@ -862,12 +853,7 @@ main {
 }
 .footer p { margin: 0; max-width: 110ch; }
 
-/* ------------------------------------------------------------ stale states --- */
 
-/* Body-level connection states. The shell itself reports the data age, so a viewer who
-   scrolls past the badge still sees that something is wrong (or that nothing is wrong).
-   The pulse means "still loading", so it stops as soon as a poll has failed: a page waiting
-   on an API that answered with an error must not look like it is still fetching. */
 body.is-connecting:not(.is-waiting-failed) .band-strip,
 body.is-connecting:not(.is-waiting-failed) .ranking { animation: loading-pulse 1.8s ease-in-out infinite; }
 body.is-connecting .band-tile .band-count { color: var(--slate-400); }
@@ -900,15 +886,12 @@ body.is-stale main::after, body.is-disconnected main::after {
 body.is-stale main::after { color: var(--state-stale-text); background: rgba(120, 53, 15, 0.85); border: 1px solid rgba(251, 191, 36, 0.5); }
 body.is-disconnected main::after { color: var(--state-error-text); background: rgba(127, 29, 29, 0.88); border: 1px solid rgba(239, 68, 68, 0.55); }
 
-/* ================================================================= navigation --- */
 
 .nav { grid-area: nav; justify-self: center; min-width: 0; }
 .nav-list { display: flex; align-items: center; gap: 4px; list-style: none; margin: 0; padding: 0; }
 .nav-link {
   display: inline-flex;
   align-items: center;
-  /* A nav link is the most-tapped control on a phone, so it is a full touch target rather than
-   * a piece of text with padding: 44px is the size a fingertip can be expected to hit. */
   min-height: 44px;
   padding: 8px 15px;
   border-radius: 999px;
@@ -981,7 +964,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   color: var(--white);
 }
 
-/* ====================================================================== views --- */
 
 .view { display: grid; gap: var(--gap); }
 /* `hidden` on a section must win over the layout above, or every view would show. */
@@ -1010,7 +992,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 }
 .ghost-link:hover { text-decoration: none; border-color: var(--stroke-bright); color: var(--white); }
 
-/* --------------------------------------------------------------- overview --- */
 
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: var(--gap); }
 .stat {
@@ -1075,7 +1056,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .snapshot-panel { padding: var(--pad); display: grid; gap: 10px; }
 .snapshot-panel .summary-list { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
 
-/* ------------------------------------------------------------- city detail --- */
 
 .city-detail-slot,
 .city-detail { display: grid; gap: var(--gap); }
@@ -1232,7 +1212,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .tech-table tbody th { font-weight: 500; color: var(--slate-200); }
 .tech-table tbody td { font-family: var(--mono); color: var(--slate-300); }
 
-/* ------------------------------------------------------------------ alerts --- */
 
 .alert-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 .alert-row {
@@ -1272,7 +1251,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 .empty-title { margin: 0; font-size: 1rem; color: var(--slate-200); }
 .empty-state p { margin: 0; font-size: 0.86rem; }
 
-/* --------------------------------------------------------- data & method --- */
 
 .legend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--gap); }
 .legend-card { padding: 18px 20px; display: grid; gap: 8px; border-top: 3px solid var(--src-unknown); }
@@ -1300,7 +1278,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 #attribution-block { padding: var(--pad); display: grid; gap: 8px; }
 #attribution-block p { margin: 0; font-size: 0.9rem; color: var(--slate-300); max-width: 92ch; }
 
-/* ---------------------------------------------------------------- responsive --- */
 
 @media (max-width: 1280px) {
   .rank-row { grid-template-columns: 20px minmax(0, 1fr) 62px 58px 52px; }
@@ -1334,9 +1311,6 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
 @media (max-width: 760px) {
   :root { --pad-x: 16px; --gap: 16px; --pad: 16px 16px; }
   main { padding: 16px var(--pad-x) 30px; }
-  /* The phone is where the controls are tapped: the base sizes give the city and range
-     buttons 29.6 px of height and the menu button 34 px, both under the 40 px a fingertip
-     needs. The min-heights below are the floor, in whichever layout they appear. */
   .ghost, .ghost-link, .nav-toggle, .nav-link { min-height: 40px; }
   .ghost { padding: 9px 14px; }
   /* The bar stays stuck to the top on a phone: it holds the menu button and the
@@ -1403,10 +1377,10 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   .zone-card:hover, .city-card:hover { transform: none; }
 }
 
+
 /* M9 - product experience, information design and responsive polish - notes in README, "Interface notes". */
 
 :root {
-  /* type scale: bigger body copy, fewer all-caps labels, headings that step down clearly */
   --text-xs: 0.78rem;
   --text-sm: 0.86rem;
   --text-base: 1rem;
@@ -1484,7 +1458,6 @@ body {
 .hero-title { max-width: 30ch; }
 .hero-status { max-width: 78ch; }
 
-/* ------------------------------------------------------------------ icons --- */
 
 /* Every icon inherits the colour of its container and never shifts the baseline. */
 .icon,
@@ -1512,7 +1485,6 @@ body {
 .trend-falling { color: var(--state-live-text); }
 .trend-flat { color: var(--slate-400); }
 
-/* ------------------------------------------------------------------ topbar --- */
 
 .health { position: relative; }
 
@@ -1589,7 +1561,6 @@ body {
 .health-item.is-bad svg { color: var(--state-error); }
 .health-item.is-quiet svg { color: var(--slate-400); }
 
-/* ------------------------------------------------------------- navigation --- */
 
 .footer-nav {
   display: flex;
@@ -1606,7 +1577,6 @@ body {
  * on the base rule above; this only documents the intent for the letter-spacing pass. */
 .nav-link { letter-spacing: 0; }
 
-/* --------------------------------------------------------------- surfaces --- */
 
 /* Calmer surfaces than the M6 glass: a deep gradient card reads as a document rather than a
  * strongest non-colour-band cue on the page. */
@@ -1624,7 +1594,6 @@ body {
   a.card:hover { border-color: var(--stroke-strong); }
 }
 
-/* -------------------------------------------------------------- skeletons --- */
 
 .skel {
   display: block;
@@ -1677,7 +1646,6 @@ body {
   border-radius: var(--radius);
 }
 
-/* ------------------------------------------------------------ empty states --- */
 
 .empty-state {
   display: grid;
@@ -1737,7 +1705,6 @@ body {
 
 .empty-state.is-quiet .empty-icon { color: var(--slate-300); background: rgba(148, 163, 184, 0.12); border-color: var(--stroke-strong); }
 
-/* ---------------------------------------------------------------- buttons --- */
 
 .btn {
   display: inline-flex;
@@ -1774,7 +1741,6 @@ body {
 .btn[disabled] { opacity: 0.6; cursor: progress; }
 .btn[aria-busy="true"] { cursor: progress; }
 
-/* ------------------------------------------------------------- stat cards --- */
 
 .stat {
   background: var(--surface);
@@ -1787,7 +1753,6 @@ body {
 .stat-value { font-size: clamp(1.5rem, 1.3rem + 0.9vw, 2rem); font-weight: 660; letter-spacing: -0.02em; }
 .stat-meta { font-size: var(--text-sm); }
 
-/* ------------------------------------------------------------- city cards --- */
 
 .city-card {
   display: grid;
@@ -1827,12 +1792,9 @@ body {
 
 .city-card.is-stale { border-style: dashed; }
 
-/* ------------------------------------------------------------ metric tile --- */
 
 .help { display: inline-block; }
 
-/* A help button is a finger target on a phone, where a 26px dot is not. It grows to a full
- * touch size under 560px and stays compact (32px, still comfortable for a mouse) above it. */
 .help summary {
   display: inline-grid;
   place-items: center;
@@ -1862,7 +1824,6 @@ body {
   border-radius: var(--radius-sm);
 }
 
-/* --------------------------------------------------------------- drivers --- */
 
 .driver-block { margin-top: 18px; }
 
@@ -1913,7 +1874,6 @@ body {
 
 .driver-share { font-family: var(--mono); font-size: var(--text-sm); text-align: right; color: var(--slate-200); }
 
-/* ---------------------------------------------------------------- alerts --- */
 
 .alert-section { margin-bottom: 26px; }
 
@@ -1990,7 +1950,6 @@ body {
 .alert-chip { font-size: var(--text-sm); }
 .status-note { margin: 10px 0 0; }
 
-/* ----------------------------------------------------- alert delivery panel --- */
 
 .delivery-slot { margin-top: 12px; }
 .delivery-panel { padding: 20px 22px; }
@@ -2023,7 +1982,6 @@ body {
 .delivery-body b { font-size: var(--text-base); }
 .delivery-body > span { font-size: var(--text-sm); color: var(--slate-300); }
 
-/* ---------------------------------------------------------- system status --- */
 
 .status-grid {
   display: grid;
@@ -2053,7 +2011,6 @@ body {
 .status-card.is-bad .status-icon { color: var(--state-error); }
 .status-label { margin: 0; font-size: var(--text-base); color: var(--slate-200); }
 
-/* --------------------------------------------------------------- activity --- */
 
 .activity-slot { margin-top: 26px; }
 .activity-panel { padding: 20px 22px; }
@@ -2096,13 +2053,11 @@ body {
   border-radius: 999px;
 }
 
-/* ----------------------------------------------------- city alert history --- */
 
 .city-incidents-slot { margin-top: 22px; }
 .incident-history { padding: 20px 22px; }
 .mini-alerts { margin: 0; padding: 0; list-style: none; display: grid; gap: 12px; }
 
-/* -------------------------------------------------- data & method, about --- */
 
 .legend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 16px; }
 .about-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
@@ -2138,7 +2093,6 @@ body {
 .guidance-teaser p { margin: 0 0 8px; font-size: var(--text-sm); line-height: 1.65; color: var(--slate-300); }
 .guidance-teaser .block-title { margin-top: 0; }
 
-/* ----------------------------------------------------------------- chart --- */
 
 .chart-summary {
   margin: 10px 0 0;
@@ -2151,10 +2105,8 @@ body {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
-/* ------------------------------------------------------------ responsive --- */
 
 @media (max-width: 1180px) {
-  /* the health detail is the first thing to go: the word and the dot carry the meaning */
   .health-detail { display: none; }
 }
 
@@ -2185,7 +2137,6 @@ body {
 
   .block-title { margin-top: 22px; }
   .chart-summary { font-size: var(--text-xs); }
-  /* touch targets: help buttons and disclosure summaries reach 44px on a small screen */
   .help summary { width: 44px; height: 44px; }
   .tech > summary { min-height: 44px; display: flex; align-items: center; }
 }
@@ -2213,7 +2164,6 @@ main, .topbar, .footer { max-width: 100%; }
   overflow-wrap: anywhere;
 }
 
-/* ------------------------------------------------- the model, folded away --- */
 
 /* Everything below appears only inside a collapsed technical section (the city page and the
  * view is the point - the words a visitor reads are the ones at reading size. */
@@ -2289,6 +2239,7 @@ main, .topbar, .footer { max-width: 100%; }
 }
 .breakdown-total b { color: var(--white); font-variant-numeric: tabular-nums; }
 
+
 /* M10 - premium pass: cinematic shell, grouped header, the hero, city cards, the alerts preview, the three-step explainer and the subscription form - notes in README, "Interface notes". */
 
 :root {
@@ -2298,7 +2249,6 @@ main, .topbar, .footer { max-width: 100%; }
   --glow-cyan: 0 0 0 1px rgba(34, 211, 238, 0.18), 0 12px 30px rgba(6, 182, 212, 0.10);
 }
 
-/* backdrop - README, "Interface notes". */
 
 .bg-layer {
   background-position: center;
@@ -2312,14 +2262,11 @@ main, .topbar, .footer { max-width: 100%; }
     linear-gradient(180deg, rgba(4, 9, 26, 0.62) 0%, rgba(3, 8, 22, 0.86) 100%);
 }
 
-/* The banner and the topbar sit above the photograph, so both get a little more body than
- * the panels: they are read while scrolling, over whatever part of the image is behind. */
 .topbar {
   background: linear-gradient(180deg, rgba(6, 14, 34, 0.97), rgba(6, 14, 34, 0.88));
   box-shadow: 0 10px 30px rgba(1, 4, 14, 0.45);
 }
 
-/* header - README, "Interface notes". */
 
 .topbar-status { justify-content: flex-end; }
 
@@ -2352,7 +2299,6 @@ main, .topbar, .footer { max-width: 100%; }
   }
 }
 
-/* hero - README, "Interface notes". */
 
 .hero.hero-live {
   display: grid;
@@ -2448,8 +2394,6 @@ main, .topbar, .footer { max-width: 100%; }
 .hero-aside p { margin: 0; }
 .hero-cta { justify-self: start; }
 
-/* ------------------------------------------------------------- summary cards ---
- */
 
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--gap); }
 
@@ -2475,7 +2419,6 @@ main, .topbar, .footer { max-width: 100%; }
 .stat-value { margin: 2px 0 6px; }
 .stat-meta { color: var(--slate-300); }
 
-/* city cards - README, "Interface notes". */
 
 .city-thumb {
   display: inline-grid;
@@ -2530,7 +2473,6 @@ main, .topbar, .footer { max-width: 100%; }
 .city-meter[data-band="critical"] .city-meter-fill { background: var(--band-critical); box-shadow: 0 0 12px rgba(239, 68, 68, 0.36); }
 .city-meter[data-band="unknown"] .city-meter-fill { background: var(--slate-400); box-shadow: none; }
 
-/* alert preview - README, "Interface notes". */
 
 .alert-preview { padding: 20px 22px; }
 .alert-preview .block-title { margin-top: 0; }
@@ -2562,8 +2504,6 @@ main, .topbar, .footer { max-width: 100%; }
 .preview-list { margin: 0 0 10px; }
 .preview-actions { margin: 14px 0 0; }
 
-/* -------------------------------------------------------------- how it works ---
- */
 
 .works { margin: 4px 0 26px; }
 
@@ -2589,7 +2529,6 @@ main, .topbar, .footer { max-width: 100%; }
 .works-step h4 { margin: 0; font-size: 1.04rem; letter-spacing: -0.01em; }
 .works-step p { margin: 0; font-size: var(--text-sm); color: var(--slate-300); }
 
-/* ------------------------------------------------------- email subscription --- */
 
 .subscribe {
   display: grid;
@@ -2665,7 +2604,6 @@ main, .topbar, .footer { max-width: 100%; }
 
 .subscribe-notes p { margin: 0; }
 
-/* responsive - README, "Interface notes". */
 
 @media (max-width: 900px) {
   .hero.hero-live { grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 22px; }
@@ -2696,9 +2634,7 @@ main, .topbar, .footer { max-width: 100%; }
   .btn, .health-summary { transition: none; }
 }
 
-/* M10.1 the imagery - README, "Interface notes". */
 
-/* ------------------------------------------------------------------ backdrop --- */
 
 .bg-layer {
   background-position: center top;
@@ -2712,7 +2648,6 @@ main, .topbar, .footer { max-width: 100%; }
     linear-gradient(180deg, rgba(4, 9, 26, 0.48) 0%, rgba(3, 8, 22, 0.78) 100%);
 }
 
-/* ------------------------------------------------------------------ surfaces --- */
 
 :root {
   /* The panels were a near-opaque navy wall. Same navy, less wall: the photograph reads
@@ -2727,7 +2662,6 @@ main, .topbar, .footer { max-width: 100%; }
   backdrop-filter: blur(7px) saturate(1.05);
 }
 
-/* -------------------------------------------------------------------- header --- */
 
 /* Three groups, unchanged in order and content; tightened so the bar is mostly navigation
  * rather than empty navy. */
@@ -2745,7 +2679,6 @@ main, .topbar, .footer { max-width: 100%; }
   .nav-link { padding: 7px 12px; }
 }
 
-/* ---------------------------------------------------------------------- hero --- */
 
 /* Compact, and lighter than the panels around it so the photograph is strongest here. */
 .hero.hero-live {
@@ -2771,7 +2704,6 @@ main, .topbar, .footer { max-width: 100%; }
   padding: 0;
   border-left: 4px solid var(--stroke-strong);
   border-radius: var(--radius-lg);
-  /* the image band is full-bleed, so the corner radius has to clip it */
   overflow: hidden;
   transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease, background-color 180ms ease;
 }
@@ -2806,8 +2738,6 @@ main, .topbar, .footer { max-width: 100%; }
   transition: transform 260ms ease;
 }
 
-/* The gradient at the foot of the band: it keeps the name and the band pill off a bright
- * skyline, and it ties the image into the surface below instead of ending it with a hard line. */
 .city-thumb::after {
   content: '';
   position: absolute;
@@ -2953,7 +2883,6 @@ main, .topbar, .footer { max-width: 100%; }
 .zone-driver svg { color: var(--band-warning-text); }
 .zone-driver.muted { color: var(--slate-400); }
 
-/* ----------------------------------------------------------------- skeletons --- */
 
 .skel-card {
   gap: 0;
@@ -2991,9 +2920,7 @@ main, .topbar, .footer { max-width: 100%; }
   .city-card:focus-visible .city-photo { transform: none; }
 }
 
-/* M10.2 - README, "Interface notes". */
 
-/* ------------------------------------------------------------------ backdrop --- */
 
 .bg-layer {
   /* Still fixed and still at z-index 0: above the body's own paint, below every panel. Both of
@@ -3033,7 +2960,6 @@ main, .topbar, .footer { max-width: 100%; }
       rgba(1, 6, 18, 0.30) 100%);
 }
 
-/* surfaces - README, "Interface notes". */
 
 :root {
   /* Hero and the subscription panel: the most transparent, because they are the largest surfaces
@@ -3055,8 +2981,6 @@ main, .topbar, .footer { max-width: 100%; }
 .card {
   background: var(--surface);
   border-color: rgba(125, 170, 220, 0.22);
-  /* Kept, and kept at 7px: it softens whatever is behind a paragraph, which is a readability
-   * tool now that there is something behind it to soften. Never a heavy blur over the picture. */
   backdrop-filter: blur(7px) saturate(1.04);
 }
 
@@ -3069,7 +2993,6 @@ main, .topbar, .footer { max-width: 100%; }
   background: var(--surface-card);
 }
 
-/* ------------------------------------------------------------------ header --- */
 
 .topbar {
   background: var(--topbar-surface);
@@ -3078,7 +3001,6 @@ main, .topbar, .footer { max-width: 100%; }
   backdrop-filter: blur(6px);
 }
 
-/* -------------------------------------------------------------------- hero --- */
 
 .hero,
 .hero.hero-live {
@@ -3086,13 +3008,10 @@ main, .topbar, .footer { max-width: 100%; }
   border-color: var(--hero-edge);
 }
 
-/* The fleet strip and the footer keep the panel treatment; the footer is the last thing above the
- * most vignetted part of the picture, so it gets a touch more body than a panel. */
 .footer {
   background: rgba(3, 11, 26, 0.80);
 }
 
-/* phones - README, "Interface notes". */
 
 @media (max-width: 760px) {
   .bg-layer {
@@ -3130,8 +3049,6 @@ main, .topbar, .footer { max-width: 100%; }
   }
 }
 
-/* M11: the city toolbar, the place lines and the plate's coast label - the pieces the
- */
 
 .city-card .city-place,
 .zone-card .zone-place,
@@ -3186,9 +3103,7 @@ main, .topbar, .footer { max-width: 100%; }
   color: var(--slate-300);
 }
 
-/* --------------------------------------------------- finding one of fifteen --- */
 
-/* One grid at every width; the tiers and their arithmetic are in README, "Interface notes". */
 .cities-toolbar {
   display: grid;
   gap: 12px 16px;
@@ -3198,8 +3113,6 @@ main, .topbar, .footer { max-width: 100%; }
   grid-template-areas: 'search' 'coast' 'risk' 'sort';
 }
 
-/* 1320px and up: one row, the tracks the brief names. 280+360+300+170 plus three 16px gaps is
- * 1158px, and the content box here is 1264px, so nothing is being asked for that cannot fit. */
 @media (min-width: 1320px) {
   .cities-toolbar {
     grid-template-columns: minmax(280px, 1.5fr) minmax(360px, 2fr) minmax(300px, 1.5fr) minmax(170px, 0.8fr);
@@ -3247,8 +3160,6 @@ main, .topbar, .footer { max-width: 100%; }
   }
 }
 
-/* Phone: one column, in reading order, with each group on its own lines. No horizontal
- * scrolling at any width: every track is `minmax(0, 1fr)` and every control is min-width: 0. */
 @media (max-width: 767px) {
   .cities-toolbar {
     gap: 12px;
@@ -3305,8 +3216,6 @@ main, .topbar, .footer { max-width: 100%; }
 .map-band.is-stale, .map-key.is-stale { color: var(--state-stale-text); }
 @media (max-width: 899px) { .map-split { grid-template-columns: minmax(0, 1fr); } }
 
-/* The sort control is a native select: only its arrow is ours, drawn on the wrapper so the control stays
-   a control. The chevron is decoration, so it never takes a click meant for the select underneath it. */
 .select-wrap { position: relative; display: block; min-width: 0; }
 .select-wrap::after { content: ''; position: absolute; right: 16px; top: 50%; width: 7px; height: 7px;
   margin-top: -6px; border-right: 2px solid var(--slate-400); border-bottom: 2px solid var(--slate-400);
@@ -3317,8 +3226,6 @@ main, .topbar, .footer { max-width: 100%; }
    must not depend on which of the two it got. */
 .city-thumb { overflow: hidden; }
 
-/* The Data page's selection and architecture panels are .card elements used as text panels, and .card
-   carries no padding of its own: their copy sat against the border while every sibling panel was inset. */
 #city-selection + .card, .tech .card {
   padding: 20px 22px; }
 
@@ -3327,8 +3234,4 @@ main, .topbar, .footer { max-width: 100%; }
 .pipeline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .pipe-arrow { color: var(--slate-400); font-size: 0.74rem; }
 
-/* A city card is a two-row grid, and the grid default (align-content: stretch) shares the row's spare
-   height out to the picture row as well as the text: a card whose state and coast line wraps to a second
-   line then starts its picture lower, so the titles across one row sit 16-18px apart. The rows keep their
-   own height instead and any slack stays at the foot of the card. */
 .city-card { align-content: start; }

@@ -64,7 +64,7 @@
     history: null,
     selectedZone: null,
     userSelected: false,
-    historyMinutes: 60,
+    historyWindow: 60,
     inFlight: false,
     hoverIndex: null,
     incidents: null,
@@ -76,8 +76,13 @@
     // history bookkeeping: which zone the loaded series belongs to, and when a failed
     // attempt happened, so a broken history route is not retried on every 5 s poll.
     historyZone: null,
-    historyMinutesLoaded: null,
+    // the slice of the loaded series the panel is showing, and its numbers: the arrow keys and
+    // the tooltip read these, so they always describe what is on screen
+    windowPoints: [],
+    windowSummary: null,
     historyInFlight: false,
+    // which city the request in flight belongs to: a switch to another city starts its own request
+    historyLoadingZone: null,
     historyFailedMs: null,
     // why the last history load failed, so the empty chart can say "could not be loaded"
     // rather than the misleading "no history in this window"
@@ -247,6 +252,8 @@
     var ids = [
       'conn-badge', 'conn-detail', 'conn-announce', 'last-update', 'api-base', 'hero', 'ranking', 'zones',
       'history-zone', 'history-range', 'history-canvas', 'history-meta', 'history-tooltip',
+      'history-facts', 'history-window-note', 'rain-chart', 'rain-summary', 'history-panel',
+      'city-context',
       'notice-text', 'summary-live', 'summary-model', 'summary-generated', 'poll-count',
       'incidents', 'incidents-meta', 'incidents-alerting',
       'data-banner', 'banner-title', 'banner-detail', 'summary-mode', 'summary-weather', 'attribution',
@@ -419,7 +426,7 @@
     renderHero(payload);
     renderCitiesPage();
     renderRanking(state.zones);
-    renderHistoryButtons(state.zones);
+    renderZonePicker(state.zones);
     // every view is rendered on every successful poll, not only the visible one: the
     // sections are small, and switching a view must never show a stale answer
     renderOverview(payload);
@@ -430,10 +437,9 @@
     if (state.route.view === 'city') renderCityDetail();
     refreshConnection();
 
-    if (state.historyZone !== state.selectedZone || state.historyMinutesLoaded !== state.historyMinutes) {
-      // The API may re-point the default zone at a new highest-risk zone (the live fleet
-      loadHistory();
-    }
+    // One request per city view: the API may re-point the default zone at a new highest-risk zone, and
+    // that is the only case a poll has to fetch again. The four window controls slice what is in memory.
+    if (state.historyZone !== state.selectedZone) loadHistory();
   }
 
   /* The board is one page in both modes, so its headings follow the fleet the payload
@@ -894,314 +900,200 @@
 
   /* ---------------------------------------------------------------- history --- */
 
+  /* One request per city view, for the widest window the API keeps; the four buttons slice memory. */
+  var HISTORY_MINUTES = 1440;
+
   function loadHistory() {
-    if (!state.selectedZone) return;
-    if (state.historyInFlight) return;
-    // A failing history route must not be hammered: the 5 s poll and the 30 s ticker would
-    // otherwise both retry a broken endpoint. One retry per backoff window instead.
+    if (!state.selectedZone || state.route.view !== 'city') return;
+    if (state.historyInFlight && state.historyLoadingZone === state.selectedZone) return;
+    // a broken history route must not be hammered by the poll, the ticker and a tab return at once
     if (state.historyFailedMs !== null && Date.now() - state.historyFailedMs < HISTORY_RETRY_MS) return;
-    var zone = state.selectedZone;
-    var minutes = state.historyMinutes;
-    var seq = ++state.historySeq;
+    var zone = state.selectedZone, seq = ++state.historySeq;
     state.historyInFlight = true;
-    // Say we are fetching before the request goes out: the panel used to keep the previous
-    // window's line ("18 points · 1440 min") while showing a chart of a different range.
-    state.history = null;
+    state.historyLoadingZone = zone;
     state.historyError = null;
-    state.hoverIndex = null;
-    if (el['history-meta']) el['history-meta'].textContent = 'loading the last ' + minutes + ' min…';
-    drawHistory();
+    setText('history-meta', 'loading the stored history…'); // the panel keeps what is on screen meanwhile
     var giveUp = setTimeout(function () {
       if (seq !== state.historySeq) return;
-      // The request never answered: release the single-flight flag so the backoff can retry,
-      // instead of leaving the panel loading forever.
       state.historyInFlight = false;
+      state.historyLoadingZone = null;
       state.historyFailedMs = Date.now();
       state.historyError = 'no answer';
       state.history = null;
+      state.historyZone = null;
       drawHistory();
-      if (el['history-meta']) {
-        el['history-meta'].textContent = 'history timed out — retrying in ' +
-          Math.round(HISTORY_RETRY_MS / 1000) + ' s';
-      }
     }, FETCH_TIMEOUT_MS);
-    getJson('/zones/' + encodeURIComponent(zone) + '/history?minutes=' + minutes)
-      .then(function (data) {
-        clearTimeout(giveUp);
-        if (seq !== state.historySeq) return; // a newer request owns the panel now
-        state.historyInFlight = false;
-        state.historyFailedMs = null;
-        state.historyError = null;
-        if (zone !== state.selectedZone || minutes !== state.historyMinutes) return; // stale response
-        state.history = data;
-        state.historyZone = zone;
-        state.historyMinutesLoaded = minutes;
-        state.hoverIndex = null;
-        drawHistory();
-        el['history-meta'].textContent = data.point_count + ' points · ' + data.minutes +
-          ' min · ' + (data.downsampled ? 'downsampled (stride ' + data.stride + ')' : 'full resolution') +
-          ' · model ' + data.model;
-      })
-      .catch(function (error) {
-        clearTimeout(giveUp);
-        if (seq !== state.historySeq) return;
-        state.historyInFlight = false;
-        state.historyFailedMs = Date.now();
-        state.historyError = error.message;
-        state.history = null;
-        state.historyZone = null;
-        state.historyMinutesLoaded = null;
-        // Redraw the empty state instead of leaving the previous chart on screen: the canvas
-        // used to stay a blank box carrying a "Risk score history chart" label for AT.
-        drawHistory();
-        el['history-meta'].textContent = 'history unavailable (' + error.message + ') — retrying in ' +
-          Math.round(HISTORY_RETRY_MS / 1000) + ' s';
-      });
+    getJson('/zones/' + encodeURIComponent(zone) + '/history?minutes=' + HISTORY_MINUTES).then(function (data) {
+      clearTimeout(giveUp);
+      if (seq !== state.historySeq) return; // a newer request owns the panel now
+      state.historyInFlight = false;
+      state.historyLoadingZone = null;
+      state.historyFailedMs = null;
+      state.historyError = null;
+      if (zone !== state.selectedZone || state.route.view !== 'city') return; // nobody is on that city
+      if (data && data.zone_id && data.zone_id !== zone) return; // an answer for another city is not this city's history
+      state.history = data;
+      state.historySeries = FP.temporal.clean(data && data.points);
+      state.historyZone = zone;
+      drawHistory();
+    }).catch(function (error) {
+      clearTimeout(giveUp);
+      if (seq !== state.historySeq) return;
+      state.historyInFlight = false;
+      state.historyLoadingZone = null;
+      state.historyFailedMs = Date.now();
+      state.historyError = error.message;
+      state.history = null;
+      state.historySeries = null;
+      state.historyZone = null;
+      drawHistory(); // an empty chart that says why, never the previous city's line still on screen
+    });
   }
 
-  function renderHistoryButtons(zones) {
-    var zoneButtons = zones.map(function (zone) {
-      var active = zone.zone_id === state.selectedZone ? ' is-active' : '';
-      return '<button type="button" class="ghost' + active + '" data-zone-pick="' + FP.escapeHtml(zone.zone_id) + '">' +
-        FP.escapeHtml(zone.name) + '</button>';
+  /* The panel's own city picker: the control that was here before, kept because a reader on one city's
+   * chart should not have to go back to the Cities list to compare another. */
+  function renderZonePicker(zones) {
+    if (!el['history-zone']) return;
+    var list = (zones || []).slice().sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+    el['history-zone'].innerHTML = list.map(function (zone) {
+      var on = zone.zone_id === state.selectedZone;
+      return '<button type="button" class="ghost' + (on ? ' is-active' : '') + '" data-zone-pick="' +
+        FP.escapeHtml(zone.zone_id) + '" aria-pressed="' + (on ? 'true' : 'false') + '">' + FP.escapeHtml(zone.name) + '</button>';
     }).join('');
-    if (el['history-zone'].getAttribute('data-rendered') !== zoneSignature(zones)) {
-      el['history-zone'].innerHTML = zoneButtons;
-      el['history-zone'].setAttribute('data-rendered', zoneSignature(zones));
-    }
-    Array.prototype.forEach.call(el['history-zone'].querySelectorAll('[data-zone-pick]'), function (button) {
-      button.classList.toggle('is-active', button.getAttribute('data-zone-pick') === state.selectedZone);
-    });
-
-    var ranges = [15, 60, 360];
-    if (el['history-range'].getAttribute('data-rendered') !== 'yes') {
-      el['history-range'].innerHTML = ranges.map(function (minutes) {
-        return '<button type="button" class="ghost" data-range="' + minutes + '">' + minutes + ' min</button>';
-      }).join('');
-      el['history-range'].setAttribute('data-rendered', 'yes');
-    }
-    Array.prototype.forEach.call(el['history-range'].querySelectorAll('[data-range]'), function (button) {
-      button.classList.toggle('is-active', Number(button.getAttribute('data-range')) === state.historyMinutes);
-    });
   }
 
-  function historyAriaLabel(points) {
-    var minutes = state.historyMinutes;
-    if (state.historyError) return 'Risk score history could not be loaded.';
-    if (!points.length) return 'Risk score history for the last ' + minutes + ' min: no readings in this window.';
-    var scores = points.map(function (point) { return FP.toNumber(point.risk_score); })
-      .filter(function (score) { return score !== null; });
-    if (!scores.length) return 'Risk score history for the last ' + minutes + ' min: ' + points.length + ' readings.';
-    var lowest = Math.min.apply(null, scores);
-    var highest = Math.max.apply(null, scores);
-    return 'Risk score history for the last ' + minutes + ' min: ' + points.length + ' readings, from ' +
-      FP.clockLabel(points[0].timestamp) + ' to ' + FP.clockLabel(points[points.length - 1].timestamp) +
-      '. Lowest ' + lowest.toFixed(2) + ', highest ' + highest.toFixed(2) + '.';
+  function renderWindows(choices, selected, summary) {
+    if (el['history-range']) {
+      el['history-range'].innerHTML = choices.map(function (option) {
+        var on = selected === option.minutes;
+        return '<button type="button" class="ghost' + (on ? ' is-active' : '') + '" data-range="' + (option.minutes === null ? 'all' : option.minutes) +
+          '" aria-pressed="' + (on ? 'true' : 'false') + '"' + (option.enabled ? '' : ' disabled aria-describedby="history-window-note"') + '>' + option.label + '</button>';
+      }).join('');
+    }
+    if (el['history-window-note']) {
+      var off = choices.filter(function (option) { return !option.enabled; });
+      var note = FP.temporal.quality(summary) + (off.length ? '. The ' + off.map(function (option) { return option.label; }).join(' and ') +
+        ' window' + (off.length > 1 ? 's are' : ' is') + ' not offered yet: ' + off[0].reason + '.' : '');
+      if (el['history-window-note'].textContent !== note) el['history-window-note'].textContent = note;
+    }
+  }
+
+  /* One SVG chart sized from the element's own layout width, plus the sentence that goes with it. */
+  function drawChart(id, width, summary, sentenceId, options) {
+    var node = el[id];
+    if (node && node.setAttribute) {
+      var drawn = FP.temporal.chart(summary, { kind: options.kind, width: width, note: options.note });
+      node.setAttribute('viewBox', drawn.viewBox);
+      node.setAttribute('aria-label', options.label + ' ' + options.sentence);
+      node.innerHTML = drawn.body;
+    }
+    if (el[sentenceId]) el[sentenceId].textContent = options.sentence;
   }
 
   function drawHistory() {
-    var canvas = el['history-canvas'];
-    if (!canvas || !canvas.getContext) return;
-    var ctx = canvas.getContext('2d');
-    var dpr = window.devicePixelRatio || 1;
-    var cssWidth = Math.round(canvas.clientWidth || 900);
-    var cssHeight = 220;
-    // Only resize the backing store when it actually changes: assigning canvas.width on
-    // every hover repaint forced a synchronous reflow on each mousemove.
-    var pixelWidth = Math.round(cssWidth * dpr);
-    var pixelHeight = Math.round(cssHeight * dpr);
-    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-      canvas.width = pixelWidth;
-      canvas.height = pixelHeight;
-      canvas.style.height = cssHeight + 'px';
+    var zoneId = state.route.view === 'city' ? state.route.zoneId : null;
+    // a stored series belongs to one city: a switch shows the loading state, never the previous city's
+    // line, and loadHistory's sequence guard drops an answer that arrives too late
+    var series = zoneId && state.historyZone === zoneId ? state.historySeries : null;
+    var choices = FP.temporal.windows(series), selected = state.historyWindow, active = null;
+    choices.forEach(function (option) { if (option.minutes === selected) active = option; });
+    if (!active || !active.enabled) { selected = null; active = choices[choices.length - 1]; }
+    var summary = FP.temporal.summary(series, { minutes: selected, nowSeconds: Math.round(Date.now() / 1000) });
+    var riskWidth = Math.max(200, Math.round((el['history-canvas'] && el['history-canvas'].clientWidth) || 640));
+    var rainWidth = Math.max(200, Math.round((el['rain-chart'] && el['rain-chart'].clientWidth) || riskWidth));
+    var data = state.history, loading = 'Loading the stored history…', failed = Boolean(state.historyError);
+    state.windowPoints = summary.points;
+    state.windowSummary = summary;
+    renderWindows(choices, selected, summary);
+    if (el['history-facts']) el['history-facts'].innerHTML = FP.temporal.facts(summary, { windowLabel: active.label });
+    if (el['history-meta']) {
+      el['history-meta'].textContent = data
+        ? data.point_count + ' points · asked for ' + data.minutes + ' min · ' + (data.downsampled ? 'downsampled (stride ' + data.stride + ')' : 'full resolution') + ' · model ' + data.model
+        : (failed ? 'history unavailable (' + state.historyError + ') — retrying in ' + Math.round(HISTORY_RETRY_MS / 1000) + ' s' : loading);
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, cssWidth, cssHeight);
-
-    var padLeft = 42;
-    var padRight = 12;
-    var padTop = 10;
-    var padBottom = 24;
-    var plotWidth = cssWidth - padLeft - padRight;
-    var plotHeight = cssHeight - padTop - padBottom;
-
-    var yFor = function (score) {
-      return padTop + (1 - FP.toNumber(score)) * plotHeight;
-    };
-
-    // band background, drawn from the documented heuristic-v1 boundaries
-    var edges = [0].concat(BAND_EDGES).concat([1]);
-    var names = ['CRITICAL', 'WARNING', 'WATCH', 'NORMAL'];
-    for (var i = 0; i < 4; i += 1) {
-      ctx.fillStyle = BAND_FILL[names[names.length - 1 - i]];
-      ctx.fillRect(padLeft, yFor(edges[i + 1]), plotWidth, yFor(edges[i]) - yFor(edges[i + 1]));
-    }
-
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-    ctx.fillStyle = 'rgba(148, 163, 184, 0.9)';
-    ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.lineWidth = 1;
-    [0, 0.35, 0.6, 0.8, 1].forEach(function (tick) {
-      var y = Math.round(yFor(tick)) + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(padLeft, y);
-      ctx.lineTo(cssWidth - padRight, y);
-      ctx.stroke();
-      ctx.fillText(tick.toFixed(2), 4, y + 3);
+    drawChart('history-canvas', riskWidth, summary, 'history-summary', {
+      sentence: series ? FP.temporal.describe(summary) : (failed ? 'Risk score history could not be loaded.' : loading),
+      note: failed ? 'History could not be loaded.' : 'No stored readings in this window yet.', label: 'Risk score over time, 0 to 1.'
     });
-
-    var data = state.history;
-    var points = data && data.points ? data.points : [];
-    // The chart is the only place the per-point values live, so its label must describe the
-    // series it is actually showing instead of a fixed sentence.
-    var seriesLabel = historyAriaLabel(points);
-    canvas.setAttribute('aria-label', seriesLabel);
-    // ...and the same sentence is on the page itself, because a sighted reader on a small screen
-    // cannot hover a phone-sized canvas, and a canvas is invisible to a screen reader.
-    setText('history-summary', points.length || state.historyError ? seriesLabel : '');
-    if (points.length === 0) {
-      ctx.fillStyle = 'rgba(226, 232, 240, 0.7)';
-      ctx.font = '13px system-ui, sans-serif';
-      ctx.fillText(state.historyError ? 'History could not be loaded.' : 'No history in this window yet.',
-        padLeft + 8, padTop + 24);
-      return;
-    }
-
-    var xFor = function (index) {
-      if (points.length === 1) return padLeft + plotWidth / 2;
-      return padLeft + (index / (points.length - 1)) * plotWidth;
-    };
-
-    ctx.beginPath();
-    points.forEach(function (point, index) {
-      var x = xFor(index);
-      var y = yFor(point.risk_score);
-      if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    drawChart('rain-chart', rainWidth, summary, 'rain-summary', {
+      kind: 'rain', sentence: series ? FP.temporal.rainfallSentence(summary) : (failed ? 'The stored rainfall rate could not be loaded.' : loading),
+      note: failed ? 'History could not be loaded.' : 'No stored rainfall readings in this window yet.', label: 'Rainfall rate over time, mm/h.'
     });
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.lineTo(xFor(points.length - 1), padTop + plotHeight);
-    ctx.lineTo(xFor(0), padTop + plotHeight);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(34, 211, 238, 0.12)';
-    ctx.fill();
-
-    points.forEach(function (point, index) {
-      var band = FP.bandKey(point.risk_class);
-      ctx.beginPath();
-      ctx.arc(xFor(index), yFor(point.risk_score), points.length > 120 ? 1.2 : 2.4, 0, Math.PI * 2);
-      ctx.fillStyle = BAND_STROKE[band];
-      ctx.fill();
-    });
-
-    ctx.fillStyle = 'rgba(148, 163, 184, 0.9)';
-    ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillText(FP.clockLabel(points[0].timestamp), padLeft, cssHeight - 6);
-    var lastLabel = FP.clockLabel(points[points.length - 1].timestamp);
-    ctx.fillText(lastLabel, cssWidth - padRight - ctx.measureText(lastLabel).width, cssHeight - 6);
-
-    if (state.hoverIndex !== null && points[state.hoverIndex]) {
-      var hover = points[state.hoverIndex];
-      var hx = Math.round(xFor(state.hoverIndex)) + 0.5;
-      var hy = Math.round(yFor(hover.risk_score)) + 0.5;
-      ctx.strokeStyle = 'rgba(226, 232, 240, 0.5)';
-      ctx.beginPath();
-      ctx.moveTo(hx, padTop);
-      ctx.lineTo(hx, padTop + plotHeight);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(hx, hy, 4, 0, Math.PI * 2);
-      ctx.fillStyle = '#e2e8f0';
-      ctx.fill();
-    }
+    // the timeline marks exactly the incidents this window cannot show: those that opened before its
+    // first stored sample, and everything when the window holds no sample at all
+    renderCityIncidents(findZone(zoneId), { windowStartSeconds: summary.count ? summary.firstTs : null, windowLabel: active.label, nowMs: Date.now() });
   }
 
-  /* Keyboard and touch path to the same per-point values the mouse tooltip shows. The chart
-   * keyboard those numbers were unreachable: nothing else on the page exposes them. */
+  /* The chart's own label: the series it is actually showing, never a fixed sentence. */
+  function historyAriaLabel(summary) {
+    if (state.historyError) return 'Risk score history could not be loaded.';
+    if (!summary || !summary.count) return 'Risk score history: no readings in this window.';
+    return 'Risk score history: ' + summary.count + ' readings from ' + FP.temporal.clock(summary.firstTs) + ' to ' + FP.temporal.clock(summary.lastTs) +
+      '. Lowest ' + summary.minScore.toFixed(2) + ', highest ' + summary.maxScore.toFixed(2) + '.';
+  }
+
+  /* Keyboard and touch reach the same per-point values the mouse tooltip shows: they used to be behind a
+   * mousemove on a canvas that could not be focused. */
   function hoverIndexAt(event) {
-    if (!state.history || !state.history.points || !state.history.points.length) return null;
-    // a touch event carries its coordinates in touches[0], a mouse event on clientX
-    var clientX = event.clientX;
+    var points = state.windowPoints || [];
+    if (!points.length) return null;
+    var clientX = event.clientX; // a touch event carries its coordinates in touches[0]
     if (clientX === undefined || clientX === null) {
       var touch = event.touches && event.touches[0] ? event.touches[0] : null;
       if (!touch) return null;
       clientX = touch.clientX;
     }
-    var rect = el['history-canvas'].getBoundingClientRect();
-    var plotWidth = rect.width - 42 - 12;
+    // the same paddings the chart draws with, so a hover lands on the point under the pointer
+    var rect = el['history-canvas'].getBoundingClientRect(), plotWidth = rect.width - 42 - 14;
     if (!(plotWidth > 0)) return null;
-    var ratio = Math.min(1, Math.max(0, (clientX - rect.left - 42) / plotWidth));
-    var count = state.history.points.length;
-    return count === 1 ? 0 : Math.round(ratio * (count - 1));
+    return points.length === 1 ? 0 : Math.round(Math.min(1, Math.max(0, (clientX - rect.left - 42) / plotWidth)) * (points.length - 1));
   }
 
   function showPoint(index) {
-    var tooltip = el['history-tooltip'];
-    var data = state.history;
-    var point = data && data.points ? data.points[index] : null;
-    if (!point) {
-      tooltip.hidden = true;
-      state.hoverIndex = null;
-      drawHistory();
-      return;
-    }
-    state.hoverIndex = index;
-    var readings = point.readings || {};
-    var channels = [
-      ['rainfall_mm_per_hr', 'rain'], ['drain_level_m', 'drain'], ['soil_saturation_pct', 'soil'],
-      ['water_level_m', 'water'], ['flow_rate_m3_s', 'flow']
-    ].map(function (entry) {
-      var value = readings[entry[0]];
-      if (value === null || value === undefined) return null;
-      return entry[1] + ' ' + FP.formatValueWithUnit(entry[0], value);
-    }).filter(Boolean);
+    var tooltip = el['history-tooltip'], points = state.windowPoints || [], point = null;
+    if (index !== null && index !== undefined && points[index]) point = points[index];
+    state.hoverIndex = point ? index : null;
+    if (!tooltip) return;
+    if (!point) { tooltip.hidden = true; return; }
+    // the reading M16 is about, reported as the API stores it: absent readings are said to be absent
+    // rather than looked up elsewhere
+    var rain = (point.row && point.row.readings) ? point.row.readings.rainfall_mm_per_hr : null;
     tooltip.hidden = false;
-    tooltip.innerHTML = '<b>#' + (index + 1) + ' of ' + data.points.length + '</b> ' +
-      FP.escapeHtml(FP.clockLabel(point.timestamp)) + ' · score ' +
-      FP.escapeHtml(FP.formatScore(point.risk_score)) + ' · ' + FP.escapeHtml(FP.classLabel(point.risk_class)) +
-      (channels.length
-        ? '<br><span class="muted">' + FP.escapeHtml(channels.join(' · ')) + '</span>'
-        : '<br><span class="muted">no sensor readings stored for this point</span>');
-    drawHistory();
+    tooltip.innerHTML = '<b>#' + (index + 1) + ' of ' + points.length + '</b> ' + FP.escapeHtml(FP.temporal.clock(point.ts)) +
+      ' · score ' + FP.escapeHtml(FP.formatScore(point.score)) + ' · ' + FP.escapeHtml(FP.classLabel(point.klass)) +
+      (rain === null || rain === undefined ? '<br><span class="muted">no sensor readings stored for this point</span>'
+        : '<br><span class="muted">rain ' + FP.escapeHtml(FP.formatValueWithUnit('rainfall_mm_per_hr', rain)) + ' stored with this point</span>');
   }
 
+  /* The stored samples are readable without a mouse: the arrow keys step through them and write the same
+   * point onto the page that the tooltip shows. */
   function handleHistoryKey(event) {
-    var data = state.history;
-    if (!data || !data.points || !data.points.length) return;
-    var last = data.points.length - 1;
-    var index = state.hoverIndex === null ? last : state.hoverIndex;
-    if (event.key === 'ArrowRight') index = Math.min(last, index + 1);
-    else if (event.key === 'ArrowLeft') index = Math.max(0, index - 1);
+    var points = state.windowPoints || [], last = points.length - 1, index = state.hoverIndex;
+    if (last < 0) return;
+    if (event.key === 'ArrowRight') index = index === null ? 0 : Math.min(last, index + 1);
+    else if (event.key === 'ArrowLeft') index = index === null ? last : Math.max(0, index - 1);
     else if (event.key === 'Home') index = 0;
     else if (event.key === 'End') index = last;
-    else if (event.key === 'Escape') { showPoint(null); return; }
-    else return;
+    else if (event.key === 'Escape') { showPoint(null); return; } else return;
     event.preventDefault();
     showPoint(index);
-    var canvas = el['history-canvas'];
-    var pointLabel = ' Showing point ' + (index + 1) + ' of ' + data.points.length + ': score ' +
-      FP.formatScore(data.points[index].risk_score) +
-      '. Use the left and right arrow keys to move through the points.';
-    if (canvas && canvas.setAttribute) {
-      // the label is the only text alternative for a keyboard user, so keep it current
-      canvas.setAttribute('aria-label', historyAriaLabel(data.points) + pointLabel);
+    var shown = ' Showing point ' + (index + 1) + ' of ' + points.length + ': score ' + FP.formatScore(points[index].score) + '.';
+    // the label is the only text alternative a keyboard user has, so keep it current
+    if (el['history-canvas'] && el['history-canvas'].setAttribute) {
+      el['history-canvas'].setAttribute('aria-label', historyAriaLabel(state.windowSummary) + shown + ' Use the left and right arrow keys to move through the points.');
     }
-    // ...and the same sentence on the page, for a reader who cannot see the hover tooltip
-    setText('history-summary', historyAriaLabel(data.points) + pointLabel);
+    setText('history-summary', (state.windowSummary ? FP.temporal.describe(state.windowSummary) : '') + shown);
   }
 
   function handleHistoryHover(event) {
     var index = hoverIndexAt(event);
     if (index === null) {
-      el['history-tooltip'].hidden = true;
+      if (el['history-tooltip']) el['history-tooltip'].hidden = true;
       return;
     }
     showPoint(index);
   }
 
-  /* ===================================================== views and navigation === */
 
   /* The site is one document with six views. The URL hash is the only source of
    * the same place; nothing here fetches, it only decides what is on screen. */
@@ -1251,8 +1143,9 @@
     if (route.view === 'city' && route.zoneId) {
       state.selectedZone = route.zoneId;
       state.userSelected = true;
-      renderHistoryButtons(state.zones);
-      if (zoneChanged || !state.history) loadHistory();
+      renderZonePicker(state.zones);
+      // One request per city view, and none at all for an id the fleet does not have.
+      if (findZone(route.zoneId) && (zoneChanged || state.historyZone !== route.zoneId)) loadHistory();
     }
 
     if (viewChanged || zoneChanged) {
@@ -1275,7 +1168,6 @@
     if (typeof window.scrollTo === 'function') window.scrollTo(0, 0);
   }
 
-  /* ------------------------------------------------------------------ overview --- */
 
   /* ``metaHtml`` is deliberately raw HTML, not text: callers pass markup (a unit, an inline
    * icon), so the caller escapes anything that came from the API. */
@@ -1434,7 +1326,6 @@
     }
   }
 
-  /* -------------------------------------------------------------- city detail --- */
 
   function renderCityDetail() {
     var slot = el['city-detail'];
@@ -1468,8 +1359,11 @@
           });
         }
       }
-      // the alert history for a city that is not in the fleet is empty, and says so
+      // the alert history for a city that is not in the fleet is empty, and says so, and the
+      // retrospective panel is hidden rather than showing another city's stored history
       renderCityIncidents(null);
+      if (el['history-panel']) el['history-panel'].hidden = true;
+      if (el['city-context']) el['city-context'].innerHTML = '';
       return;
     }
     var latest = zone.latest;
@@ -1477,22 +1371,29 @@
     if (signature !== state.detailSignature) {
       state.detailSignature = signature;
       var feed = state.payload ? FP.feedStatus(state.payload, Date.now(), payloadAgeOffsetSeconds()) : null;
-      slot.innerHTML = FP.cityDetail(zone, { feed: feed, noun: FP.zoneNoun(state.payload) });
+      // The article is written in two halves either side of the retrospective panel, which is static
+      // markup: what is happening now above it, why this city is monitored and the raw model below.
+      var article = FP.cityDetail(zone, { feed: feed, noun: FP.zoneNoun(state.payload) });
+      var at = article.indexOf(FP.CITY_SPLIT);
+      slot.innerHTML = article.slice(0, at);
+      if (el['city-context']) el['city-context'].innerHTML = article.slice(at + FP.CITY_SPLIT.length);
     }
+    if (el['history-panel']) el['history-panel'].hidden = false;
+    renderZonePicker(state.zones);
     // Outside the signature check: the alert history belongs to whichever city is selected, and
     // switching cities must never leave the previous city's alerts on screen.
     renderCityIncidents(zone);
   }
 
-  /* This city's own alert history, from the incident list the page already holds. */
-  function renderCityIncidents(zone) {
+  function renderCityIncidents(zone, options) {
+    var opts = options || {};
     var host = el['city-incidents'];
     if (!host) return;
     var noun = FP.zoneNoun(state.payload);
     var zoneId = zone && zone.zone_id ? zone.zone_id : null;
     var incidents = (state.incidents && state.incidents.incidents) || [];
-    var signature = String(zoneId) + '|' + (state.incidents ? 'loaded' : 'loading') + '|' +
-      (state.incidents ? FP.incidentsSignature(state.incidents) : 'none');
+    var signature = String(zoneId) + '|' + String(opts.windowLabel || '') + '|' + String(opts.windowStartSeconds || '') + '|' +
+      (state.incidents ? 'loaded|' + FP.incidentsSignature(state.incidents) : 'loading');
     if (signature === state.cityIncidentsSignature) return;
     state.cityIncidentsSignature = signature;
     if (!zoneId) {
@@ -1511,7 +1412,8 @@
         '<span class="skel skel-title"></span>' + FP.skeletonLines(2) + '</div>';
       return;
     }
-    host.innerHTML = FP.cityIncidentHistory(incidents, zoneId, Date.now(), { noun: noun, limit: 5 });
+    host.innerHTML = FP.cityIncidentHistory(incidents, zoneId, Date.now(), {
+      noun: noun, limit: 5, windowStartSeconds: opts.windowStartSeconds, windowLabel: opts.windowLabel });
   }
 
   /* The freshness sentence inside the city view moves with the clock, like the one in
@@ -1526,7 +1428,6 @@
     if (node.textContent !== line) node.textContent = line;
   }
 
-  /* -------------------------------------------------------------------- alerts --- */
 
   function renderAlerts() {
     var payload = state.incidents;
@@ -2078,8 +1979,10 @@
       state.selectedZone = picked;
       state.userSelected = true;
       state.history = null;
+      state.historySeries = null;
+      state.historyZone = null;
       state.historyFailedMs = null; // an explicit click always retries immediately
-      renderHistoryButtons(state.zones);
+      renderZonePicker(state.zones);
       // keep the URL on the city that is actually on screen; the browser then fires
       // hashchange, which re-renders the detail panel for the same city
       if (window.location.hash !== FP.hashFor('city', picked)) {
@@ -2091,11 +1994,11 @@
     bindTo('history-range', 'click', function (event) {
       var button = event.target.closest('[data-range]');
       if (!button) return;
-      state.historyMinutes = Number(button.getAttribute('data-range'));
-      state.history = null;
-      state.historyFailedMs = null;
-      renderHistoryButtons(state.zones);
-      loadHistory();
+      // a window is a slice of the series already in memory: choosing one never asks again, and the
+      // panel keeps the same request it was opened with
+      var range = button.getAttribute('data-range');
+      state.historyWindow = range === 'all' ? null : Number(range);
+      drawHistory();
     });
 
     // The chart answers a mouse, a keyboard and a fingertip: the per-point values exist
@@ -2124,8 +2027,6 @@
       });
     }
 
-    /* Dragging a window edge fires resize dozens of times a second and each redraw resizes two
-     * frame keeps the last size and drops the events the browser could not paint anyway. */
     var resizeQueued = false;
     function queueResizeRedraw() {
       if (resizeQueued) return;
@@ -2150,8 +2051,6 @@
     });
   }
 
-  /* -------------------------------------------------------------- Cities page ---
-   */
 
   function cityFilters() {
     if (!state.cities) state.cities = { query: '', coast: 'all', risk: 'all', sort: 'risk' };
