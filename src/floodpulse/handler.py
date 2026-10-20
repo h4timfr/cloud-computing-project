@@ -124,7 +124,7 @@ from .notify import (
     notifier_for_env,
     zone_geography,
 )
-from .risk import MODEL_NOTE, apply_hysteresis, rolling_mean_metrics, score_zone
+from .risk import MODEL_NOTE, apply_hysteresis, classify, rolling_mean_metrics, score_zone
 from .storage import (
     READING_DUPLICATE,
     READING_STALE,
@@ -1279,6 +1279,116 @@ def metric_sources_for_records(
     return result
 
 
+def _finite_number(value: Any) -> float | None:
+    """``value`` as a finite float, or ``None`` when it is not a usable number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _stored_class(value: Any) -> str | None:
+    """A stored band label, or ``None`` when the field is missing or unusable."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _readings_without_non_finite_numbers(readings: Any) -> dict[str, Any]:
+    """The stored readings map, with any ``NaN`` or ``Infinity`` reported as ``null``.
+
+    BUG CLASS (M16): ``json.dumps`` writes a non-finite float as the bare token ``NaN`` or
+    ``Infinity``. That is not JSON, and one corrupt metric makes a browser's ``JSON.parse``
+    reject the entire response - so the whole window, not just that metric, is lost. A value
+    that cannot be represented is reported as unknown instead.
+    """
+    if not isinstance(readings, Mapping):
+        return {}
+    return {
+        str(metric): (None if isinstance(value, float) and not math.isfinite(value) else value)
+        for metric, value in readings.items()
+    }
+
+
+def _history_point(record: Any) -> dict[str, Any] | None:
+    """One stored history record as an API point, or ``None`` when it cannot be shown.
+
+    BUG CLASS (M16): this route used to copy its fields straight out of the stored item, so a
+    single malformed record - an older item shape, a half-written item, a hand-edit - raised
+    ``KeyError`` and turned the whole city's window into a 500, and a stored non-finite number
+    went into the body as invalid JSON. A record is now dropped unless its timestamp and score
+    are usable and inside the frozen 0..1 range. A missing band label is filled from the score
+    the engine itself would classify (``heuristic-v1`` is a pure function of the score); the
+    effective class the hysteresis produced is never invented.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    ts_epoch = _finite_number(record.get("ts_epoch"))
+    score = _finite_number(record.get("risk_score"))
+    timestamp = record.get("timestamp")
+    if ts_epoch is None or score is None or not 0.0 <= score <= 1.0:
+        return None
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return None
+    candidate = _stored_class(record.get("risk_class_candidate")) or classify(score)
+    return {
+        "timestamp": timestamp,
+        "ts_epoch": int(ts_epoch) if ts_epoch.is_integer() else ts_epoch,
+        "risk_score": score,
+        "risk_class": _stored_class(record.get("risk_class")) or candidate,
+        "risk_class_candidate": candidate,
+        "readings": _readings_without_non_finite_numbers(record.get("readings")),
+    }
+
+
+def _extreme_index(scores: Sequence[float], highest: bool) -> int:
+    """Index of the peak (or minimum) score; a tie keeps the earlier sample."""
+    best = 0
+    for index in range(1, len(scores)):
+        better = scores[index] > scores[best] if highest else scores[index] < scores[best]
+        if better:
+            best = index
+    return best
+
+
+def _thin_history(
+    entries: list[tuple[Mapping[str, Any], dict[str, Any]]],
+    max_points: int,
+) -> tuple[list[tuple[Mapping[str, Any], dict[str, Any]]], int]:
+    """Thin a history window to ``max_points`` without losing the samples that answer it.
+
+    BUG CLASS (M16): taking every n-th record from one end loses whatever sits between the
+    steps, so the reading the chart's right-hand edge is drawn from vanished exactly when a
+    window needed thinning, and an interior peak or minimum vanished with it - a caption
+    computed from the thinned points then disagreed with the stored data. The kept set
+    therefore always contains the newest sample, the oldest sample in the window and the
+    extreme scores; ``stride`` only sets the cadence of the records in between. When the cap
+    is smaller than the samples that must be kept the cap wins, newest first, because the
+    response-size bound is the harder constraint.
+
+    ``entries`` are ``(stored record, response point)`` pairs for records that can be shown.
+    """
+    total = len(entries)
+    if max_points <= 0 or total <= max_points:
+        return list(entries), 1
+    stride = max(1, math.ceil(total / max_points))
+    if stride <= 1:
+        return list(entries), 1
+    scores = [float(point["risk_score"]) for _record, point in entries]
+    required: list[int] = []
+    for index in (total - 1, 0, _extreme_index(scores, True), _extreme_index(scores, False)):
+        if index not in required:
+            required.append(index)
+    protected = set(required[:max_points])
+    keep = protected | set(range(total - 1, -1, -stride))  # cadence anchored at the newest sample
+    # Give up cadence from the old end first: the newest sample, the oldest sample in the
+    # window and the extremes are the samples whose absence changes the answer.
+    for index in range((total - 1) % stride, total, stride):
+        if len(keep) <= max_points:
+            break
+        if index not in protected:
+            keep.discard(index)
+    return [entries[index] for index in sorted(keep)], stride
+
+
 def _handle_history(
     store: LocalStore,
     zone_id: str,
@@ -1302,28 +1412,29 @@ def _handle_history(
     since_epoch = int(now_epoch) - minutes * 60
     records = store.get_history(zone_id, since_epoch=since_epoch)
 
-    stride = max(1, math.ceil(len(records) / MAX_HISTORY_POINTS))
-    if stride > 1:
-        # Anchor the sample at the newest record: the plain ``records[::stride]`` slice drops
-        # the reading the chart's right-hand edge is drawn from, so the most recent point —
-        # the one a viewer looks at first — vanished exactly when a window needed thinning.
-        sampled = records[len(records) - 1 :: -stride][::-1]
-    else:
-        sampled = list(records)
+    # Unusable records are dropped *before* thinning, so the point cap is spent on rows the
+    # caller will actually see and the newest usable sample is always the last point.
+    usable: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
+    unusable = 0
+    for record in records:
+        point = _history_point(record)
+        if point is None:
+            unusable += 1
+        else:
+            usable.append((record, point))
+    if unusable:
+        LOGGER.warning(
+            "history_unusable_records zone_id=%s unusable=%s records=%s",
+            zone_id,
+            unusable,
+            len(records),
+        )
+
+    entries, stride = _thin_history(usable, MAX_HISTORY_POINTS)
+    sampled = [record for record, _point in entries]
+    points = [point for _record, point in entries]
 
     classification = provenance_of_records(sampled, data_classification_for_mode(active_mode))
-
-    points = [
-        {
-            "timestamp": item["timestamp"],
-            "ts_epoch": item["ts_epoch"],
-            "risk_score": item["risk_score"],
-            "risk_class": item["risk_class"],
-            "risk_class_candidate": item["risk_class_candidate"],
-            "readings": item["readings"],
-        }
-        for item in sampled
-    ]
 
     zone = zone_definition(zone_id)
     return 200, {

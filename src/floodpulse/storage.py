@@ -16,6 +16,7 @@ There is intentionally **no** aggregate snapshot item: zones are read individual
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping
 
@@ -40,6 +41,31 @@ METRIC_EQUALITY_TOLERANCE = 1e-9
 def build_zone_pk(zone_id: str) -> str:
     """Partition key for a zone."""
     return f"ZONE#{zone_id}"
+
+
+def _sort_key_of(item: Any) -> str:
+    """A record's sort key, for the tie-break when two records share a timestamp."""
+    return str(item.get("sk") or "") if isinstance(item, Mapping) else ""
+
+
+def history_stamp(item: Mapping[str, Any]) -> int | None:
+    """A history item's ``ts_epoch`` as an int, or ``None`` when it cannot be placed in time.
+
+    BUG CLASS (M16): ``LocalStore.get_history`` used to read ``int(item["ts_epoch"])`` directly
+    while sorting, so one half-written or legacy record raised ``KeyError``/``TypeError`` out of
+    a *read* and the history route answered 500 for the zone's whole window. A record with an
+    unusable stamp is kept in the returned list (ordered by its sort key) and the route decides
+    what can be shown - see ``handler._history_point``, which drops it.
+    """
+    value = item.get("ts_epoch") if isinstance(item, Mapping) else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return int(number) if math.isfinite(number) else None
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
 
 
 def incident_sort_value(item: Mapping[str, Any]) -> tuple[int, str, str]:
@@ -388,16 +414,24 @@ class LocalStore:
         until_epoch: int | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """History items for a zone, ascending by ``ts_epoch`` (then sort key)."""
+        """History items for a zone, ascending by ``ts_epoch`` (then sort key).
+
+        A record whose ``ts_epoch`` is unusable cannot be placed in time: it is never raised on
+        (see :func:`history_stamp`), it is kept out of a window that starts after zero, it is
+        ordered by its sort key, and the history route decides whether it can be shown.
+        """
         pk = build_zone_pk(zone_id)
-        items = [
-            item
+        pairs = [
+            (history_stamp(item), item)
             for (item_pk, sk), item in self._items.items()
-            if item_pk == pk and sk.startswith(HISTORY_PREFIX) and int(item["ts_epoch"]) >= since_epoch
+            if item_pk == pk and sk.startswith(HISTORY_PREFIX)
         ]
+        if since_epoch:
+            pairs = [pair for pair in pairs if pair[0] is None or pair[0] >= since_epoch]
         if until_epoch is not None:
-            items = [item for item in items if int(item["ts_epoch"]) <= until_epoch]
-        items.sort(key=lambda item: (int(item["ts_epoch"]), str(item["sk"])))
+            pairs = [pair for pair in pairs if pair[0] is None or pair[0] <= until_epoch]
+        pairs.sort(key=lambda pair: (pair[0] if pair[0] is not None else 0, _sort_key_of(pair[1])))
+        items = [item for _stamp, item in pairs]
         if limit is not None:
             items = items[-limit:]
         return items

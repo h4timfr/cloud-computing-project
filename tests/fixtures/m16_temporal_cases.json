@@ -1,0 +1,155 @@
+{
+  "about": "Deterministic temporal cases for M16. One file, two consumers: tests/test_temporal_m16.py and tools/temporal_check.mjs. Both must produce the expectations recorded here, so the Python analysis tool and the browser module cannot drift apart. Scores are the stored heuristic-v1 scores; nothing here is live data.",
+  "rules": {
+    "min_samples": 3,
+    "min_duration_seconds": 600,
+    "slope_tolerance_per_hour": 0.02,
+    "gap_median_multiplier": 3,
+    "gap_floor_seconds": 900,
+    "note": "trend needs at least min_samples valid samples spanning at least min_duration_seconds; the least-squares slope of score against elapsed hours is STEADY inside +/- slope_tolerance_per_hour, otherwise RISING or FALLING. An interval is a gap when it exceeds max(gap_median_multiplier * median interval, gap_floor_seconds)."
+  },
+  "base_epoch": 1792400000,
+  "cases": [
+    {
+      "name": "empty",
+      "why": "no rows at all must not crash and must not invent a trend",
+      "points": [],
+      "expect": { "count": 0, "status": "INSUFFICIENT", "reason": "no_samples", "net_change": null, "peak": null, "min": null }
+    },
+    {
+      "name": "one_sample",
+      "why": "a single row has a score but no change to describe",
+      "points": [[0, 0.20, 0.0]],
+      "expect": { "count": 1, "status": "INSUFFICIENT", "reason": "too_few_samples", "net_change": 0.0, "peak": 0.20, "min": 0.20 }
+    },
+    {
+      "name": "two_samples",
+      "why": "two rows give a net change but still no direction",
+      "points": [[0, 0.20, 0.0], [600, 0.30, 1.2]],
+      "expect": { "count": 2, "status": "INSUFFICIENT", "reason": "too_few_samples", "net_change": 0.10, "peak": 0.30, "min": 0.20 }
+    },
+    {
+      "name": "flat",
+      "why": "identical scores are steady, not rising",
+      "points": [[0, 0.20, 0.0], [600, 0.20, 0.0], [1200, 0.20, 0.0], [1800, 0.20, 0.0]],
+      "expect": { "count": 4, "status": "OK", "trend": "STEADY", "net_change": 0.0, "peak": 0.20, "min": 0.20 }
+    },
+    {
+      "name": "rising",
+      "why": "a monotonic climb inside one hour",
+      "points": [[0, 0.10, 0.0], [600, 0.16, 2.0], [1200, 0.22, 3.5], [1800, 0.31, 5.8]],
+      "expect": { "count": 4, "status": "OK", "trend": "RISING", "net_change": 0.21, "peak": 0.31, "min": 0.10, "last_rainfall": 5.8, "max_rainfall": 5.8 }
+    },
+    {
+      "name": "falling",
+      "why": "a monotonic decline, including out of WARNING and back to NORMAL",
+      "points": [[0, 0.44, 4.0], [600, 0.36, 2.0], [1200, 0.30, 0.4], [1800, 0.21, 0.0]],
+      "expect": { "count": 4, "status": "OK", "trend": "FALLING", "net_change": -0.23, "peak": 0.44, "min": 0.21 }
+    },
+    {
+      "name": "noisy_flat",
+      "why": "scores that wobble by one point of the range are steady: the slope, not the last pair, decides",
+      "points": [[0, 0.20, 0.0], [600, 0.21, 0.0], [1200, 0.19, 0.0], [1800, 0.20, 0.0], [2400, 0.21, 0.0]],
+      "expect": { "count": 5, "status": "OK", "trend": "STEADY", "peak": 0.21, "min": 0.19 }
+    },
+    {
+      "name": "slow_rise_above_tolerance",
+      "why": "0.04 per hour is four times the tolerance and must be called RISING",
+      "points": [[0, 0.200, 0.0], [3600, 0.240, 0.0], [7200, 0.280, 0.0]],
+      "expect": { "count": 3, "status": "OK", "trend": "RISING", "net_change": 0.08 }
+    },
+    {
+      "name": "slow_rise_below_tolerance",
+      "why": "0.01 per hour is inside the tolerance and must be called STEADY even though the net change is positive",
+      "points": [[0, 0.200, 0.0], [3600, 0.210, 0.0], [7200, 0.220, 0.0]],
+      "expect": { "count": 3, "status": "OK", "trend": "STEADY", "net_change": 0.02 }
+    },
+    {
+      "name": "duplicate_timestamp",
+      "why": "the later row for an identical timestamp wins, and the duplicate never becomes a zero-length interval",
+      "points": [[0, 0.20, 0.0], [600, 0.30, 1.0], [600, 0.34, 1.5], [1200, 0.40, 2.0]],
+      "expect": { "count": 3, "status": "OK", "trend": "RISING", "duplicates_removed": 1, "net_change": 0.20, "peak": 0.40 }
+    },
+    {
+      "name": "out_of_order",
+      "why": "rows arriving unsorted are put in order before anything is measured",
+      "points": [[1200, 0.40, 2.0], [0, 0.20, 0.0], [600, 0.30, 1.0]],
+      "expect": { "count": 3, "status": "OK", "trend": "RISING", "net_change": 0.20, "out_of_order_pairs": 2 }
+    },
+    {
+      "name": "invalid_rows",
+      "why": "missing, null, non-numeric, NaN and Infinity scores are dropped, and the newest valid row still ends the series",
+      "points": [[0, 0.20, 0.0], [600, null, 0.0], [1200, "x", 0.0], [1800, 0.30, 1.0], [2400, 0.35, 1.4], [3000, null, 1.4]],
+      "expect": { "count": 3, "status": "OK", "trend": "RISING", "invalid_dropped": 3, "peak": 0.35, "net_change": 0.15 }
+    },
+    {
+      "name": "out_of_range_scores",
+      "why": "scores below 0 or above 1 are not real heuristic-v1 output, so they are dropped rather than charted off-scale",
+      "points": [[0, 0.20, 0.0], [600, 1.7, 0.0], [1200, -0.4, 0.0], [1800, 0.30, 0.0], [2400, 0.40, 0.0]],
+      "expect": { "count": 3, "status": "OK", "trend": "RISING", "invalid_dropped": 2, "peak": 0.40 }
+    },
+    {
+      "name": "large_gap",
+      "why": "a 38 minute hole in a ten minute cadence is one gap and must qualify the trend",
+      "points": [[0, 0.20, 0.0], [600, 0.22, 0.0], [1200, 0.24, 0.0], [3480, 0.30, 1.0], [4080, 0.33, 1.2], [4680, 0.36, 1.4]],
+      "expect": { "count": 6, "status": "OK", "trend": "RISING", "gap_count": 1, "largest_gap": 2280, "median_interval": 600 }
+    },
+    {
+      "name": "no_gap_in_uneven_cadence",
+      "why": "a 20 minute step in a 20 minute cadence is normal cadence, not a hole",
+      "points": [[0, 0.20, 0.0], [1200, 0.22, 0.0], [2400, 0.24, 0.0], [3600, 0.30, 0.0], [4800, 0.32, 0.0]],
+      "expect": { "count": 5, "status": "OK", "trend": "RISING", "gap_count": 0, "largest_gap": 1200, "median_interval": 1200 }
+    },
+    {
+      "name": "band_crossings",
+      "why": "every band transition appears in the stored classes; the scores sit well clear of the engine's 0.35 / 0.6 / 0.8 edges so the expected classes cannot depend on how a boundary is rounded. This window peaks in the middle, so the least-squares slope is positive while the series ends lower than its peak: the trend field follows the slope, and the peak and net change are reported separately rather than being bent to match.",
+      "points": [[0, 0.20, 0.0], [600, 0.38, 0.0], [1200, 0.64, 0.0], [1800, 0.85, 0.0], [2400, 0.70, 0.0], [3000, 0.45, 0.0], [3600, 0.24, 0.0]],
+      "expect": {
+        "count": 7,
+        "status": "OK",
+        "slope_sign": "positive",
+        "peak": 0.85,
+        "min": 0.20,
+        "classes": ["NORMAL", "WATCH", "WARNING", "CRITICAL", "WARNING", "WATCH", "NORMAL"]
+      }
+    },
+    {
+      "name": "stale_newest",
+      "why": "the series ends 42 minutes before now: the summary still describes it, and the caller is told the newest sample is old",
+      "points": [[0, 0.20, 0.0], [600, 0.24, 0.0], [1200, 0.28, 0.0]],
+      "expect": { "count": 3, "status": "OK", "trend": "RISING", "newest_age_seconds": 2520 }
+    }
+  ],
+  "incident_cases": [
+    {
+      "name": "open_warning",
+      "why": "an incident the record itself calls open stays open, and its running time counts from opened_ts_epoch",
+      "incident": { "zone_id": "city-chennai", "opened_ts_epoch": 1792400000, "severity": "WARNING", "severity_at_open": "WARNING", "is_open": true, "current_status": "OPEN" },
+      "expect": { "open": true, "severity": "WARNING", "escalated": false }
+    },
+    {
+      "name": "warning_to_critical",
+      "why": "the record keeps the class it opened with, so an escalation is provable and never inferred from ordinary history",
+      "incident": { "zone_id": "city-kochi", "opened_ts_epoch": 1792400000, "closed_ts_epoch": 1792403600, "severity": "CRITICAL", "severity_at_open": "WARNING", "is_open": false, "current_status": "CLOSED", "duration_seconds": 3600 },
+      "expect": { "open": false, "severity": "CRITICAL", "escalated": true, "duration_seconds": 3600 }
+    },
+    {
+      "name": "resolved",
+      "why": "a closed record with only its two timestamps still reports a duration, derived from those stamps",
+      "incident": { "zone_id": "city-puri", "opened_ts_epoch": 1792400000, "closed_ts_epoch": 1792401800, "severity": "WARNING", "severity_at_open": "WARNING", "is_open": false },
+      "expect": { "open": false, "severity": "WARNING", "duration_seconds": 1800 }
+    },
+    {
+      "name": "legacy_malformed",
+      "why": "a record with no timestamps and no duration reports what it has and nothing more",
+      "incident": { "zone_id": "city-surat", "severity": "WATCH", "current_status": "CLOSED" },
+      "expect": { "open": false, "severity": "WATCH", "duration_seconds": null }
+    },
+    {
+      "name": "unknown_severity",
+      "why": "a record that states nothing must not be handed an invented severity, duration or open state",
+      "incident": { "zone_id": "city-mumbai" },
+      "expect": { "open": null, "severity": "UNKNOWN", "duration_seconds": null }
+    }
+  ]
+}
