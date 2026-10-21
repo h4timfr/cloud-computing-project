@@ -32,6 +32,7 @@ from .config import (
     DATA_CLASSIFICATION_SIMULATED,
     INCIDENT_CLOSING_CLASS,
     INCIDENT_OPEN_SEVERITIES,
+    INCIDENT_OPEN_SORT_KEY,
     INCIDENT_PREFIX,
     INCIDENT_STATUS_CLOSED,
     INCIDENT_STATUS_OPEN,
@@ -107,6 +108,32 @@ def severity_rank(name: Any) -> int:
     return RISK_ORDER.get(str(name), -1)
 
 
+def incident_open_pointer(zone_id: str, incident: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
+    """The item that claims a zone's single "open incident" slot (see config).
+
+    ``incident_sk`` is the key of the incident that holds the slot. It is first written as the
+    key the opener intends to use, then updated once the record is actually stored (a
+    same-second collision can move the record to a suffixed key), so a reader can always find
+    the record the pointer means. The provenance flags are carried like every other stored item,
+    so a reader can always tell whether the slot belongs to a live-weather or a simulated event.
+    """
+    return {
+        "pk": build_zone_pk(zone_id),
+        "sk": INCIDENT_OPEN_SORT_KEY,
+        "record_type": "INCIDENT_OPEN",
+        "zone_id": zone_id,
+        "incident_sk": str(incident.get("sk") or ""),
+        "incident_id": str(incident.get("incident_id") or ""),
+        "severity": str(incident.get("severity_at_open") or incident.get("severity") or ""),
+        "opened_ts_epoch": int(incident.get("opened_ts_epoch") or now_epoch),
+        "claimed_ts_epoch": int(now_epoch),
+        "simulated": bool(incident.get("simulated", True)),
+        "data_classification": str(
+            incident.get("data_classification") or DATA_CLASSIFICATION_SIMULATED
+        ),
+    }
+
+
 def build_incident_item(
     *,
     zone_id: str,
@@ -163,6 +190,10 @@ def build_incident_item(
         "created_ts_epoch": int(now_epoch),
         "updated_at": iso_utc(now_epoch),
         "updated_ts_epoch": int(now_epoch),
+        # Write-version guard: every later write carries the version it read and is refused when
+        # the stored item has moved on, so an overlapping invocation can no longer erase an
+        # escalation (or its alert) that was recorded after it read the record.
+        "version": 1,
         "model": RISK_MODEL_ID,
         "simulated": data_classification == DATA_CLASSIFICATION_SIMULATED,
         "data_classification": data_classification,
@@ -268,14 +299,15 @@ def cooldown_remaining_seconds(
 
 
 def marker_rollback(zone_id: str, previous: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The cooldown marker to restore when a claimed alert could not be published.
+    """The cooldown marker that "this alert was never claimed" looks like.
 
-    A claim is written *before* the publish so that concurrent escalations cannot both
-    alert. If the publish then fails, restoring the previous marker is what stops the
-    claim from muting the next attempt for a whole cooldown window. The item is written
-    rather than deleted because the deployed role deliberately has no DynamoDB delete
-    permission, and "no entry for this severity" is exactly what a rollback to a missing
-    marker means to :func:`cooldown_remaining_seconds`.
+    Kept as the definition of an empty marker. The handler no longer restores a *snapshot* of it
+    after a failed publish: that could erase a claim or a successful publish that landed while
+    its own publish was in flight, so it now removes only its own entry
+    (:func:`floodpulse.storage.marker_without_severity`). The item is written rather than deleted
+    because the deployed role deliberately has no DynamoDB delete permission, and "no entry for
+    this severity" is exactly what a rollback to a missing marker means to
+    :func:`cooldown_remaining_seconds`.
     """
     if previous:
         return dict(previous)
@@ -403,6 +435,11 @@ def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
         "reading_count": item.get("reading_count"),
         "alert_count": item.get("alert_count"),
         "alert_severities": list(item.get("alert_severities") or []),
+        # Why the last attempt ended as it did ("published", "cooldown", "publish_failed",
+        # "alerts_not_configured"). The counts alone cannot answer "was this event alerted on?",
+        # which is the first thing an operator asks about a zero; the message id is deliberately
+        # not projected, so nothing here identifies a mailbox or an AWS resource.
+        "last_alert_reason": _last_alert_reason(item),
         "escalation_count": len(item.get("severity_changes") or []),
         "close_reason": item.get("close_reason"),
         "model": item.get("model", RISK_MODEL_ID),
@@ -411,6 +448,24 @@ def incident_view(item: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
         "simulated": classification == DATA_CLASSIFICATION_SIMULATED,
         "data_classification": classification,
     }
+
+
+def _last_alert_reason(item: Mapping[str, Any]) -> str | None:
+    """The outcome of the incident's last alert attempt, as a short word, or ``None``.
+
+    ``None`` means no attempt was recorded (the incident never reached an alerting severity, or
+    it opened before this field existed), which is different from an attempt that was refused.
+    """
+    attempts = item.get("alerts")
+    if not isinstance(attempts, list) or not attempts:
+        return None
+    last = attempts[-1]
+    if not isinstance(last, Mapping):
+        return None
+    if last.get("published"):
+        return "published"
+    reason = str(last.get("reason") or "").strip()
+    return reason or "not_published"
 
 
 def sort_incidents_desc(items: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:

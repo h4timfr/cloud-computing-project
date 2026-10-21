@@ -508,6 +508,18 @@ INCIDENT_STATUSES: tuple[str, ...] = (INCIDENT_STATUS_OPEN, INCIDENT_STATUS_CLOS
 INCIDENT_PREFIX = "INCIDENT#"
 ALERT_MARKER_SORT_KEY = "ALERT#COOLDOWN"
 
+#: One item per zone recording which incident currently holds the zone's "open" slot
+#: (``ZONE#<id> / INCIDENT-OPEN``). It is what makes "only one incident can be open at a time"
+#: an atomic fact rather than a hopeful read-then-write: two simultaneous invocations cannot
+#: both claim it, and the loser adopts the winner's record instead of opening a second one.
+#: The sort key deliberately does not start with INCIDENT_PREFIX, so it is never returned as an
+#: incident record by the incident queries.
+INCIDENT_OPEN_SORT_KEY = "INCIDENT-OPEN"
+
+#: ``incident_sk`` value that marks an open-incident pointer as free. The deployed role has no
+#: DeleteItem permission, so the slot is released by rewriting the pointer, never by deleting it.
+INCIDENT_OPEN_RELEASED = ""
+
 #: Severities that are worth an SNS alert at all.
 ALERT_SEVERITIES: tuple[str, ...] = ("WARNING", "CRITICAL")
 

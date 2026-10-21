@@ -114,6 +114,15 @@ class FakeTable:
         " OR last_alert_by_severity.#sev.#ts <= :cutoff",
         # the public-subscription throttle counter (M10, part B)
         "attribute_not_exists(attempts) OR attempts < :limit",
+        # the incident open-slot pointer and the incident write-version guard (M17)
+        "attribute_not_exists(pk) OR attribute_not_exists(incident_sk) OR incident_sk = :empty",
+        "attribute_exists(pk) AND incident_sk <> :empty",
+        "attribute_not_exists(pk) OR incident_sk = :sk",
+        "attribute_exists(pk)",
+        "attribute_not_exists(version) OR version = :seen",
+        # rolling back a failed alert publish removes only this invocation's entry
+        "attribute_not_exists(last_alert_by_severity.#sev)"
+        " OR last_alert_by_severity.#sev.#ts = :claimed",
     )
 
     def __init__(self) -> None:
@@ -147,6 +156,35 @@ class FakeTable:
             if not isinstance(entry, dict) or entry.get("ts_epoch") is None:
                 return True
             return Decimal(str(entry["ts_epoch"])) <= Decimal(str(values[":cutoff"]))
+        if condition == (
+            "attribute_not_exists(pk) OR attribute_not_exists(incident_sk) OR incident_sk = :empty"
+        ):
+            # The open slot is free when there is no pointer at all, or when the pointer has
+            # been released (its incident_sk is empty).
+            if existing is None:
+                return True
+            held = existing.get("incident_sk")
+            return held is None or str(held) == str(values[":empty"])
+        if condition == "attribute_exists(pk) AND incident_sk <> :empty":
+            return existing is not None and str(existing.get("incident_sk") or "") != str(
+                values[":empty"]
+            )
+        if condition == "attribute_not_exists(pk) OR incident_sk = :sk":
+            return existing is None or str(existing.get("incident_sk") or "") == str(values[":sk"])
+        if condition == "attribute_exists(pk)":
+            return existing is not None
+        if condition == "attribute_not_exists(version) OR version = :seen":
+            if existing is None:
+                return True
+            version = existing.get("version")
+            return version is None or Decimal(str(version)) == Decimal(str(values[":seen"]))
+        if condition.startswith("attribute_not_exists(last_alert_by_severity.#sev)"):
+            if existing is None:
+                return True
+            entry = (existing.get("last_alert_by_severity") or {}).get(names["#sev"])
+            if not isinstance(entry, dict) or entry.get("ts_epoch") is None:
+                return True
+            return Decimal(str(entry["ts_epoch"])) == Decimal(str(values[":claimed"]))
         raise AssertionError(f"FakeTable cannot evaluate condition: {condition!r}")
 
     def put_item(
@@ -190,18 +228,41 @@ class FakeTable:
         unnoticed.
         """
         self.calls.append("update_item")
+        values = ExpressionAttributeValues or {}
+        names = ExpressionAttributeNames or {}
+        key = (Key["pk"], Key["sk"])
+        existing = self.items.get(key)
+        if UpdateExpression == "SET incident_sk = :sk, updated_ts_epoch = :now":
+            if ConditionExpression not in self.KNOWN_CONDITIONS:
+                raise AssertionError(f"FakeTable cannot evaluate condition: {ConditionExpression!r}")
+            if not self._condition_holds(key, ConditionExpression, {}, values, names):
+                raise ConditionalCheckFailedException("The conditional request failed")
+            stored = dict(existing or {})
+            stored["pk"], stored["sk"] = key
+            stored["incident_sk"] = values[":sk"]
+            stored["updated_ts_epoch"] = values[":now"]
+            self.items[key] = to_dynamo(stored)
+            return {"Attributes": {"incident_sk": stored["incident_sk"]}}
+        if UpdateExpression == "SET incident_sk = :empty, released_ts_epoch = :now":
+            if ConditionExpression not in self.KNOWN_CONDITIONS:
+                raise AssertionError(f"FakeTable cannot evaluate condition: {ConditionExpression!r}")
+            if not self._condition_holds(key, ConditionExpression, {}, values, names):
+                raise ConditionalCheckFailedException("The conditional request failed")
+            stored = dict(existing or {})
+            stored["pk"], stored["sk"] = key
+            stored["incident_sk"] = values[":empty"]
+            stored["released_ts_epoch"] = values[":now"]
+            self.items[key] = to_dynamo(stored)
+            return {"Attributes": {"incident_sk": stored["incident_sk"]}}
         if UpdateExpression != "ADD attempts :one SET #ttl = if_not_exists(#ttl, :ttl)":
             raise AssertionError(f"FakeTable cannot evaluate update: {UpdateExpression!r}")
         if ConditionExpression not in self.KNOWN_CONDITIONS:
             raise AssertionError(f"FakeTable cannot evaluate condition: {ConditionExpression!r}")
-        names = ExpressionAttributeNames or {}
-        values = ExpressionAttributeValues or {}
         if names.get("#ttl") != "ttl":
             raise AssertionError(f"FakeTable expects #ttl to name 'ttl', got {names.get('#ttl')!r}")
         reject_floats(Key)
         reject_floats(values)
-        key = (Key["pk"], Key["sk"])
-        existing = self.items.get(key) or {}
+        existing = existing or {}
         attempts = existing.get("attempts")
         if attempts is not None and Decimal(str(attempts)) >= Decimal(str(values[":limit"])):
             raise ConditionalCheckFailedException("The conditional request failed")

@@ -6,20 +6,33 @@ Design notes (M1):
   table object is injected, so local tests and tools never touch AWS or need boto3.
 * item shapes come from :mod:`floodpulse.storage`, so the records written here are
   identical to the M0 in-memory records (same ``pk``/``sk``/``ttl`` conventions).
-* only ``PutItem``, ``GetItem`` and ``Query`` on the single ``floodpulse`` table are
-  used: no scans, no GSIs, no extra tables.
+* only ``PutItem``, ``GetItem``, ``UpdateItem`` and ``Query`` on the single ``floodpulse``
+  table are used - exactly the verbs the deployed role grants: no scans, no deletes, no
+  GSIs, no extra tables. Releasing the open-incident slot therefore rewrites the pointer
+  instead of deleting it.
 * ``Query`` pagination is capped by ``MAX_QUERY_PAGES`` so a request can never loop
   unbounded; the cap is reported through the returned slice.
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
-from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX, WEATHER_CACHE_SORT_KEY, ZONE_IDS
+from .config import (
+    ALERT_MARKER_SORT_KEY,
+    INCIDENT_OPEN_RELEASED,
+    INCIDENT_OPEN_SORT_KEY,
+    INCIDENT_PREFIX,
+    WEATHER_CACHE_SORT_KEY,
+    ZONE_IDS,
+)
+LOGGER = logging.getLogger("floodpulse.dynamodb_store")
+
 from .storage import (
     HISTORY_PREFIX,
     LATEST_SORT_KEY,
@@ -35,7 +48,9 @@ from .storage import (
     classify_reading_write,
     history_suffix_key,
     is_replay_of,
+    is_incident_open_free,
     latest_is_behind,
+    marker_without_severity,
     history_sort_key_for,
     sort_incident_items,
 )
@@ -148,6 +163,24 @@ def incident_count_params(zone_id: str) -> dict[str, Any]:
 def alert_marker_key(zone_id: str) -> dict[str, str]:
     """Primary key of a zone's alert cooldown marker."""
     return {"pk": build_zone_pk(zone_id), "sk": ALERT_MARKER_SORT_KEY}
+
+
+#: The open-incident slot is free when the pointer item is absent or has been released (empty
+#: ``incident_sk``). One expression, used by the claim path so "free" means one thing there and
+#: on the release path.
+INCIDENT_OPEN_FREE_CONDITION = (
+    "attribute_not_exists(pk) OR attribute_not_exists(incident_sk) OR incident_sk = :empty"
+)
+
+
+def incident_open_key(zone_id: str) -> dict[str, str]:
+    """Primary key of a zone's open-incident pointer."""
+    return {"pk": build_zone_pk(zone_id), "sk": INCIDENT_OPEN_SORT_KEY}
+
+
+def incident_open_get_params(zone_id: str) -> dict[str, Any]:
+    """``get_item`` parameters for one zone's open-incident pointer."""
+    return {"Key": incident_open_key(zone_id), "ConsistentRead": True}
 
 
 def alert_marker_get_params(zone_id: str) -> dict[str, Any]:
@@ -509,10 +542,120 @@ class DynamoDbStore:
                 return False
             raise
 
-    def put_incident(self, item: Mapping[str, Any]) -> dict[str, Any]:
-        """Insert or update an incident record (used for escalate/observe/close)."""
-        self._table.put_item(Item=to_storable(deepcopy(dict(item))))
-        return dict(item)
+    def put_incident(
+        self, item: Mapping[str, Any], expected_version: int | None = None
+    ) -> bool:
+        """Insert or update an incident record (used for escalate/observe/close).
+
+        With ``expected_version`` the write carries a condition on the stored ``version`` and
+        returns ``False`` when another invocation has already recorded its own change: an
+        unconditional write from an older view would erase an escalation, leaving the stored
+        record contradicting the alert that was actually published. ``None`` writes
+        unconditionally (records created before the field existed).
+        """
+        stored = to_storable(deepcopy(dict(item)))
+        if expected_version is None:
+            self._table.put_item(Item=stored)
+            return True
+        try:
+            self._table.put_item(
+                Item=stored,
+                ConditionExpression="attribute_not_exists(version) OR version = :seen",
+                ExpressionAttributeValues={":seen": int(expected_version)},
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return False
+            raise
+
+    def get_incident(self, zone_id: str, sk: str) -> dict[str, Any] | None:
+        """One incident record by its sort key, or ``None``."""
+        if not sk or not str(sk).startswith(INCIDENT_PREFIX):
+            return None
+        try:
+            response = self._table.get_item(
+                Key={"pk": build_zone_pk(zone_id), "sk": str(sk)}, ConsistentRead=True
+            )
+        except Exception:  # noqa: BLE001 - a failed read must not fail the incident rules
+            return None
+        item = response.get("Item")
+        return plain(item) if item else None
+
+    def get_incident_open(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's open-incident pointer item, or ``None`` when no slot is claimed."""
+        response = self._table.get_item(**incident_open_get_params(zone_id))
+        item = response.get("Item")
+        return plain(item) if item else None
+
+    def claim_incident_open(self, zone_id: str, pointer: Mapping[str, Any]) -> bool:
+        """Claim the zone's single open-incident slot.
+
+        One conditional ``PutItem`` that succeeds when the slot is absent *or* released. A
+        released slot is an item whose ``incident_sk`` is empty: the deployed role deliberately
+        has no DeleteItem permission, so the slot is freed by rewriting the pointer rather than
+        deleting it (see :meth:`release_incident_open`), and "free" has to mean the same thing on
+        both paths.
+        """
+        try:
+            self._table.put_item(
+                Item=to_storable(deepcopy(dict(pointer))),
+                ConditionExpression=INCIDENT_OPEN_FREE_CONDITION,
+                ExpressionAttributeValues={":empty": INCIDENT_OPEN_RELEASED},
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return False
+            raise
+
+    def update_incident_open(self, zone_id: str, incident_sk: str) -> bool:
+        """Point the zone's open slot at the incident record that was actually stored."""
+        try:
+            self._table.update_item(
+                Key={"pk": build_zone_pk(zone_id), "sk": INCIDENT_OPEN_SORT_KEY},
+                UpdateExpression="SET incident_sk = :sk, updated_ts_epoch = :now",
+                ConditionExpression="attribute_exists(pk) AND incident_sk <> :empty",
+                ExpressionAttributeValues={
+                    ":sk": str(incident_sk),
+                    ":now": int(time.time()),
+                    ":empty": INCIDENT_OPEN_RELEASED,
+                },
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return False
+            raise
+
+    def release_incident_open(self, zone_id: str, incident_sk: str) -> bool:
+        """Release the open slot by marking it free, and only if it is still ours.
+
+        Conditional on the pointer's own value, so a closing invocation cannot free a newer
+        incident's slot. An empty ``incident_sk`` releases whatever is there, which is how a
+        stale pointer that names a record nobody stored is cleaned up. The item is rewritten
+        rather than deleted on purpose: the deployed ingestion role has no delete permission,
+        and a refusal here is handled by the caller exactly like a failed claim.
+        """
+        condition = "attribute_not_exists(pk) OR incident_sk = :sk"
+        values: dict[str, Any] = {":empty": INCIDENT_OPEN_RELEASED, ":sk": str(incident_sk)}
+        if not incident_sk:
+            condition = "attribute_exists(pk)"
+        try:
+            self._table.update_item(
+                Key={"pk": build_zone_pk(zone_id), "sk": INCIDENT_OPEN_SORT_KEY},
+                UpdateExpression="SET incident_sk = :empty, released_ts_epoch = :now",
+                ConditionExpression=condition,
+                ExpressionAttributeValues={**values, ":now": int(time.time())},
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                return False
+            LOGGER.warning(
+                "incident_open_release_failed zone_id=%s error=%s", zone_id, type(exc).__name__
+            )
+            return False
 
     def latest_incident(self, zone_id: str) -> dict[str, Any] | None:
         """The zone's newest incident record (open or closed), or ``None``."""
@@ -590,6 +733,42 @@ class DynamoDbStore:
             return True
         except Exception as exc:  # noqa: BLE001 - narrowed immediately below
             if is_conditional_check_failure(exc):
+                return False
+            raise
+
+    def release_alert_slot(self, zone_id: str, severity: str, claimed_ts_epoch: int) -> bool:
+        """Conditionally undo this invocation's alert claim after a failed publish.
+
+        The write carries a condition on the entry's own timestamp, so it can only remove the
+        claim *this* invocation made: a later claim by another invocation, or a publish that
+        succeeded while ours was in flight, survives. Returns ``True`` when the claim was
+        removed (or there was nothing of ours to remove and nothing needed writing).
+        """
+        try:
+            response = self._table.get_item(**alert_marker_get_params(zone_id))
+        except Exception:  # noqa: BLE001 - a failed read must not raise out of an alert path
+            return False
+        marker = plain(response.get("Item")) if response.get("Item") else None
+        updated, released = marker_without_severity(marker, severity, claimed_ts_epoch)
+        if not released:
+            return False
+        if not updated.get("pk"):
+            updated["pk"] = build_zone_pk(zone_id)
+            updated["zone_id"] = zone_id
+        try:
+            self._table.put_item(
+                Item=to_storable(deepcopy(dict(updated))),
+                ConditionExpression=(
+                    "attribute_not_exists(last_alert_by_severity.#sev)"
+                    " OR last_alert_by_severity.#sev.#ts = :claimed"
+                ),
+                ExpressionAttributeNames={"#sev": str(severity), "#ts": "ts_epoch"},
+                ExpressionAttributeValues={":claimed": int(claimed_ts_epoch)},
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+            if is_conditional_check_failure(exc):
+                # Someone else's claim (or a real publish) is in the item now: leave it alone.
                 return False
             raise
 

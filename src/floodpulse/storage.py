@@ -18,10 +18,18 @@ from __future__ import annotations
 
 import decimal
 import math
+import time
+import time
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping
 
-from .config import ALERT_MARKER_SORT_KEY, INCIDENT_PREFIX, WEATHER_CACHE_SORT_KEY
+from .config import (
+    ALERT_MARKER_SORT_KEY,
+    INCIDENT_OPEN_RELEASED,
+    INCIDENT_OPEN_SORT_KEY,
+    INCIDENT_PREFIX,
+    WEATHER_CACHE_SORT_KEY,
+)
 
 LATEST_SORT_KEY = "LATEST"
 HISTORY_PREFIX = "H#"
@@ -70,17 +78,30 @@ def history_stamp(item: Mapping[str, Any]) -> int | None:
 
 
 def incident_sort_value(item: Mapping[str, Any]) -> tuple[int, str, str]:
-    """Canonical newest-first ordering key for incidents (shared by both stores)."""
+    """Canonical newest-first ordering key for incidents (shared by both stores).
+
+    The third element is the *sort key*, not the incident id: within one second the sort key
+    carries the arrival suffix (``INCIDENT#<ts>#000002``), which is the true order, while the
+    readable id (``…-r2``) sorts *before* ``…`` and would present a resolved event as newer
+    than the re-open that replaced it. An item without a sort key falls back to its id, so a
+    legacy record still orders deterministically.
+    """
     return (
         -int(item.get("opened_ts_epoch") or 0),
         str(item.get("zone_id") or ""),
-        str(item.get("incident_id") or ""),
+        str(item.get("sk") or item.get("incident_id") or ""),
     )
 
 
 def sort_incident_items(items: list[Mapping[str, Any]]) -> list[Any]:
-    """Newest first, with a deterministic tie-break by zone then incident id."""
-    return sorted(items, key=incident_sort_value)
+    """Newest first, with a deterministic tie-break by zone then sort key (descending).
+
+    Two passes, because a text key cannot be negated: order by sort key descending first, then
+    stably by time and zone. Inside one second that puts ``…H#<ts>#000002`` ahead of the base
+    key, which is the arrival order both stores read history in.
+    """
+    by_key = sorted(items, key=lambda item: str(item.get("sk") or ""), reverse=True)
+    return sorted(by_key, key=lambda item: (-int(item.get("opened_ts_epoch") or 0), str(item.get("zone_id") or "")))
 
 
 # --------------------------------------------------------------------------- #
@@ -188,9 +209,50 @@ def alert_cooldown_remaining(
     return max(0, remaining)
 
 
+def is_incident_open_free(pointer: Mapping[str, Any] | None) -> bool:
+    """True when a zone's open-incident pointer does not hold the slot.
+
+    The slot is free when there is no pointer item at all, or when the pointer has been
+    released. Release rewrites the pointer with an empty ``incident_sk`` instead of deleting it,
+    because the deployed ingestion role deliberately has no delete permission - so "free" has to
+    mean the same thing on the create and release paths.
+    """
+    if pointer is None:
+        return True
+    return str(pointer.get("incident_sk") or "") == INCIDENT_OPEN_RELEASED
+
+
+def marker_without_severity(
+    marker: Mapping[str, Any] | None, severity: str, claimed_ts_epoch: int
+) -> tuple[dict[str, Any], bool]:
+    """Drop *this* invocation's alert claim from a marker, leaving every other entry alone.
+
+    Returns ``(marker_to_write, released)``. The entry is removed only when its timestamp is the
+    one this invocation wrote. By the time a failed publish rolls back, another invocation may
+    have claimed the same severity (with its own, later timestamp) or recorded a real publish,
+    and restoring a snapshot taken before our claim would erase that - opening a window that was
+    already used and letting a duplicate alert through. ``released`` is ``False`` when there is
+    nothing of ours to remove, and the caller must then write nothing at all.
+
+    Lives here rather than in :mod:`floodpulse.incidents` because both stores need it and
+    ``incidents`` imports ``storage``, not the other way round.
+    """
+    item = dict(marker) if marker else {
+        "sk": ALERT_MARKER_SORT_KEY,
+        "record_type": "ALERT_MARKER",
+        "last_alert_by_severity": {},
+    }
+    per_severity = dict(item.get("last_alert_by_severity") or {})
+    entry = per_severity.get(severity)
+    if not isinstance(entry, Mapping) or int(entry.get("ts_epoch") or 0) != int(claimed_ts_epoch):
+        return item, False
+    per_severity.pop(severity, None)
+    item["last_alert_by_severity"] = per_severity
+    return item, True
+
+
 def is_replay_of(stored_history: Mapping[str, Any] | None, reading: Mapping[str, Any]) -> bool:
     """True when ``stored_history`` is the same observation as ``reading``.
-
     Used to answer "did we already store exactly this?" so a client retry cannot append a
     second copy of the same reading to history (and cannot bump the zone's sequence).
     Comparison is on the zone, the timestamp and every metric value; provenance is included
@@ -591,11 +653,86 @@ class LocalStore:
         self._items[key] = dict(item)
         return True
 
-    def put_incident(self, item: Mapping[str, Any]) -> dict[str, Any]:
-        """Insert or update an incident record."""
-        stored = dict(item)
-        self._items[(str(stored["pk"]), str(stored["sk"]))] = stored
-        return stored
+    def put_incident(
+        self, item: Mapping[str, Any], expected_version: int | None = None
+    ) -> bool:
+        """Insert or update an incident record, optionally only if it has not moved on.
+
+        ``expected_version`` is the ``version`` this caller read. When it is given and the stored
+        record carries a different one, nothing is written and ``False`` is returned: an
+        overlapping invocation has already recorded its own state change, and overwriting it
+        with this caller's older view would erase an escalation (and contradict the alert that
+        was published for it). ``None`` means "no condition" and is used for records written
+        before the field existed.
+        """
+        key = (str(item["pk"]), str(item["sk"]))
+        stored = self._items.get(key)
+        if expected_version is not None and stored is not None:
+            if int(stored.get("version") or 0) != int(expected_version):
+                return False
+        self._items[key] = dict(item)
+        return True
+
+    def get_incident(self, zone_id: str, sk: str) -> dict[str, Any] | None:
+        """One incident record by its sort key, or ``None``."""
+        if not sk or not str(sk).startswith(INCIDENT_PREFIX):
+            return None
+        return self._items.get((build_zone_pk(zone_id), str(sk)))
+
+    def get_incident_open(self, zone_id: str) -> dict[str, Any] | None:
+        """The zone's open-incident pointer item, or ``None`` when no slot is claimed."""
+        return self._items.get((build_zone_pk(zone_id), INCIDENT_OPEN_SORT_KEY))
+
+    def claim_incident_open(self, zone_id: str, pointer: Mapping[str, Any]) -> bool:
+        """Claim the zone's single open-incident slot.
+
+        Mirrors the DynamoDB conditional write: the claim succeeds only when the slot is free -
+        no pointer item at all, or a pointer that has been released (an empty ``incident_sk``).
+        Two invocations that both decided to open an incident cannot both proceed; the loser
+        reads the pointer and adopts the winner's record.
+        """
+        key = (build_zone_pk(zone_id), INCIDENT_OPEN_SORT_KEY)
+        if not is_incident_open_free(self._items.get(key)):
+            return False
+        self._items[key] = dict(pointer)
+        return True
+
+    def update_incident_open(self, zone_id: str, incident_sk: str) -> bool:
+        """Point the zone's open slot at the incident that was actually stored.
+
+        A same-second collision can move the record to a suffixed sort key, so the key the
+        opener first claimed is not always the key that ended up holding the incident.
+        """
+        key = (build_zone_pk(zone_id), INCIDENT_OPEN_SORT_KEY)
+        pointer = self._items.get(key)
+        if is_incident_open_free(pointer):
+            return False
+        updated = dict(pointer or {})
+        updated["incident_sk"] = str(incident_sk)
+        updated["updated_ts_epoch"] = int(time.time())
+        self._items[key] = updated
+        return True
+
+    def release_incident_open(self, zone_id: str, incident_sk: str) -> bool:
+        """Release the open slot, but only if it still points at ``incident_sk``.
+
+        A closing invocation that lost the slot to a newer incident must not free the newer
+        incident's slot, or a third invocation could open a duplicate while it is still running.
+        An empty ``incident_sk`` releases whatever is there, which is how a stale pointer that
+        names a record nobody stored is cleaned up. The item is rewritten, never deleted, to
+        match the DynamoDB store (whose role has no delete permission).
+        """
+        key = (build_zone_pk(zone_id), INCIDENT_OPEN_SORT_KEY)
+        pointer = self._items.get(key)
+        if pointer is None:
+            return False
+        if incident_sk and str(pointer.get("incident_sk") or "") != str(incident_sk):
+            return False
+        updated = dict(pointer)
+        updated["incident_sk"] = INCIDENT_OPEN_RELEASED
+        updated["released_ts_epoch"] = int(time.time())
+        self._items[key] = updated
+        return True
 
     def latest_incident(self, zone_id: str) -> dict[str, Any] | None:
         """The zone's newest incident record (open or closed), or ``None``."""
@@ -647,6 +784,24 @@ class LocalStore:
         if alert_cooldown_remaining(self.get_alert_marker(str(item["zone_id"])), severity, now_epoch, cooldown_seconds) > 0:
             return False
         self.put_alert_marker(item)
+        return True
+
+    def release_alert_slot(self, zone_id: str, severity: str, claimed_ts_epoch: int) -> bool:
+        """Undo this invocation's alert claim after a failed publish, and only its own.
+
+        Returns ``True`` when this invocation's entry was removed. A claim written by another
+        invocation (a later timestamp) or a publish that succeeded while ours was in flight is
+        left untouched, which is what stops a rollback from opening the cooldown window again.
+        """
+        marker = self.get_alert_marker(zone_id)
+        updated, released = marker_without_severity(marker, severity, claimed_ts_epoch)
+        if not released:
+            return False
+        if not updated.get("pk"):
+            # The zone had no marker at all: build the item the way the other writers do.
+            updated["pk"] = build_zone_pk(zone_id)
+            updated["zone_id"] = zone_id
+        self.put_alert_marker(updated)
         return True
 
     # -- external weather cache (M4) ---------------------------------------- #

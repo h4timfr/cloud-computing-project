@@ -14,7 +14,7 @@ from floodpulse.config import ALERT_MARKER_SORT_KEY, HISTORY_TTL_SECONDS, METRIC
 from floodpulse.handler import dispatch, set_notifier, set_store
 from floodpulse.risk import class_rank
 from floodpulse.simulator import simulators_for_all_zones
-from floodpulse.storage import LATEST_SORT_KEY, LocalStore
+from floodpulse.storage import INCIDENT_OPEN_SORT_KEY, LATEST_SORT_KEY, LocalStore
 
 from tests.support import ALERT_COOLDOWN, RecordingNotifier
 
@@ -148,6 +148,7 @@ class LocalEndToEndTests(unittest.TestCase):
         reading_items = 0
         incident_items = 0
         marker_items = 0
+        pointer_items = 0
         for item in items:
             with self.subTest(sk=item["sk"]):
                 self.assertTrue(item["simulated"])
@@ -163,6 +164,14 @@ class LocalEndToEndTests(unittest.TestCase):
                     marker_items += 1
                     self.assertIn("last_alert_by_severity", item)
                     self.assertNotIn("ttl", item)
+                elif item["sk"] == INCIDENT_OPEN_SORT_KEY:
+                    # The single open-incident slot is claimed and released, never deleted (the
+                    # deployed role has no delete permission), so a released slot stays stored
+                    # with an empty incident_sk rather than disappearing.
+                    pointer_items += 1
+                    self.assertEqual(item["record_type"], "INCIDENT_OPEN")
+                    self.assertNotIn("ttl", item)
+                    self.assertIn("incident_sk", item)
                 elif item["sk"] == LATEST_SORT_KEY:
                     reading_items += 1
                     self.assertIn("sensor_node_id", item)

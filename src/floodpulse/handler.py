@@ -113,10 +113,10 @@ from .incidents import (
     build_alert_marker,
     cooldown_remaining_seconds,
     decide_transition,
+    incident_open_pointer,
     incident_suffix_id,
     incident_suffix_key,
     incident_view,
-    marker_rollback,
     record_alert,
 )
 from .notify import (
@@ -475,10 +475,13 @@ def _maybe_alert(
         outcome["reason"] = str(result.get("reason") or "publish_failed")
         if result.get("detail"):
             outcome["detail"] = str(result["detail"])[:200]
-        # Give the slot back: a failed publish must not consume the cooldown window.
+        # Give *our* slot back: a failed publish must not consume the cooldown window. Only our
+        # own claim is removed, so a hold another invocation took while our publish was in
+        # flight is not erased - that would open the window early and let a duplicate through.
         try:
-            store.put_alert_marker(marker_rollback(zone_id, marker))
-            outcome["slot_released"] = True
+            outcome["slot_released"] = bool(
+                store.release_alert_slot(zone_id, alert_severity, int(now_epoch))
+            )
         except Exception:  # noqa: BLE001 - the failure is already reported; never raise here
             LOGGER.exception("alert slot rollback failed for zone %s", zone_id)
             outcome["slot_released"] = False
@@ -491,6 +494,55 @@ def _maybe_alert(
         outcome.get("reason") or "ok",
     )
     return outcome
+
+
+def _save_incident(store: Any, incident: Mapping[str, Any], seen_version: int | None) -> tuple[dict[str, Any], bool]:
+    """Write an incident record under the version guard.
+
+    Returns ``(record_to_use, saved)``. The write carries the version this invocation read, so an
+    overlapping invocation's newer state (an escalation, its alert entry) cannot be erased by an
+    older view. When the write is refused, the caller must not publish an alert either: a message
+    about a change the record does not contain is worse than a delayed one - the next reading
+    re-decides against the stored record, which is what makes this self-correcting rather than
+    lossy.
+    """
+    record = dict(incident)
+    record["version"] = int(seen_version or 0) + 1
+    try:
+        saved = bool(store.put_incident(record, expected_version=seen_version))
+    except Exception:  # noqa: BLE001 - a store fault must not raise out of incident tracking
+        LOGGER.exception("incident write failed zone_id=%s", record.get("zone_id"))
+        return record, False
+    if not saved:
+        LOGGER.warning(
+            "incident_write_conflict zone_id=%s sk=%s seen_version=%s",
+            record.get("zone_id"),
+            _brief(record.get("sk")),
+            seen_version,
+        )
+    return record, saved
+
+
+def _claim_open_slot(store: Any, zone_id: str, incident: Mapping[str, Any], now_epoch: float) -> bool:
+    """Try to take the zone's single open-incident slot.
+
+    Returns ``True`` only when this invocation owns the slot. A refused claim is either a live
+    incident (the caller adopts it) or a stale pointer left by a crash or by a same-second
+    collision; the stale case is cleaned up here, once, and then retried - so a zone can always
+    open its next incident, including in a deployment whose role cannot delete items.
+    """
+    if store.claim_incident_open(zone_id, incident_open_pointer(zone_id, incident, now_epoch)):
+        return True
+    pointer = store.get_incident_open(zone_id)
+    held_sk = str((pointer or {}).get("incident_sk") or "")
+    held = store.get_incident(zone_id, held_sk) if held_sk else None
+    if held is not None and held.get("current_status") == INCIDENT_STATUS_OPEN:
+        return False
+    # Nothing is actually open: the pointer is stale (its incident is closed, or no record was
+    # ever stored under that key). Free it and try once more.
+    if not store.release_incident_open(zone_id, held_sk):
+        return False
+    return bool(store.claim_incident_open(zone_id, incident_open_pointer(zone_id, incident, now_epoch)))
 
 
 def _track_incident(
@@ -512,10 +564,22 @@ def _track_incident(
     govern both opening and closing. ``data_classification`` is the provenance of the
     reading, stored on the incident so a live-weather incident is never served as if the
     whole fleet were simulated.
+
+    Two invariants are enforced with conditional writes rather than with careful reading:
+
+    * a zone has at most one open incident at a time (``claim_incident_open``), so two
+      simultaneous invocations cannot open two incidents - and publish two alerts - for one
+      event;
+    * a state change is written only against the version it was decided from (``_save_incident``),
+      so an overlapping invocation cannot erase an escalation that landed after it read.
     """
+    active = store.latest_incident(zone_id)
+    seen_version = None
+    if isinstance(active, Mapping) and active.get("version") is not None:
+        seen_version = int(active.get("version") or 0)
     plan = decide_transition(
         zone_id=zone_id,
-        active=store.latest_incident(zone_id),
+        active=active,
         risk_class=risk_class,
         risk_score=risk_score,
         top_driver=top_driver,
@@ -534,47 +598,80 @@ def _track_incident(
     action, incident, alert_severity, reason = plan.action, plan.incident, plan.alert_severity, plan.reason
 
     if action == ACTION_OPENED:
-        if not store.create_incident(incident):
-            existing = store.latest_incident(zone_id)
-            if existing is not None and existing.get("current_status") == INCIDENT_STATUS_OPEN:
-                # A concurrent request opened the incident first. Adopt the stored record
-                # instead of writing a duplicate, and do not alert (the winner did).
-                incident, action, alert_severity = existing, "observed", None
-                reason = "an incident was already open (duplicate suppressed)"
-                store.put_incident(incident)
-            else:
-                # Not an open neighbour, so the sort key is held by an incident that already
-                # closed inside this same second - an open, a resolve and a new reading all
-                # sharing one timestamp. Sliding the new record to the next free key keeps
-                # the event (and its alert) instead of dropping it, which is what the plain
-                # key did: the reading scored as flood-level and then vanished from the
-                # incident record entirely.
-                opened = False
-                for attempt in range(2, INCIDENT_KEY_ATTEMPTS + 1):
-                    candidate = dict(incident)
+        if not _claim_open_slot(store, zone_id, incident, now_epoch):
+            held_sk = str((store.get_incident_open(zone_id) or {}).get("incident_sk") or "")
+            existing = store.get_incident(zone_id, held_sk) if held_sk else None
+            if existing is None or existing.get("current_status") != INCIDENT_STATUS_OPEN:
+                # Someone holds the slot but nothing is open inside it, and the claim could not
+                # be freed. Refusing is the safe side of this: opening anyway is how a zone ends
+                # up with two open incidents and two alerts for one event.
+                LOGGER.warning(
+                    "incident_open_unavailable zone_id=%s held_sk=%s", zone_id, _brief(held_sk)
+                )
+                return _no_incident_summary(
+                    "another invocation holds this city's incident slot (the reading still scored and was stored)"
+                ), {
+                    "evaluated": False,
+                    "published": False,
+                    "severity": None,
+                    "reason": "incident_open_unavailable",
+                }
+            # A concurrent invocation opened the incident first. Adopt the stored record instead
+            # of writing a duplicate, and do not alert (the winner did).
+            incident, action, alert_severity = existing, "observed", None
+            reason = "an incident was already open (duplicate suppressed)"
+            incident, saved = _save_incident(store, incident, existing.get("version"))
+            if not saved:
+                incident = existing
+        else:
+            # We own the slot. The key can still be held by an incident that already closed
+            # inside this same second - an open, a resolve and a new reading all sharing one
+            # timestamp - so the record may have to move to the next free key.
+            created = None
+            for attempt in range(1, INCIDENT_KEY_ATTEMPTS + 1):
+                candidate = dict(incident)
+                if attempt > 1:
                     candidate["sk"] = incident_suffix_key(str(incident["sk"]), attempt)
                     candidate["incident_id"] = incident_suffix_id(str(incident["incident_id"]), attempt)
-                    if store.create_incident(candidate):
-                        incident, opened = candidate, True
+                if store.create_incident(candidate):
+                    created = candidate
+                    if attempt > 1:
                         reason = "opened on a same-second key (an earlier incident held the base key)"
-                        break
-                if not opened:
-                    LOGGER.warning(
-                        "incident_open_exhausted zone_id=%s base_sk=%s attempts=%s",
-                        zone_id,
-                        _brief(incident.get("sk")),
-                        INCIDENT_KEY_ATTEMPTS,
-                    )
-                    return _no_incident_summary(
-                        "no free incident key in this second (the reading still scored and was stored)"
-                    ), {
-                        "evaluated": False,
-                        "published": False,
-                        "severity": None,
-                        "reason": "incident_key_exhausted",
-                    }
+                    break
+            if created is None:
+                LOGGER.warning(
+                    "incident_open_exhausted zone_id=%s base_sk=%s attempts=%s",
+                    zone_id,
+                    _brief(incident.get("sk")),
+                    INCIDENT_KEY_ATTEMPTS,
+                )
+                store.release_incident_open(zone_id, str(incident.get("sk") or ""))
+                return _no_incident_summary(
+                    "no free incident key in this second (the reading still scored and was stored)"
+                ), {
+                    "evaluated": False,
+                    "published": False,
+                    "severity": None,
+                    "reason": "incident_key_exhausted",
+                }
+            incident = created
+            seen_version = None
+            if not store.update_incident_open(zone_id, str(incident["sk"])):
+                LOGGER.warning("incident_open_pointer_update_failed zone_id=%s", zone_id)
     else:
-        store.put_incident(incident)
+        incident, saved = _save_incident(store, incident, seen_version)
+        if not saved:
+            return _no_incident_summary(
+                "another invocation recorded a change first; this reading left the record alone"
+            ), {
+                "evaluated": False,
+                "published": False,
+                "severity": None,
+                "reason": "incident_write_conflict",
+            }
+        if action == ACTION_CLOSED:
+            # Free the slot *after* the close is stored, and only if it is still ours.
+            store.release_incident_open(zone_id, str(incident["sk"]))
 
     alert = _maybe_alert(
         store,
@@ -598,7 +695,14 @@ def _track_incident(
                 message_id=alert.get("message_id"),
             ),
         )
-        store.put_incident(incident)
+        incident, logged = _save_incident(store, incident, incident.get("version", seen_version))
+        if not logged:
+            # The alert went out; only its entry in the incident log was refused. The cooldown
+            # marker is the authoritative record of what was published, so this is reported
+            # rather than retried into someone else's newer state.
+            LOGGER.warning(
+                "alert_log_write_conflict zone_id=%s severity=%s", zone_id, alert.get("severity")
+            )
 
     return _incident_summary(action, incident, now_epoch, reason), alert
 
@@ -1610,7 +1714,12 @@ def _handle_incidents(
     except ValidationError as exc:
         return 400, {"error": "invalid_query", "field": exc.field, "detail": exc.reason}
 
-    incidents = [incident_view(item, now_epoch) for item in store.list_incidents(zone_id=zone_id, limit=limit)]
+    # One extra record decides "is there more?", so a page that is exactly full is not reported
+    # as truncated: a client that pages on this flag would otherwise fetch an empty page every
+    # time the count is an exact multiple of the limit.
+    page = store.list_incidents(zone_id=zone_id, limit=limit + 1)
+    truncated = len(page) > limit
+    incidents = [incident_view(item, now_epoch) for item in page[:limit]]
     open_count = sum(1 for view in incidents if view["is_open"])
 
     # The list reports the provenance of the incidents it is showing (each incident keeps the
@@ -1636,7 +1745,7 @@ def _handle_incidents(
         # say so, or "3 open" reads as "the fleet has three open incidents" when the list was
         # cut off at `limit`.
         "counts_scope": "returned_page",
-        "truncated": len(incidents) >= limit,
+        "truncated": truncated,
         "open_count": open_count,
         "closed_count": len(incidents) - open_count,
         "alerting": alerting_view(notifier is not None and getattr(notifier, "enabled", False), cooldown_seconds),
