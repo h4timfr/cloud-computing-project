@@ -1286,13 +1286,25 @@
     return 'Below the ' + formatMetric(metric, state.watch) + ' watch level';
   }
 
+  /* The API's own driver list, minus any driver whose contribution is exactly zero: on an all-zero
+   * reading every contribution is 0.0, and naming one "largest" contradicts the same payload's
+   * explanation ("dominant driver: none"). Order is the API's: contribution-ranked. */
+  function activeDrivers(zone) {
+    var contributions = contributionMap(zone);
+    var listed = ((zone || {}).latest || {}).top_drivers || [];
+    return listed.filter(function (metric) {
+      var entry = typeof metric === 'string' && hasOwn(contributions, metric) ? contributions[metric] : null;
+      return entry ? toNumber(entry.contribution) > 0 : false;
+    });
+  }
+
   /* One plain sentence explaining *why* the city is in its band, plus one line of advice.
    * Both are written for a visitor, not for an engineer. */
   function reasonSentence(zone) {
     var latest = zone && zone.latest;
     if (!latest) return '';
     var text = 'Risk is currently ' + classLabel(latest.risk_class) + '.';
-    var drivers = (latest.top_drivers || []).filter(function (driver) { return !!driver; });
+    var drivers = activeDrivers(zone);
     var lead = drivers.length ? drivers[0] : null;
     if (!lead) return text;
     text += ' ' + driverLabel(lead) + ' is the main contributor';
@@ -1344,7 +1356,7 @@
     };
     if (!latest) return summary;
 
-    var drivers = latest.top_drivers || [];
+    var drivers = activeDrivers(zone);
     var driver = drivers.length ? drivers[0] : null;
     summary.driver = driver;
     if (driver) summary.driverLabel = driverLabel(driver);
@@ -1766,12 +1778,14 @@
       if (!entry) return;
       var value = toNumber(entry.contribution);
       if (value === null) return;
-      sum += value;
+      // the printed items and the printed total must agree: shown at two decimals, summed as shown
+      var printed = Math.round(value * 100) / 100;
+      sum += printed;
       counted += 1;
       parts.push('<li><code class="var-name">' + escapeHtml(metric) + '</code> ' +
         '<span class="breakdown-label">' + escapeHtml((METRIC_META[metric] || {}).label || metric) + '</span> ' +
         '× weight ' + escapeHtml(formatPercentShare(entry.weight)) + ' = ' +
-        '<b>' + escapeHtml(formatScore(value)) + '</b></li>');
+        '<b>' + escapeHtml(formatScore(printed)) + '</b></li>');
     });
     if (!counted) return '';
     return '<div class="breakdown">' +
@@ -1779,8 +1793,8 @@
         'risk score = <span class="breakdown-base">weighted base</span> + trend' +
       '</p>' +
       '<ul class="breakdown-list">' + parts.join('') + '</ul>' +
-      '<p class="breakdown-total">Weighted base (sum of the contributions above): <b>' +
-        escapeHtml(formatScore(Math.round(sum * 10000) / 10000)) + '</b> · risk score reported by the API: <b>' +
+      '<p class="breakdown-total">Weighted base (the contributions above, added as shown): <b>' +
+        escapeHtml(formatScore(sum)) + '</b> · risk score reported by the API: <b>' +
         escapeHtml(formatScore(latest.risk_score)) + '</b></p>' +
       '</div>';
   }
@@ -2138,9 +2152,7 @@
     if (!zone || typeof zone !== 'object') return '';
     var latest = zone.latest;
     if (!latest) return '';
-    var drivers = (latest.top_drivers || []).filter(function (metric) {
-      return typeof metric === 'string' && hasOwn(METRIC_META, metric);
-    });
+    var drivers = activeDrivers(zone);
     if (!drivers.length) return '';
     var contributions = contributionMap(zone);
     var max = 0;
@@ -2829,14 +2841,13 @@
     return 'unavailable';
   }
 
-  /* ===== M16: retrospective temporal intelligence (README "M16"). Packed on purpose: the M16 budget
-   * has to cover two charts too. Semantics, once: stored readings in, one summary per window out, so no
-   * renderer can disagree with the caption under it. A window is measured back from the NEWEST sample,
-   * never the wall clock. Direction is the least-squares slope of score against elapsed hours -
-   * retrospective, never a forecast - and a window that rose then eased keeps its slope with its peak
-   * and its net change beside it. A gap is an interval over max(3 x median, 900 s). A row with an
-   * unusable timestamp or a score outside 0..1 is dropped, never guessed at; equal timestamps keep the
-   * later row. */
+  /* ===== M16: retrospective temporal intelligence (README "M16"). Semantics, once: stored readings
+   * in, one summary per window out, so no renderer can disagree with the caption under it. A window is
+   * measured back from the NEWEST sample, never the wall clock. Direction is the least-squares slope of
+   * score against elapsed hours - retrospective, never a forecast - and a window that rose then eased
+   * keeps its slope with its peak and its net change beside it. A gap is an interval over
+   * max(3 x median, 900 s). A row with an unusable timestamp or a score outside 0..1 is dropped, never
+   * guessed at; equal timestamps keep the later row. */
   var RULES = { minSamples: 3, minSeconds: 600, tolerancePerHour: 0.02, gapFactor: 3, gapFloorSeconds: 900 };
   var EDGES = [0].concat(SCORE_BAND_EDGES).concat([1]);
 
@@ -2937,7 +2948,13 @@
   }
   function tRound(x) { return Math.round(x * 10) / 10; }
   function tClock(sec) { return clockLabel(new Date((toNumber(sec) || 0) * 1000).toISOString()); }
-  function tSigned(v, d) { var x = toNumber(v); return x === null ? 'unknown' : (x > 0 ? '+' : (x < 0 ? '-' : '')) + Math.abs(x).toFixed(d); }
+  function tSigned(v, d) {
+    var x = toNumber(v);
+    if (x === null) return 'unknown';
+    // zero after rounding is zero: "-0.00" with a downward arrow reads as a fall beside a steady slope
+    var r = Math.round(x * Math.pow(10, d)) / Math.pow(10, d);
+    return r === 0 ? (0).toFixed(d) : (r > 0 ? '+' : '-') + Math.abs(r).toFixed(d);
+  }
   function tPoints(values, options) {
     var o = options || {}, N = [], P = [], i, v;
     for (i = 0; i < (values || []).length; i++) { v = toNumber(values[i]); if (v !== null) N.push(v); }
@@ -2979,13 +2996,16 @@
     var s = summary || {}, d = '';
     if (!s.count) return '<p class="muted small" data-f="no-window">No stored reading in the ' + escapeHtml((options || {}).windowLabel || 'selected') + ' window, so there is nothing to compare yet.</p>';
     var row = function (t, v, dir) { return '<div><dt>' + t + '</dt><dd' + (dir ? ' data-dir="' + dir + '"' : '') + '>' + v + '</dd></div>'; };
+    // the arrow follows the displayed change, so it can never point down beside "0.00"
+    var shown = tSigned(s.netChange, 2);
+    var netDir = shown === '0.00' ? '' : (shown.charAt(0) === '+' ? 'up' : 'down');
     var rated = function (sc) { return escapeHtml(formatScore(sc)) + ' · ' + escapeHtml(classLabel(tBand(sc))); };
     if (s.status !== 'OK') d = escapeHtml('not named: ' + (s.reason === 'too_short' ? 'under ten minutes of history' : 'only ' + s.count + ' usable sample' + (s.count === 1 ? '' : 's')));
     else if (s.trend === 'STEADY') d = 'steady · least-squares slope within \u00b1' + RULES.tolerancePerHour + '/h';
     else d = (s.trend === 'RISING' ? 'rising' : 'falling') + ' · least-squares slope ' + tSigned(s.slopePerHour, 3) + '/h';
     return '<dl class="kv change-facts" data-f="change-facts">' +
       row('Risk now', rated(s.lastScore)) + row('Window start', rated(s.firstScore)) +
-      row('Net change', tSigned(s.netChange, 2), s.netChange > 0 ? 'up' : (s.netChange < 0 ? 'down' : '')) +
+      row('Net change', shown, netDir) +
       row('Direction', d) + row('Peak', escapeHtml(formatScore(s.maxScore)) + ' at ' + tClock(s.peakTs)) +
       row('Rainfall', s.rainfallSamples ? s.firstRainfall.toFixed(1) + ' \u2192 ' + s.lastRainfall.toFixed(1) + ' mm/h' : 'not stored in this window') + '</dl>';
   }
@@ -3018,10 +3038,10 @@
     return { open: open, severity: sev, startedAs: was, escalated: Boolean(was && was !== sev), openedTs: opened,
       closedTs: closed, durationSeconds: dur, inWindow: from !== null && opened !== null && opened >= from };
   }
-  /* One SVG chart, no library, for the risk series and the rainfall series alike: the score axis is the
-   * fixed 0..1 the engine scores in, its band edges drawn as guides and the bands shaded; rainfall gets
-   * its own mm/h ceiling. The window's peak and its newest sample are marked. Returns the viewBox and the
-   * inner markup, so the caller sizes the element from its own layout width. */
+  /* One SVG chart, no library, for both series: the score axis is the fixed 0..1 the engine scores in,
+   * its band edges drawn as guides and the bands shaded; rainfall gets its own mm/h ceiling. The window's
+   * peak and its newest sample are marked. Returns the viewBox and the markup, so the caller sizes the
+   * element from its own layout width. */
   function tChart(summary, options) {
     var s = summary || {}, o = options || {}, rain = o.kind === 'rain', P = s.points || [], b = [], line = [], i, lo;
     var w = Math.max(200, Math.round(toNumber(o.width) || 640)), h = Math.round(o.height || 190);
@@ -3074,7 +3094,6 @@
     METRIC_ORDER: METRIC_ORDER,
     METRIC_META: METRIC_META,
     LIVE_MS: LIVE_MS,
-    STALE_MS: STALE_MS,
     escapeHtml: escapeHtml,
     bandKey: bandKey,
     classLabel: classLabel,
@@ -3089,15 +3108,12 @@
     trendDirection: trendDirection,
     temporal: temporalAnalysis,
     trendHasHistory: trendHasHistory,
-    metricsFrom: metricsFrom,
     metricScale: metricScale,
     contributionMap: contributionMap,
-    contributionPercent: contributionPercent,
     connectionState: connectionState,
     ranking: ranking,
     liveCount: liveCount,
     formatDuration: formatDuration,
-    severityBand: severityBand,
     incidentIsOpen: incidentIsOpen,
     incidentDurationSeconds: incidentDurationSeconds,
     alertingNote: alertingNote,
@@ -3107,8 +3123,6 @@
     renderIncidents: renderIncidents,
     renderMetricRow: renderMetricRow,
     renderZoneCard: renderZoneCard,
-    projectCoast: projectCoast,
-    MAP_BOUNDS: MAP_BOUNDS,
     renderMapMarker: renderMapMarker,
     renderMapDetail: renderMapDetail,
     // The city image mapping is exported as data plus one lookup, so a check can assert the
@@ -3128,7 +3142,6 @@
     modeBadge: modeBadge,
     zoneNoun: zoneNoun,
     zoneNounPlural: zoneNounPlural,
-    isLiveZone: isLiveZone,
     dataAttribution: dataAttribution,
     bandCounts: bandCounts,
     renderBandStrip: renderBandStrip,
@@ -3136,12 +3149,8 @@
     fleetClasses: fleetClasses,
     fleetChange: fleetChange,
     NAV_ITEMS: NAV_ITEMS,
-    DEFAULT_VIEW: DEFAULT_VIEW,
-    BAND_MEANING: BAND_MEANING,
     metricPlain: metricPlain,
     metricIcon: metricIcon,
-    metricState: metricState,
-    metricStateCaption: metricStateCaption,
     plainRiskSummary: plainRiskSummary,
     // the public-name layer and the one composer for the plain "why" sentence
     humaniseVariable: humaniseVariable,
@@ -3149,7 +3158,6 @@
     labelList: labelList,
     reasonSentence: reasonSentence,
     scoreBreakdown: scoreBreakdown,
-    relativeTime: relativeTime,
     routeFromHash: routeFromHash,
     hashFor: hashFor,
     navState: navState,
@@ -3158,13 +3166,10 @@
     leaderAgeSeconds: leaderAgeSeconds,
     fleetHeadline: fleetHeadline,
     productIntro: productIntro,
-    bandPill: bandPill,
     cityStatusCard: cityStatusCard,
-    metricTile: metricTile,
     metricTiles: metricTiles,
     cityDetail: cityDetail,
     CITY_SPLIT: CITY_SPLIT,
-    technicalDetails: technicalDetails,
     alertsSplit: alertsSplit,
     staleZoneIds: staleZoneIds,
     alertRow: alertRow,
@@ -3174,67 +3179,49 @@
     methodologyFacts: methodologyFacts,
     attributionLine: attributionLine,
     providerLabel: providerLabel,
-    weatherEvidence: weatherEvidence,
     zoneProvenance: zoneProvenance,
     dataNotice: dataNotice,
     modeTitle: modeTitle,
     weatherSummary: weatherSummary,
     feedStatus: feedStatus,
-    feedState: feedState,
     freshnessLine: freshnessLine,
     freshnessRows: freshnessRows,
-    refreshCountdown: refreshCountdown,
-    agePhrase: agePhrase,
     sparklinePath: sparklinePath,
     historySeries: historySeries,
     toNumber: toNumber,
     // M9: icons, loading states, empty states, activity, delivery and health
     icon: icon,
     metricIcon: metricIcon,
-    metricIconName: metricIconName,
-    METRIC_HELP: METRIC_HELP,
-    SOURCE_PLAIN: SOURCE_PLAIN,
     skeletonLines: skeletonLines,
     cityCardsSkeleton: cityCardsSkeleton,
     alertRowsSkeleton: alertRowsSkeleton,
     emptyState: emptyState,
     trendIcon: trendIcon,
-    metricHelp: metricHelp,
-    metricFigure: metricFigure,
     driverBlock: driverBlock,
     cityIncidentHistory: cityIncidentHistory,
     recentActivity: recentActivity,
-    alertDelivery: alertDelivery,
     deliveryPanel: deliveryPanel,
     systemHealth: systemHealth,
-    alertReason: alertReason,
     // M10: the premium pieces and the email subscription form's vocabulary
     SCORE_BAND_EDGES: SCORE_BAND_EDGES,
     fleetNoun: fleetNoun,
     monitorLine: monitorLine,
     // M11: coverage, geography, and the Cities page's own find-and-sort - all client-side
     coverageInfo: coverageInfo,
-    coverageClause: coverageClause,
     fleetScopeNote: fleetScopeNote,
     citySelectionNote: citySelectionNote,
-    riskLevel: riskLevel,
-    cityPlaceText: cityPlaceText,
     filterChips: filterChips,
     cityPlaceLine: cityPlaceLine,
     openCityLabel: openCityLabel,
     incidentZoneLabel: incidentZoneLabel,
-    cityMatches: cityMatches,
     cityLabelFor: cityPlaceText,
-    sortCities: sortCities,
     visibleCities: visibleCities,
     coastOptions: coastOptions,
     citiesResultLine: citiesResultLine,
     cityFilterLabels: cityFilterLabels,
     citiesEmptyState: citiesEmptyState,
     cityThumb: cityThumb,
-    cityMeter: cityMeter,
     alertPreview: alertPreview,
-    SUBSCRIBE_MAX_LENGTH: SUBSCRIBE_MAX_LENGTH,
     looksLikeEmail: looksLikeEmail,
     subscriptionResult: subscriptionResult,
     subscriptionKindForStatus: subscriptionKindForStatus

@@ -360,6 +360,49 @@ async function main() {
 
   /* ---------------------------------------------------------------- history --- */
 
+  group('A reading with nothing above the bottom of the range names no driver');
+
+  await (async () => {
+    // M17 risk/temporal audit P1: top_drivers is contribution-ranked, so an all-zero reading lists
+    // five metrics whose contribution is exactly 0.0. The city page took the first entry and called
+    // it the "largest contributor", and the summary called it the "main contributor", while the
+    // API's own explanation in the same payload said "dominant driver: none".
+    const runtime = createRuntime();
+    const quiet = JSON.parse(JSON.stringify(live.payload));
+    const city = quiet.zones[0];
+    const zoneId = city.zone_id;
+    city.latest.risk_score = 0;
+    city.latest.risk_class = 'NORMAL';
+    city.latest.risk_class_candidate = 'NORMAL';
+    city.latest.contributions = Object.keys(city.latest.readings).map((metric) => ({
+      variable: metric, value: 0, sub_score: 0, weight: 0.2, contribution: 0
+    }));
+    city.latest.top_drivers = city.latest.contributions.map((entry) => entry.variable).sort();
+    city.latest.explanation = 'risk_score 0.0000 = weighted base 0.0000 + trend 0.0000; dominant driver: none';
+    runtime.on(zonesRoute, () => ({ body: withFeedAge(quiet, 120, 120) }));
+    runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+    runtime.on(historyRoute, () => ({ body: document(rows([[0, 0, 0], [600, 0, 0], [1200, 0, 0]])).body }));
+    const dom = boot(runtime, '#/city/' + zoneId);
+    await runtime.settle();
+
+    await check('an all-zero reading names no largest contributor', () => {
+      const page = dom.html('city-detail');
+      assert.ok(page.length > 200, 'the city page was never rendered');
+      assert.ok(!/largest contributor/.test(page), 'the page still names a largest contributor');
+      assert.ok(!/main contributor/.test(page), 'the summary still names a main contributor');
+      assert.ok(!/also contributes/.test(page), 'the driver list still shows zero contributors');
+      assert.match(page, /currently normal/i, 'the band sentence itself must still be there');
+    });
+
+    await check('the same page still shows the API\'s own numbers', () => {
+      // only the "this one drove it" claim goes: the score, the band and every metric stay
+      const page = dom.html('city-detail');
+      assert.match(page, /data-f="risk_score">0\.00/);
+      assert.match(page, /data-f="risk_class">NORMAL/);
+      assert.match(page, /Below the 15\.0 mm\/h watch level/);
+    });
+  })();
+
   group('History failures are contained instead of retried on every poll');
 
   await (async () => {
