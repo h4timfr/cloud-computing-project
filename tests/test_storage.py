@@ -11,6 +11,7 @@ from floodpulse.storage import (
     build_history_item,
     build_latest_item,
     build_zone_pk,
+    history_suffix_key,
 )
 
 READING = {
@@ -124,7 +125,27 @@ class LocalStoreTests(unittest.TestCase):
         self._put(100, "2026-02-14T10:00:00Z", rain=1.0)
         self._put(100, "2026-02-14T10:00:00Z", rain=2.0)
         keys = [item["sk"] for item in self.store.get_history("zone-riverside-north")]
-        self.assertEqual(keys, ["H#2026-02-14T10:00:00Z", "H#2026-02-14T10:00:00Z#2"])
+        self.assertEqual(keys, ["H#2026-02-14T10:00:00Z", "H#2026-02-14T10:00:00Z#000002"])
+
+    def test_same_second_suffixes_sort_in_arrival_order(self) -> None:
+        """Both stores read history in sort-key order, so the suffix must be zero-padded.
+
+        With a plain decimal the tenth reading in one second ("#10") sorts before the second
+        ("#2"), and "the newest N rows" stops being the newest N rows.
+        """
+        rains = [2.0, 3.0, 9.0, 10.0, 11.0]
+        for rain in rains:
+            self._put(100, "2026-02-14T10:00:00Z", rain=rain)
+        keys = [item["sk"] for item in self.store.get_history("zone-riverside-north")]
+        self.assertEqual(len(keys), len(rains))
+        self.assertEqual(keys, sorted(keys), "sort-key order must be arrival order")
+        self.assertEqual(keys[0], "H#2026-02-14T10:00:00Z")
+        self.assertEqual(
+            keys[1:],
+            [history_suffix_key("H#2026-02-14T10:00:00Z", index) for index in (2, 3, 4, 5)],
+        )
+        newest = self.store.get_history("zone-riverside-north", limit=1)
+        self.assertEqual(newest[0]["readings"]["rainfall_mm_per_hr"], rains[-1])
 
     def test_history_is_ascending_and_filterable(self) -> None:
         self._put(300, "2026-02-14T10:05:00Z", rain=3.0)

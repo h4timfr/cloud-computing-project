@@ -41,6 +41,7 @@ from floodpulse.incidents import build_alert_marker, build_incident_item
 from floodpulse.risk import apply_hysteresis, score_zone
 from floodpulse.storage import (
     LATEST_SORT_KEY,
+    READING_STORED,
     LocalStore,
     SubscribeThrottleUnavailable,
     build_zone_pk,
@@ -404,8 +405,37 @@ class DynamoDbStoreTests(unittest.TestCase):
         _latest, first = stored(self.store, make_reading(ts_epoch=BASE_EPOCH))
         _latest, second = stored(self.store, make_reading(ts_epoch=BASE_EPOCH, rain=9.0))
         self.assertEqual(first["sk"], "H#2026-02-14T10:15:00Z")
-        self.assertEqual(second["sk"], "H#2026-02-14T10:15:00Z#2")
+        # The suffix is zero-padded so that lexicographic sort-key order (which is what both
+        # stores read history in) is arrival order: plain decimals would put #10 before #2.
+        self.assertEqual(second["sk"], "H#2026-02-14T10:15:00Z#000002")
+        self.assertLess(first["sk"], second["sk"])
         self.assertEqual(self.store.history_count(ZONE), 2)
+
+    def test_many_readings_in_one_second_keep_the_newest_newest(self) -> None:
+        """Ten same-second records, then ``limit=1``: the answer must be the last arrival."""
+        for index in range(10):
+            stored(self.store, make_reading(ts_epoch=BASE_EPOCH, rain=float(index)))
+        newest = self.store.get_history(ZONE, limit=1)
+        self.assertEqual(len(newest), 1)
+        self.assertEqual(newest[0]["readings"]["rainfall_mm_per_hr"], 9.0)
+
+    def test_a_retry_restores_latest_when_a_write_was_interrupted(self) -> None:
+        """History written, LATEST not: a client retry finishes the job instead of reporting
+        "duplicate" while the zone's current state stays on the previous reading."""
+        reading = make_reading(ts_epoch=BASE_EPOCH)
+        stored(self.store, reading)
+        # Simulate the interruption: the observation is in history, current state is gone.
+        self.table.items.pop((build_zone_pk(ZONE), LATEST_SORT_KEY), None)
+        self.assertIsNone(self.store.get_latest(ZONE))
+
+        latest, history, outcome = self.store.put_reading(reading, *scored(reading))
+        self.assertEqual(outcome.outcome, READING_STORED)
+        self.assertTrue(outcome.latest_updated)
+        self.assertFalse(outcome.history_written)
+        self.assertIsNone(history, "the retry must not append a second copy")
+        self.assertEqual(int(latest["ts_epoch"]), BASE_EPOCH)
+        self.assertEqual(self.store.history_count(ZONE), 1)
+        self.assertIsNotNone(self.store.get_latest(ZONE))
 
     def test_get_latest_returns_plain_json_serialisable_values(self) -> None:
         put(self.store, make_reading())
@@ -414,7 +444,9 @@ class DynamoDbStoreTests(unittest.TestCase):
         self.assertIsInstance(latest["ts_epoch"], int)
         self.assertIsInstance(latest["sequence"], int)
         self.assertIsInstance(latest["risk_score"], float)
-        self.assertIsInstance(latest["ttl"], int)
+        # Current state never expires: history's TTL is about observations, not about what
+        # the fleet looks like now (M17 - a silent zone must still report its last reading).
+        self.assertNotIn("ttl", latest)
         json.dumps(latest)
         self.assertIsNone(self.store.get_latest("zone-atlantis"))
 

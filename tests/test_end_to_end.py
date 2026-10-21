@@ -14,7 +14,7 @@ from floodpulse.config import ALERT_MARKER_SORT_KEY, HISTORY_TTL_SECONDS, METRIC
 from floodpulse.handler import dispatch, set_notifier, set_store
 from floodpulse.risk import class_rank
 from floodpulse.simulator import simulators_for_all_zones
-from floodpulse.storage import LocalStore
+from floodpulse.storage import LATEST_SORT_KEY, LocalStore
 
 from tests.support import ALERT_COOLDOWN, RecordingNotifier
 
@@ -162,6 +162,11 @@ class LocalEndToEndTests(unittest.TestCase):
                 elif item["sk"] == ALERT_MARKER_SORT_KEY:
                     marker_items += 1
                     self.assertIn("last_alert_by_severity", item)
+                    self.assertNotIn("ttl", item)
+                elif item["sk"] == LATEST_SORT_KEY:
+                    reading_items += 1
+                    self.assertIn("sensor_node_id", item)
+                    # Current state is kept; only observations expire (M17).
                     self.assertNotIn("ttl", item)
                 else:
                     reading_items += 1

@@ -70,6 +70,31 @@ def incident_id_for(zone_id: str, opened_ts_epoch: float) -> str:
     return f"inc-{zone_id.replace('zone-', '')}-{stamp}"
 
 
+#: Width of the arrival suffix used when two incidents for one zone would share a second.
+#: Zero-padded because both stores order incidents by the sort key lexicographically, so a
+#: plain decimal would put ``#10`` before ``#2``.
+INCIDENT_SUFFIX_WIDTH = 6
+#: How many same-second slots an open attempt may try before giving up. A flood of more
+#: than eight openings inside one second for one zone is not a scenario worth engineering
+#: for; the reading still scores and still reaches the history.
+INCIDENT_KEY_ATTEMPTS = 8
+
+
+def incident_suffix_key(sk: str, index: int) -> str:
+    """The sort key for the ``index``-th incident in the same second (``index >= 2``)."""
+    return f"{sk}#{int(index):0{INCIDENT_SUFFIX_WIDTH}d}"
+
+
+def incident_suffix_id(incident_id: str, index: int) -> str:
+    """The id for the ``index``-th incident in the same second: unique, still readable.
+
+    Two incidents in one second are two events (the first closed, the second opened), so
+    they must not share an id: a page keyed by incident id, or an operator reading a log,
+    would otherwise see one event where there were two.
+    """
+    return f"{incident_id}-r{int(index)}"
+
+
 def metric_label(metric: str | None) -> str | None:
     """Display name for a metric key (``None`` stays ``None``)."""
     if not metric:

@@ -547,6 +547,21 @@ class RequestValidationTests(HistoryEndpointTestCase):
                 self.assertEqual(body["error"], "invalid_query")
                 self.assertEqual(body["field"], "minutes")
 
+    def test_non_ascii_digits_are_a_400_and_never_a_500(self) -> None:
+        """M17 regression: ``str.isdigit()`` accepts characters ``int()`` refuses.
+
+        Superscripts, circled and full-width digits are ``isdigit()``-true but not parseable,
+        so the old guard let them through to a bare ``int()``; on this public, unauthenticated
+        route that surfaced as ``internal_error`` (500) and a CloudWatch error line any
+        stranger could write. They are now ordinary bad query values.
+        """
+        for raw in ("\u00b2", "\u00b9", "5\u00b2", "\u2461", "\u2475", "\u2079", "\uff15", "\u0665", "\u096b"):
+            with self.subTest(minutes=repr(raw)):
+                status, body = self.history(BASE_EPOCH, raw)
+                self.assertEqual(status, 400, f"{raw!r} must not be a 500")
+                self.assertEqual(body["error"], "invalid_query")
+                self.assertEqual(body["field"], "minutes")
+
     def test_a_missing_minutes_parameter_uses_the_default(self) -> None:
         status, body = self.history(BASE_EPOCH)
         self.assertEqual(status, 200)

@@ -542,7 +542,13 @@ def refresh_live_weather(
         cannot serve (a short response, a coordinate mismatch, one store read error)
         would turn the documented "at most one provider call per refresh window" into one
         call per dashboard poll. Best effort: bookkeeping never breaks the response.
+
+        The detail is capped and flattened before it goes anywhere: it can carry a client
+        library's own words (a store error, a provider error string) and it is shown to
+        visitors in the fleet's technical block, so it must stay one short line - no
+        newline to forge a log line with, no unbounded provider text to fill the payload.
         """
+        detail = " ".join(str(detail).split())[:200]
         failed.append(zone_id)
         errors.append(f"{zone_id}: {detail}")
         try:

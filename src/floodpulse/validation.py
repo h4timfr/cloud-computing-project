@@ -40,6 +40,10 @@ PHASE_PATTERN = re.compile(r"^[a-z_]{1,24}$")
 
 DATA_CLASSIFICATION = "simulated"
 
+#: Upper bound on ``meta.seq``: DynamoDB stores at most 38 significant digits, so anything
+#: larger would be accepted by validation and then rejected by the store as a 500.
+MAX_META_SEQ = 10**15
+
 
 class ValidationError(ValueError):
     """A rejected payload. ``field`` names the offending field when known."""
@@ -65,7 +69,11 @@ def validate_body_size(raw_body: str | None) -> None:
     _require(raw_body is not None, "request body is required", "body")
     text = raw_body if isinstance(raw_body, str) else str(raw_body)  # type: ignore[union-attr]
     _require(text.strip() != "", "request body is required", "body")
-    size = len(text.encode("utf-8"))
+    # errors="replace" keeps the size check from raising UnicodeEncodeError on a string
+    # carrying a lone surrogate (reachable through a direct invoke, not through HTTP):
+    # a body that cannot be encoded is a bad payload, so it must end as a 400 with a
+    # reason, never as an unhandled 500 from inside a size measurement.
+    size = len(text.encode("utf-8", "replace"))
     _require(
         size <= BODY_MAX_BYTES,
         f"request body is {size} bytes; limit is {BODY_MAX_BYTES}",
@@ -102,7 +110,17 @@ def _validate_readings(readings: Any) -> dict[str, float]:
     for metric in METRIC_ORDER:
         value = readings[metric]  # type: ignore[index]
         _require(_is_number(value), "must be a finite number", f"readings.{metric}")
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError as exc:
+            # An integer literal with ~309+ digits is a valid JSON number and a valid
+            # Python int, but not a representable float. Without this the conversion
+            # raises OverflowError, which is not a ValidationError, so a syntactically
+            # valid payload would be answered with 500 instead of the documented 400.
+            raise ValidationError(
+                "must be a finite number inside the metric range (value too large to represent)",
+                f"readings.{metric}",
+            ) from exc
         _require(math.isfinite(number), "must be finite (no NaN or Infinity)", f"readings.{metric}")
         low, high = float(METRICS[metric]["min"]), float(METRICS[metric]["max"])
         _require(
@@ -135,6 +153,13 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
         _require(
             isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0,
             "must be a non-negative integer",
+            "meta.seq",
+        )
+        # DynamoDB numbers carry at most 38 significant digits, so a larger sequence
+        # number would be accepted here and then fail inside PutItem as a generic 500.
+        _require(
+            seq < MAX_META_SEQ,
+            f"must be below {MAX_META_SEQ}",
             "meta.seq",
         )
         cleaned["seq"] = seq

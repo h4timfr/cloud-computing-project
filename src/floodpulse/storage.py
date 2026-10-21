@@ -249,8 +249,16 @@ def build_latest_item(
     smoothed_readings: Mapping[str, float],
     sequence: int,
 ) -> dict[str, Any]:
-    """Build the ``ZONE#<id> / LATEST`` item (full explanation retained)."""
+    """Build the ``ZONE#<id> / LATEST`` item (full explanation retained).
+
+    ``LATEST`` carries **no** TTL: it is the zone's current state, and history's seven-day
+    expiry is about *observations*, not about what the fleet looks like now. A zone that
+    stops reporting must still answer "when did it last report, and what did it say" - the
+    payload already marks such a zone stale by age. (Before M17 ``_core_record``'s TTL was
+    copied here too, so a zone silent for a week would have lost its current state silently.)
+    """
     item = _core_record(reading)
+    item.pop("ttl", None)
     item.update(
         {
             "sk": LATEST_SORT_KEY,
@@ -276,9 +284,45 @@ def build_latest_item(
     return item
 
 
+def latest_is_behind(stored_ts_epoch: Any, incoming_ts_epoch: Any) -> bool:
+    """True when current state is older than a reading whose history record already exists.
+
+    That combination has one cause: the previous attempt appended the history record and
+    then ended (a timeout, a crash, a killed container) before it replaced ``LATEST``. The
+    retry is classified as a duplicate, so without this check the zone's current state stays
+    stale - and the API honestly reports "duplicate" while serving an older reading as
+    current. Re-asserting ``LATEST`` from the retry is safe: the same conditional write
+    still refuses to move current state to an older reading.
+    """
+    try:
+        stored = int(stored_ts_epoch or 0)
+        incoming = int(incoming_ts_epoch or 0)
+    except (TypeError, ValueError):
+        return False
+    return incoming > stored
+
+
 def history_sort_key_for(timestamp: str) -> str:
     """Sort key a history record for ``timestamp`` gets (one definition, both stores)."""
     return f"{HISTORY_PREFIX}{timestamp}"
+
+
+#: Width of the arrival suffix used when two readings share a timestamp. Records written
+#: before M17 used an unpadded decimal (``#2``, ``#10``); those are left alone - they only
+#: ever mix with padded keys inside a single second, and the new form is the ordering fix.
+HISTORY_SUFFIX_WIDTH = 6
+
+
+def history_suffix_key(sk: str, index: int) -> str:
+    """The sort key for the ``index``-th arrival in the same second (``index >= 2``).
+
+    Zero-padded so the sort key's lexicographic order is also arrival order. As a plain
+    decimal string ``#10`` sorts before ``#2``, and both stores order history by the sort
+    key, so from the tenth same-second reading onwards "the newest N rows" would not be the
+    newest N rows: the smoothing window and the history route's newest sample would read
+    older values while the reading itself scored as flood-level.
+    """
+    return f"{sk}#{int(index):0{HISTORY_SUFFIX_WIDTH}d}"
 
 
 def build_history_item(
@@ -375,6 +419,27 @@ class LocalStore:
         candidate = build_history_item(reading, risk, hysteresis, smoothed_readings)
         existing = self._items.get((pk, str(candidate["sk"])))
         if is_replay_of(existing, reading):
+            if latest_is_behind(stored_ts, incoming_ts):
+                # The previous attempt stored the history record but never got as far as
+                # LATEST (see latest_is_behind): finish the job instead of reporting a
+                # duplicate while serving an older reading as the zone's current state.
+                sequence = int((previous or {}).get("sequence") or 0) + 1
+                latest = build_latest_item(reading, risk, hysteresis, smoothed_readings, sequence)
+                self._sequence[zone_id] = sequence
+                self._items[(latest["pk"], latest["sk"])] = latest
+                return (
+                    latest,
+                    None,
+                    WriteOutcome(
+                        outcome=READING_STORED,
+                        latest_updated=True,
+                        history_written=False,
+                        history_sk=str(existing["sk"]),
+                        reason="current state was behind this reading; restored from the stored record",
+                        stored_ts_epoch=incoming_ts,
+                        incoming_ts_epoch=incoming_ts,
+                    ),
+                )
             # The exact observation is already stored: no second copy, no state change.
             return (
                 dict(previous or {}),
@@ -427,13 +492,20 @@ class LocalStore:
         )
 
     def _unique_history_key(self, pk: str, sk: str) -> str:
-        """Disambiguate two readings that share the same timestamp."""
+        """Disambiguate two readings that share the same timestamp.
+
+        The suffix is zero-padded so that lexicographic order matches arrival order: as a
+        plain decimal string ``#10`` sorts *before* ``#2``, and both stores order history by
+        the sort key, so from the tenth same-second reading onwards "the newest N rows"
+        would not be the newest N rows - the smoothing window and the history route's
+        protected newest sample would silently read older values.
+        """
         if (pk, sk) not in self._items:
             return sk
         suffix = 2
-        while (pk, f"{sk}#{suffix}") in self._items:
+        while (pk, history_suffix_key(sk, suffix)) in self._items:
             suffix += 1
-        return f"{sk}#{suffix}"
+        return history_suffix_key(sk, suffix)
 
     # -- reads ------------------------------------------------------------- #
 

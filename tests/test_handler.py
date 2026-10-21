@@ -99,6 +99,36 @@ class HandlerTestCase(unittest.TestCase):
 
 
 class ReadingEndpointTests(HandlerTestCase):
+    def test_a_store_fault_is_a_503_that_admits_nothing_was_stored(self) -> None:
+        """M17: the reading is scored before it is written, so a *store* failure is ours.
+
+        It used to escape as an unhandled 500 — no usable answer for the client, no honest
+        statement about what happened, and a CloudWatch traceback for a condition the caller
+        cannot fix. The error is 503 (retry), the detail says the reading was not recorded,
+        and the log carries the exception *type* but not its message, which can quote item
+        content.
+        """
+
+        class ExplodingStore(LocalStore):
+            def put_reading(self, *args, **kwargs):  # type: ignore[override]
+                raise RuntimeError("provisioned throughput exceeded (secret-looking detail)")
+
+        self.store = ExplodingStore()
+        set_store(self.store)
+        logging.disable(logging.NOTSET)
+        with self.assertLogs("floodpulse.handler", level="ERROR") as captured:
+            status, body = self.post_json(payload())
+        logging.disable(logging.CRITICAL)
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"], "storage_unavailable")
+        self.assertIn("not recorded", body["detail"])
+        self.assertEqual(sorted(body), ["detail", "error"])
+        self.assertEqual(self.store.item_count(), 0, "nothing may be left behind by a failed write")
+        joined = "\n".join(captured.output)
+        self.assertIn("ingest_store_failed", joined)
+        self.assertIn("RuntimeError", joined)
+        self.assertNotIn("secret-looking detail", joined)
+
     def test_valid_reading_is_accepted_and_stored(self) -> None:
         status, body = self.post_json(payload())
         self.assertEqual(status, 202)

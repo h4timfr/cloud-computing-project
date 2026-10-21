@@ -141,10 +141,15 @@ def parse_subscription_request(raw_body: str | None) -> str:
     """
     if raw_body is None:
         raise ValidationError("request body is required", "body")
-    text = raw_body if isinstance(raw_body, str) else str(raw_body)
+    if not isinstance(raw_body, str):
+        # Same contract as the ingest route: the body is a JSON string, not a decoded object.
+        raise ValidationError("request body must be a JSON string", "body")
+    text = raw_body
     if not text.strip():
         raise ValidationError("request body is required", "body")
-    size = len(text.encode("utf-8"))
+    # errors="replace": a lone surrogate is a bad payload, not a 500 (see the ingest route's
+    # own size check for the same reasoning).
+    size = len(text.encode("utf-8", "replace"))
     if size > SUBSCRIPTION_BODY_MAX_BYTES:
         raise ValidationError(
             f"request body is {size} bytes; limit is {SUBSCRIPTION_BODY_MAX_BYTES}", "body"

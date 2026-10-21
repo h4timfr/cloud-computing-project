@@ -33,13 +33,20 @@ from .storage import (
     build_latest_item,
     build_zone_pk,
     classify_reading_write,
+    history_suffix_key,
     is_replay_of,
+    latest_is_behind,
     history_sort_key_for,
     sort_incident_items,
 )
 
 MAX_QUERY_PAGES = 10
-MAX_HISTORY_KEY_ATTEMPTS = 5
+#: How many same-second sort keys one history write may try before giving up. Each attempt is
+#: a conditional PutItem, so the loop is a few round trips in a case that should not happen
+#: (live ingest is one reading per city per refresh interval). It is 24 rather than 5 because
+#: exhausting it raises, and the reading - already validated and scored - would be lost: five
+#: same-second observations from a client is not an abuse scenario worth failing over.
+MAX_HISTORY_KEY_ATTEMPTS = 24
 
 
 # --------------------------------------------------------------------------- #
@@ -266,7 +273,26 @@ class DynamoDbStore:
 
         if not stored:
             # This exact observation is already stored: do not append a copy, and do not
-            # touch LATEST (the retry carries no new information).
+            # touch LATEST - unless LATEST is *behind* it, which means the previous attempt
+            # appended the history record and then ended before replacing LATEST.
+            if latest_is_behind(stored_ts, incoming_ts):
+                sequence = int((previous or {}).get("sequence") or 0) + 1
+                latest = build_latest_item(reading, risk, hysteresis, smoothed_readings, sequence)
+                if self._put_latest_unless_newer(latest, incoming_ts):
+                    return (
+                        latest,
+                        None,
+                        WriteOutcome(
+                            outcome=READING_STORED,
+                            latest_updated=True,
+                            history_written=False,
+                            history_sk=history_sk,
+                            reason="current state was behind this reading; restored from the stored record",
+                            stored_ts_epoch=incoming_ts,
+                            incoming_ts_epoch=incoming_ts,
+                        ),
+                    )
+            # The retry carries no new information.
             return (
                 dict(previous or {}),
                 None,
@@ -380,7 +406,7 @@ class DynamoDbStore:
         base_sk = str(history["sk"])
         for attempt in range(1, MAX_HISTORY_KEY_ATTEMPTS + 1):
             item = to_storable(deepcopy(dict(history)))
-            item["sk"] = base_sk if attempt == 1 else f"{base_sk}#{attempt}"
+            item["sk"] = base_sk if attempt == 1 else history_suffix_key(base_sk, attempt)
             try:
                 self._table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
                 return str(item["sk"]), True

@@ -107,11 +107,14 @@ from .incidents import (
     ACTION_ESCALATED,
     ACTION_NONE,
     ACTION_OPENED,
+    INCIDENT_KEY_ATTEMPTS,
     alerting_view,
     build_alert_entry,
     build_alert_marker,
     cooldown_remaining_seconds,
     decide_transition,
+    incident_suffix_id,
+    incident_suffix_key,
     incident_view,
     marker_rollback,
     record_alert,
@@ -275,6 +278,20 @@ JSON_MEDIA_TYPES: tuple[str, ...] = ("application/json", "text/json", "applicati
 def _brief(value: Any, limit: int = 160) -> str:
     """A one-line, length-capped form of a value for logging (never a payload dump)."""
     return " ".join(str(value).split())[:limit]
+
+
+def _brief_text(value: Any, limit: int = 72) -> str:
+    """A length-capped copy of caller-supplied text for an *error body*.
+
+    The zone-id and path echoes in a 404 are useful (they say which id was not recognised),
+    but the caller controls how long they are, so they are capped and marked when truncated
+    rather than mirrored byte for byte. ``json.dumps`` escapes whatever remains, so the
+    value cannot break the response's own encoding.
+    """
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "\u2026"
 
 
 def _header_value(headers: Mapping[str, Any] | None, name: str) -> str | None:
@@ -518,19 +535,44 @@ def _track_incident(
 
     if action == ACTION_OPENED:
         if not store.create_incident(incident):
-            # A concurrent request opened the incident first. Adopt the stored record
-            # instead of writing a duplicate, and do not alert (the winner did).
             existing = store.latest_incident(zone_id)
-            if existing is None or existing.get("current_status") != INCIDENT_STATUS_OPEN:
-                return _no_incident_summary("concurrent incident creation was suppressed"), {
-                    "evaluated": False,
-                    "published": False,
-                    "severity": None,
-                    "reason": "duplicate_suppressed",
-                }
-            incident, action, alert_severity = existing, "observed", None
-            reason = "an incident was already open (duplicate suppressed)"
-            store.put_incident(incident)
+            if existing is not None and existing.get("current_status") == INCIDENT_STATUS_OPEN:
+                # A concurrent request opened the incident first. Adopt the stored record
+                # instead of writing a duplicate, and do not alert (the winner did).
+                incident, action, alert_severity = existing, "observed", None
+                reason = "an incident was already open (duplicate suppressed)"
+                store.put_incident(incident)
+            else:
+                # Not an open neighbour, so the sort key is held by an incident that already
+                # closed inside this same second - an open, a resolve and a new reading all
+                # sharing one timestamp. Sliding the new record to the next free key keeps
+                # the event (and its alert) instead of dropping it, which is what the plain
+                # key did: the reading scored as flood-level and then vanished from the
+                # incident record entirely.
+                opened = False
+                for attempt in range(2, INCIDENT_KEY_ATTEMPTS + 1):
+                    candidate = dict(incident)
+                    candidate["sk"] = incident_suffix_key(str(incident["sk"]), attempt)
+                    candidate["incident_id"] = incident_suffix_id(str(incident["incident_id"]), attempt)
+                    if store.create_incident(candidate):
+                        incident, opened = candidate, True
+                        reason = "opened on a same-second key (an earlier incident held the base key)"
+                        break
+                if not opened:
+                    LOGGER.warning(
+                        "incident_open_exhausted zone_id=%s base_sk=%s attempts=%s",
+                        zone_id,
+                        _brief(incident.get("sk")),
+                        INCIDENT_KEY_ATTEMPTS,
+                    )
+                    return _no_incident_summary(
+                        "no free incident key in this second (the reading still scored and was stored)"
+                    ), {
+                        "evaluated": False,
+                        "published": False,
+                        "severity": None,
+                        "reason": "incident_key_exhausted",
+                    }
     else:
         store.put_incident(incident)
 
@@ -742,24 +784,58 @@ def _handle_reading(
     try:
         validate_body_size(body)
     except ValidationError as exc:
-        LOGGER.warning("ingest_rejected reason=body_size field=%s detail=%s", exc.field, exc.reason)
+        LOGGER.warning(
+            "ingest_rejected reason=body_size field=%s detail=%s", _brief(exc.field), _brief(exc.reason)
+        )
         return 400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason}
+
+    if body is not None and not isinstance(body, str):
+        # The contract is a JSON *string* body (API Gateway always supplies one). Anything
+        # else is a caller mistake that used to reach ``json.loads`` and raise TypeError -
+        # an unhandled 500 for a request that is simply malformed.
+        LOGGER.warning("ingest_rejected reason=body_type type=%s", type(body).__name__)
+        return 400, {
+            "error": "invalid_body",
+            "field": "body",
+            "detail": "request body must be a JSON string",
+        }
 
     try:
         payload = json.loads(body)  # type: ignore[arg-type]
-    except (json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
         LOGGER.warning("ingest_rejected reason=malformed_json detail=%s", _brief(str(exc)))
         return 400, {"error": "malformed_json", "field": "body", "detail": str(exc)}
 
     try:
         reading = validate_reading(payload, now_epoch, zone_ids if zone_ids is not None else ZONE_IDS)
     except ValidationError as exc:
-        # The reason names a field and a rule, never any part of the submitted payload.
-        LOGGER.warning("ingest_rejected reason=invalid_payload field=%s detail=%s", exc.field, exc.reason)
+        # The reason names a rule and, at most, an object's *keys* - and one of those
+        # messages ("unexpected metric(s): ...") does name caller-supplied metric keys, so
+        # the log line runs their text through _brief: a newline or a control character in a
+        # key must not be able to forge a line in CloudWatch Logs.
+        LOGGER.warning(
+            "ingest_rejected reason=invalid_payload field=%s detail=%s",
+            _brief(exc.field),
+            _brief(exc.reason),
+        )
         return 400, {"error": "invalid_payload", "field": exc.field, "detail": exc.reason}
 
     zone_id = str(reading["zone_id"])
-    result = _ingest_record(store, reading, now_epoch, notifier, cooldown_seconds)
+    try:
+        result = _ingest_record(store, reading, now_epoch, notifier, cooldown_seconds)
+    except Exception as exc:  # noqa: BLE001 - a store fault is a 503, never an unhandled 500
+        # The reading was valid and scored; the *store* refused it (a throttle, a conditional-write
+        # exhaustion, a missing table). That is a "try again" answer from FloodPulse's side, not a
+        # caller error and not a mystery: answer 503, say nothing about the store's internals, and
+        # put the exception *type* in the log so an operator can tell the classes apart. The message
+        # is deliberately not logged: a store error can quote item content.
+        LOGGER.error(
+            "ingest_store_failed zone_id=%s error=%s", _brief(zone_id), type(exc).__name__
+        )
+        return 503, {
+            "error": "storage_unavailable",
+            "detail": "this reading could not be stored right now; it was not recorded",
+        }
     latest = result.latest
     incident_summary = result.incident
     alert_summary = result.alert
@@ -1210,6 +1286,27 @@ def _handle_zones(
 # --------------------------------------------------------------------------- #
 
 
+def _is_ascii_digits(raw: Any, *, allow_sign: bool = False) -> bool:
+    """True when ``raw`` is a whitespace-padded run of ASCII digits (optionally ``-``-signed).
+
+    ``str.isdigit()`` is also true for characters ``int()`` refuses - superscripts,
+    circled digits, Arabic-Indic and full-width digits - so using it as the guard let a
+    query value such as ``?minutes=²`` reach a bare ``int()`` and escape as an unhandled
+    ``ValueError`` (an HTTP 500 on two public routes). This keeps the accepted alphabet
+    explicit and refuses everything else as a normal bad query value.
+
+    A sign is only *accepted* here so that ``-5`` still produces the range message
+    ("must be between 1 and …") rather than the type message; ``+5`` stays refused, which is
+    the behaviour the query contract already had.
+    """
+    if not isinstance(raw, str):
+        return False
+    text = raw.strip()
+    if allow_sign and text[:1] == "-":
+        text = text[1:]
+    return bool(text) and text.isascii() and text.isdigit()
+
+
 def _parse_minutes(raw: Any) -> int:
     if raw is None:
         return HISTORY_DEFAULT_MINUTES
@@ -1217,8 +1314,8 @@ def _parse_minutes(raw: Any) -> int:
         raise ValidationError("must be an integer number of minutes", "minutes")
     if isinstance(raw, int):
         minutes = raw
-    elif isinstance(raw, str) and raw.strip().lstrip("-").isdigit():
-        minutes = int(raw.strip())
+    elif _is_ascii_digits(raw, allow_sign=True):
+        minutes = int(str(raw).strip())
     else:
         raise ValidationError("must be an integer number of minutes", "minutes")
     if not 1 <= minutes <= HISTORY_MAX_MINUTES:
@@ -1405,7 +1502,7 @@ def _handle_history(
     if zone_id not in allowed:
         return 404, {
             "error": "unknown_zone",
-            "detail": f"unknown zone_id {zone_id!r}",
+            "detail": f"unknown zone_id {_brief_text(zone_id)}",
             "known_zones": list(allowed),
         }
     try:
@@ -1478,7 +1575,7 @@ def _parse_limit(raw: Any) -> int:
         raise ValidationError("must be an integer number of incidents", "limit")
     if isinstance(raw, int):
         limit = raw
-    elif isinstance(raw, str) and raw.strip().isdigit():
+    elif isinstance(raw, str) and _is_ascii_digits(raw):
         limit = int(raw.strip())
     else:
         raise ValidationError("must be an integer number of incidents", "limit")
@@ -1505,7 +1602,7 @@ def _handle_incidents(
         if zone_id not in allowed:
             return 404, {
                 "error": "unknown_zone",
-                "detail": f"unknown zone_id {zone_id!r}",
+                "detail": f"unknown zone_id {_brief_text(zone_id)}",
                 "known_zones": list(allowed),
             }
     try:
@@ -1821,6 +1918,12 @@ def dispatch(
     if route == "/subscriptions":
         if method != "POST":
             return 405, {"error": "method_not_allowed", "allowed": ["POST"], "path": route}
+        # Same media-type contract as POST /readings. The dashboard already sends
+        # application/json; without this check the two public POST routes disagreed about
+        # what they accept, which a client could only discover by experiment.
+        rejection = _reject_content_type(_header_value(headers, "content-type"))
+        if rejection is not None:
+            return rejection
         # Deliberately no ingestion key: this route is for anonymous visitors, and its
         # bounds are the body limit, the address syntax check, the per-address throttle and
         # the topic that only the environment can name.
@@ -1840,9 +1943,9 @@ def dispatch(
             return _handle_history(
                 store, parts[1], now_epoch, query, zone_ids=active_zone_ids, active_mode=mode
             )
-        return 404, {"error": "not_found", "path": route}
+        return 404, {"error": "not_found", "path": _brief_text(route, limit=180)}
 
-    return 404, {"error": "not_found", "path": route}
+    return 404, {"error": "not_found", "path": _brief_text(route, limit=180)}
 
 
 def _parse_event(event: Mapping[str, Any]) -> tuple[str, str, dict[str, Any], str | None, dict[str, Any]]:
@@ -1855,6 +1958,11 @@ def _parse_event(event: Mapping[str, Any]) -> tuple[str, str, dict[str, Any], st
     headers = event.get("headers") or {}
 
     body = event.get("body")
+    if body is not None and not isinstance(body, str):
+        # API Gateway always supplies a string. Anything else means a direct invocation
+        # (or a future integration) handed over a decoded object; that is a bad request,
+        # not an internal error, so it is refused with a reason.
+        raise ValidationError("request body must be a JSON string", "body")
     if body is not None and event.get("isBase64Encoded"):
         try:
             body = base64.b64decode(body).decode("utf-8")

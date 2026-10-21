@@ -153,7 +153,7 @@ class ReplayTest(AdversarialCase):
         self.assertEqual(first["dedupe"]["outcome"], "stored")
         self.assertEqual(second["dedupe"]["outcome"], "stored")
         self.assertEqual(first["dedupe"]["history_sk"], "H#2026-02-14T09:00:00Z")
-        self.assertEqual(second["dedupe"]["history_sk"], "H#2026-02-14T09:00:00Z#2")
+        self.assertEqual(second["dedupe"]["history_sk"], "H#2026-02-14T09:00:00Z#000002")
         self.assertEqual(self.history_count(), 2)
 
     def test_the_same_reading_for_two_zones_is_not_a_duplicate(self) -> None:
@@ -649,6 +649,180 @@ class AlertStormTest(AdversarialCase):
                 claimed,
                 remaining <= 0,
                 f"at +{elapsed}s the claim said {claimed} but the report said {remaining}s left",
+            )
+
+
+# --------------------------------------------------------------------------- #
+# 6. M17: same-second integrity, unrepresentable numbers, capped echoes
+# --------------------------------------------------------------------------- #
+
+
+class SameSecondIntegrityTest(AdversarialCase):
+    """An observer that resolves and re-opens inside one second must still be recorded.
+
+    The store keys an incident by its opening timestamp, so an open, a resolve and a second
+    open that all carry the same ``ts_epoch`` collide on one sort key. The collision used to
+    drop the second incident *and* its alert while the reading itself was stored and scored:
+    the fleet state mentioned a flood the incident record denied. The new record now lands on
+    the next free key, keeps its own id, and the history's arrival suffixes stay ordered.
+    """
+
+    def test_a_same_second_reopen_is_recorded_and_alerts(self) -> None:
+        _status, opened = self.post(body(readings=FLOOD))
+        self.assertEqual(opened["incident"]["action"], "opened")
+        first = self.store.latest_incident(DEMO_ZONE)
+        first_id, first_sk = first["incident_id"], first["sk"]
+
+        # Clear readings in the same second: the de-escalation streak walks the class down and
+        # closes the incident. Distinct values keep each one a new observation, not a replay.
+        for step in range(5):
+            self.post(body(readings={**CALM, "rainfall_mm_per_hr": 2.0 + step}))
+        closed = self.store.latest_incident(DEMO_ZONE)
+        self.assertEqual(closed["current_status"], "CLOSED")
+        self.assertEqual(closed["sk"], first_sk)
+
+        # Distinct flood readings, still inside the same second: the escalation streak builds
+        # and the third one opens a new incident whose opening timestamp equals the old one's.
+        for rain in (75.0, 76.0, 77.0):
+            _status, reopened = self.post(body(readings={**FLOOD, "rainfall_mm_per_hr": rain}))
+        self.assertEqual(reopened["incident"]["action"], "opened")
+        self.assertEqual(self.store.incident_count(DEMO_ZONE), 2)
+        newest = self.store.latest_incident(DEMO_ZONE)
+        self.assertEqual(newest["current_status"], "OPEN")
+        self.assertNotEqual(newest["sk"], first_sk, "the reopen must not overwrite the resolve")
+        self.assertGreater(newest["sk"], first_sk, "the reopen must sort after the resolve")
+        self.assertNotEqual(
+            newest["incident_id"],
+            first_id,
+            "two incidents in one second must not share an id",
+        )
+        self.assertNotEqual(
+            reopened["alert"]["reason"],
+            "incident_key_exhausted",
+            "the reopened incident must reach the alert rules, not be dropped before them",
+        )
+
+    def test_same_second_history_keys_sort_in_arrival_order(self) -> None:
+        for rain in (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0):
+            self.post(body(readings={**CALM, "rainfall_mm_per_hr": rain}))
+        keys = [item["sk"] for item in self.store.get_history(DEMO_ZONE)]
+        self.assertEqual(keys, sorted(keys))
+        newest = self.store.get_history(DEMO_ZONE, limit=1)[0]
+        self.assertEqual(newest["readings"]["rainfall_mm_per_hr"], 12.0)
+
+    def test_a_crash_between_the_two_writes_is_healed_by_the_retry(self) -> None:
+        """History written, LATEST not: the retry must finish the job, not say "duplicate"."""
+        raw = body(readings=FLOOD)
+        _status, first = self.post(raw)
+        self.assertEqual(first["dedupe"]["outcome"], "stored")
+        # Simulate the interrupted attempt: the observation is in history, current state is
+        # back on the previous reading.
+        zone_id = DEMO_ZONE
+        from floodpulse.storage import LATEST_SORT_KEY, build_zone_pk
+
+        self.store._items.pop((build_zone_pk(zone_id), LATEST_SORT_KEY))
+        self.assertIsNone(self.store.get_latest(zone_id))
+
+        _status, retry = self.post(raw)
+        self.assertEqual(retry["dedupe"]["outcome"], "stored")
+        self.assertTrue(retry["dedupe"]["latest_updated"])
+        self.assertFalse(retry["dedupe"]["history_written"])
+        healed = self.store.get_latest(zone_id)
+        self.assertIsNotNone(healed, "the retry did not restore current state")
+        self.assertEqual(int(healed["ts_epoch"]), BASE_EPOCH)
+        self.assertEqual(self.history_count(), 1, "the retry must not inflate history")
+
+
+class UnrepresentableNumberTest(AdversarialCase):
+    def test_a_number_too_large_for_a_float_is_a_400_not_a_500(self) -> None:
+        huge = 10**400  # a valid JSON number, a valid Python int, not a representable float
+        raw = body(readings={**CALM, "rainfall_mm_per_hr": huge})
+        status, payload = self.post(raw)
+        self.assertEqual(status, 400, "an unrepresentable number must be a bad payload")
+        self.assertEqual(payload["error"], "invalid_payload")
+        self.assertEqual(payload["field"], "readings.rainfall_mm_per_hr")
+
+    def test_an_oversized_sequence_number_is_refused(self) -> None:
+        raw = json.dumps(
+            {
+                "schema_version": "1.0",
+                "simulated": True,
+                "zone_id": DEMO_ZONE,
+                "sensor_node_id": "sim-riverside-north",
+                "timestamp": iso(0),
+                "readings": CALM,
+                "meta": {"run_id": "adversarial", "seq": 10**40},
+            }
+        )
+        status, payload = self.post(raw)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["field"], "meta.seq")
+
+    def test_a_non_string_body_is_refused_with_a_reason(self) -> None:
+        status, payload = dispatch(
+            "POST", "/readings", {"zone_id": DEMO_ZONE}, self.store, BASE_EPOCH, None, env=self.env
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "invalid_body")
+        self.assertEqual(payload["field"], "body")
+
+    def test_a_body_carrying_a_lone_surrogate_does_not_crash(self) -> None:
+        status, payload = self.post('{"zone_id": "zone-\ud800riverside"}')
+        self.assertEqual(status, 400, "a body that cannot be encoded is a bad payload")
+        self.assertIn(payload["error"], ("invalid_body", "invalid_payload"))
+
+
+class CappedEchoTest(AdversarialCase):
+    """Caller-supplied text in an error body is echoed, but never at the caller's length."""
+
+    def test_an_unknown_zone_id_is_echoed_but_capped(self) -> None:
+        status, payload = self.get(f"/zones/{'x' * 5000}/history", query={"minutes": "60"})
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], "unknown_zone")
+        self.assertLessEqual(len(payload["detail"]), 120)
+
+    def test_an_unrouted_path_is_echoed_but_capped(self) -> None:
+        status, payload = self.get("/" + "y" * 9000)
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], "not_found")
+        self.assertLessEqual(len(payload["path"]), 200)
+
+
+class LogInjectionTest(AdversarialCase):
+    def test_a_metric_key_cannot_forge_a_log_line(self) -> None:
+        """The rejection reason names the caller's metric keys, so the log line must not.
+
+        A key containing a newline would otherwise let a stranger write a second, entirely
+        convincing line into CloudWatch Logs - e.g. one that looks like a successful ingest.
+        """
+        forged = {"rainfall_mm_per_hr": 1.0, "drain_level_m": 0.5, "soil_saturation_pct": 40.0,
+                  "water_level_m": 1.0, "flow_rate_m3_s": 1.5,
+                  "evil\nINFO ingest_stored zone_id=zone-riverside-north": 1.0}
+        raw = json.dumps(
+            {
+                "schema_version": "1.0",
+                "simulated": True,
+                "zone_id": DEMO_ZONE,
+                "sensor_node_id": "sim-riverside-north",
+                "timestamp": iso(0),
+                "readings": forged,
+            }
+        )
+        logger = logging.getLogger("floodpulse.handler")
+        logging.disable(logging.NOTSET)
+        with self.assertLogs(logger, level="WARNING") as captured:
+            status, payload = self.post(raw)
+        logging.disable(logging.CRITICAL)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "invalid_payload")
+        self.assertTrue(captured.output, "a rejection must be logged")
+        for line in captured.output:
+            body_only = line.split("WARNING:floodpulse.handler:", 1)[-1]
+            # One log record is one line: the collapsed key text stays *inside* the detail.
+            self.assertNotIn("\n", body_only)
+            self.assertTrue(
+                body_only.startswith("ingest_rejected"),
+                f"a rejected payload must not forge a line that reads as something else: {body_only!r}",
             )
 
 

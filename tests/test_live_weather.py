@@ -551,6 +551,24 @@ class RefreshTest(unittest.TestCase):
         self.assertIn("no_zone_refreshed", str(outcome.error))
         self.assertIn("store is unavailable", str(outcome.error))
 
+    def test_a_zone_failure_detail_is_one_short_line(self):
+        """The detail reaches the fleet's public technical block, so it is capped, and
+        flattened: an exception message carrying a newline must not forge a log line."""
+
+        def exploding_ingest(record, obs):
+            raise RuntimeError("boom\nINFO ingest_stored zone_id=city-chennai " + "x" * 5000)
+
+        outcome = live_weather.refresh_live_weather(
+            self.store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
+            ingest=exploding_ingest, client=FakeClient(),
+        )
+        error = str(outcome.error)
+        self.assertNotIn("\n", error)
+        self.assertLess(len(error), 1200, "a detail must not grow with the exception's text")
+        cached = self.store.get_weather_cache("city-chennai")
+        self.assertIsNotNone(cached)
+        self.assertLessEqual(len(str(cached.get("error") or "")), 240)
+
 
 class LiveZonesEndpointTest(unittest.TestCase):
     def setUp(self):
