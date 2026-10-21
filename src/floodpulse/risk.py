@@ -12,6 +12,7 @@ Design constraints (locked for the MVP):
 
 from __future__ import annotations
 
+import math
 from statistics import fmean
 from typing import Any, Mapping, Sequence
 
@@ -41,8 +42,22 @@ class RiskConfigError(ValueError):
     """Raised when thresholds or weights are internally inconsistent."""
 
 
+class RiskInputError(ValueError):
+    """Raised when a metric, a score or a stored reading is not a finite number.
+
+    BUG CLASS (M17): ``classify`` had no branch for a value it could not interpret, so its
+    last-resort ``return RISK_BANDS[-1][0]`` turned "not a number" into CRITICAL - silently, at
+    the most severe band, which then opened an incident and asked for an alert. Nothing is
+    scored from a value that cannot be read: the engine says so instead. The callers that can
+    meet a corrupt stored row (the smoothing window, the history reader) drop it and count it,
+    the same way they already treat any other unusable row.
+    """
+
+
 def clamp(value: float, low: float, high: float) -> float:
     """Clamp ``value`` into ``[low, high]``."""
+    if not math.isfinite(value):
+        raise RiskInputError(f"cannot clamp a non-finite number: {value!r}")
     if value < low:
         return low
     if value > high:
@@ -56,6 +71,8 @@ def sub_score(value: float, watch: float, critical: float) -> float:
     ``0`` at (or below) ``0`` of the metric, ``0.5`` exactly at ``watch``,
     ``1.0`` at (or above) ``critical``.
     """
+    if not math.isfinite(value):
+        raise RiskInputError(f"metric value must be a finite number, got {value!r}")
     if watch <= 0.0:
         raise RiskConfigError("watch threshold must be positive")
     if critical <= watch:
@@ -70,7 +87,13 @@ def sub_score(value: float, watch: float, critical: float) -> float:
 
 
 def classify(risk_score: float) -> str:
-    """Map a risk score to NORMAL / WATCH / WARNING / CRITICAL."""
+    """Map a risk score to NORMAL / WATCH / WARNING / CRITICAL.
+
+    A non-finite score is refused rather than ranked: the fallthrough band would otherwise
+    report the *most severe* class for a value nobody could read (see ``RiskInputError``).
+    """
+    if not math.isfinite(risk_score):
+        raise RiskInputError(f"risk score must be a finite number, got {risk_score!r}")
     for name, _lower, upper in RISK_BANDS:
         if risk_score < upper:
             return name
@@ -95,6 +118,12 @@ def rolling_mean_metrics(
     missing = [metric for metric in METRIC_ORDER if any(metric not in row for row in tail)]
     if missing:
         raise ValueError(f"readings missing metric(s): {', '.join(missing)}")
+    for row in tail:
+        for metric in METRIC_ORDER:
+            if not math.isfinite(float(row[metric])):
+                raise RiskInputError(
+                    f"reading for {metric!r} is not a finite number: {row[metric]!r}"
+                )
     return {metric: fmean(float(row[metric]) for row in tail) for metric in METRIC_ORDER}
 
 
@@ -125,6 +154,11 @@ def score_zone(
         if metric not in thresholds:
             raise RiskConfigError(f"no thresholds configured for {metric!r}")
         value = float(metrics[metric])
+        if not math.isfinite(value):
+            # Refused here as well as in ``sub_score``: a caller that builds a reading by hand
+            # (a tool, a probe, a future writer) must never get a scored result back for a
+            # number that cannot be read.
+            raise RiskInputError(f"metric {metric!r} is not a finite number: {metrics[metric]!r}")
         watch = float(thresholds[metric]["watch"])
         critical = float(thresholds[metric]["critical"])
         weight = float(weights[metric])
@@ -148,6 +182,8 @@ def score_zone(
     trend_contribution = 0.0
     if water_level_5min_ago is not None:
         current = float(metrics["water_level_m"]) if water_level_now is None else float(water_level_now)
+        if not (math.isfinite(current) and math.isfinite(float(water_level_5min_ago))):
+            raise RiskInputError("water level trend needs two finite water levels")
         water_level_delta = current - float(water_level_5min_ago)
         rise_fraction = clamp(water_level_delta / TREND_REFERENCE_RISE_M, 0.0, 1.0)
         trend_contribution = TREND_WEIGHT * rise_fraction

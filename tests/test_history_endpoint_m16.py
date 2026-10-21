@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import unittest
 from datetime import datetime, timezone
@@ -120,8 +121,18 @@ class StubHistoryStore:
 
 
 def legacy_record(stamp: int, score: float, **overrides):
-    """One stored history record, in the item shape ``storage.build_history_item`` produces."""
+    """One stored history record, in the item shape ``storage.build_history_item`` produces.
+
+    The cases that deliberately store an unreadable score get the *most severe* band label
+    written next to it, so a test that expects the record to be dropped proves the reader goes
+    by the score it cannot use rather than by whatever label happens to be stored. The engine no
+    longer classifies a non-finite score at all (``RiskInputError``), which is the point.
+    """
     timestamp = iso_at(stamp)
+    if math.isfinite(score):
+        label = classify(score)
+    else:
+        label = "CRITICAL"
     record = {
         "pk": build_zone_pk(ZONE),
         "sk": f"{HISTORY_PREFIX}{timestamp}",
@@ -129,8 +140,8 @@ def legacy_record(stamp: int, score: float, **overrides):
         "timestamp": timestamp,
         "ts_epoch": stamp,
         "risk_score": score,
-        "risk_class": classify(score),
-        "risk_class_candidate": classify(score),
+        "risk_class": label,
+        "risk_class_candidate": label,
         "readings": {"rainfall_mm_per_hr": 1.0},
     }
     record.update(overrides)

@@ -19,6 +19,14 @@ import floodpulse.handler as handler_module
 from floodpulse.config import STALE_READING_SECONDS, ZONE_IDS
 from floodpulse.handler import dispatch, set_store
 from floodpulse.incidents import build_alert_marker
+from floodpulse.risk import (
+    RiskInputError,
+    clamp,
+    classify,
+    rolling_mean_metrics,
+    score_zone,
+    sub_score,
+)
 from floodpulse.storage import LocalStore
 
 BASE_EPOCH = int(datetime(2026, 2, 14, 9, 0, 0, tzinfo=timezone.utc).timestamp())
@@ -770,6 +778,93 @@ class UnrepresentableNumberTest(AdversarialCase):
         status, payload = self.post('{"zone_id": "zone-\ud800riverside"}')
         self.assertEqual(status, 400, "a body that cannot be encoded is a bad payload")
         self.assertIn(payload["error"], ("invalid_body", "invalid_payload"))
+
+
+class NonFiniteScoringTest(AdversarialCase):
+    """A value that cannot be read is refused, never ranked.
+
+    BUG CLASS (M17): the engine's last-resort band turned "not a number" into CRITICAL - the most
+    severe band - which then opened an incident and asked for an alert, and ``json.dumps`` wrote
+    the value as a bare ``NaN`` token that a browser's ``JSON.parse`` rejects for the whole
+    document. Both halves are pinned here: the engine refuses, and no response body can carry an
+    unrepresentable number even from a stored record that already has one.
+    """
+
+    def test_the_engine_refuses_a_non_finite_score_instead_of_ranking_it(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(RiskInputError):
+                    classify(value)
+
+    def test_the_engine_refuses_a_non_finite_metric(self) -> None:
+        for value in (float("nan"), float("inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(RiskInputError):
+                    sub_score(value, 10.0, 50.0)
+                with self.assertRaises(RiskInputError):
+                    clamp(value, 0.0, 1.0)
+                with self.assertRaises(RiskInputError):
+                    score_zone({**CALM, "rainfall_mm_per_hr": value})
+                with self.assertRaises(RiskInputError):
+                    rolling_mean_metrics([{**CALM, "water_level_m": value}], 1)
+
+    def test_a_non_finite_score_is_not_scored_critical(self) -> None:
+        """The exact old behaviour, so a regression cannot pass as "still technically scoring"."""
+        with self.assertRaises(RiskInputError):
+            score_zone({**CALM, "water_level_m": float("nan")})
+
+    def test_a_reading_carrying_an_unreadable_number_is_a_400(self) -> None:
+        # 1e999 is valid JSON and parses to inf: validation refuses it before the engine sees it.
+        raw = body(readings={**CALM, "rainfall_mm_per_hr": 1e999})
+        status, payload = self.post(raw)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "invalid_payload")
+        self.assertLessEqual(len(payload.get("detail") or ""), 200)
+
+    def test_a_corrupt_stored_row_is_skipped_by_the_smoothing_window(self) -> None:
+        self.assertEqual(self.post(body()).__getitem__(0), 202)
+        # A hand-edited (or half-written) history row whose metrics cannot be read.
+        stored = self.store.get_history(DEMO_ZONE)[0]
+        corrupt = dict(stored)
+        corrupt["sk"] = f"{corrupt['sk']}-corrupt"
+        corrupt["readings"] = {**CALM, "water_level_m": float("nan")}
+        self.store._items[(str(corrupt["pk"]), str(corrupt["sk"]))] = corrupt
+
+        status, payload = self.post(body(offset_seconds=300))
+
+        self.assertEqual(status, 202, "an unreadable old row must not fail the new reading")
+        # The unreadable row is passed over rather than averaged in: the score is the one the
+        # new reading alone produces, and the response is finite everywhere.
+        self.assertEqual(payload["risk"]["risk_score"], score_zone(CALM)["risk_score"])
+        self.assertEqual(payload["risk"]["risk_class_candidate"], "NORMAL")
+
+    def test_no_route_can_serve_a_bare_nan_token(self) -> None:
+        self.post(body())
+        latest = self.store.get_latest(DEMO_ZONE)
+        latest["risk_score"] = float("nan")
+        # A stored number that cannot be represented is reported as unknown, and the body stays
+        # parseable strict JSON - by default json.loads would accept the bare NaN token.
+        for path, query in (
+            ("/zones", None),
+            (f"/zones/{DEMO_ZONE}/history", {"minutes": "60"}),
+            ("/incidents", None),
+        ):
+            with self.subTest(path=path):
+                status, payload = self.get(path, query=query)
+                self.assertEqual(status, 200)
+                text = handler_module._respond(status, payload)["body"]
+                self.assertNotIn("NaN", text)
+                self.assertNotIn("Infinity", text)
+                strict_parse(text, path)
+
+
+def strict_parse(text: str, where: str) -> None:
+    """``json.loads`` that refuses NaN/Infinity, the way a browser's JSON.parse does."""
+
+    def refuse(token: str):
+        raise AssertionError(f"{where} served an unrepresentable number: {token}")
+
+    json.loads(text, parse_constant=refuse)
 
 
 class CappedEchoTest(AdversarialCase):

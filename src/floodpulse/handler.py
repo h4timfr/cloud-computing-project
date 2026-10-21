@@ -52,6 +52,7 @@ from .config import (
     INCIDENT_MAX_LIMIT,
     INCIDENT_STATUS_OPEN,
     MAX_HISTORY_POINTS,
+    METRIC_ORDER,
     METRIC_SOURCES_LIVE,
     METRIC_SOURCES_SIMULATED,
     MIXED_DATA_DISCLAIMER,
@@ -129,7 +130,14 @@ from .notify import (
     notifier_for_env,
     zone_geography,
 )
-from .risk import MODEL_NOTE, apply_hysteresis, classify, rolling_mean_metrics, score_zone
+from .risk import (
+    MODEL_NOTE,
+    RiskInputError,
+    apply_hysteresis,
+    classify,
+    rolling_mean_metrics,
+    score_zone,
+)
 from .storage import (
     READING_DUPLICATE,
     READING_STALE,
@@ -766,17 +774,40 @@ def _ingest_record(
     """
     zone_id = str(reading["zone_id"])
     previous = store.recent_readings(zone_id, SMOOTHING_WINDOW - 1)
-    series = [dict(item["readings"]) for item in previous] + [dict(reading["readings"])]
+    usable, dropped = [], 0
+    for item in previous:
+        stored = dict(item["readings"]) if isinstance(item.get("readings"), Mapping) else None
+        if stored is not None and all(
+            math.isfinite(float(stored.get(metric, math.nan))) for metric in METRIC_ORDER
+        ):
+            usable.append(stored)
+        else:
+            # A stored row whose metrics cannot be read (a hand-edited item, an older shape)
+            # must not be averaged into this reading's score: it would either raise or, worse,
+            # drag a mean towards a number nobody measured. It is skipped and counted, exactly
+            # like an unusable row on the read side.
+            dropped += 1
+    if dropped:
+        LOGGER.warning("smoothing_skipped_unusable zone_id=%s dropped=%s", zone_id, dropped)
+    series = usable + [dict(reading["readings"])]
     smoothed = rolling_mean_metrics(series, SMOOTHING_WINDOW)
 
     lookback = _water_level_lookback(store, zone_id, int(reading["ts_epoch"]))
-    risk = score_zone(
-        smoothed,
-        thresholds_for(zone_id),
-        water_level_5min_ago=lookback,
-        water_level_now=float(reading["readings"]["water_level_m"]),
-        smoothing_window=len(series),
-    )
+    try:
+        risk = score_zone(
+            smoothed,
+            thresholds_for(zone_id),
+            water_level_5min_ago=lookback,
+            water_level_now=float(reading["readings"]["water_level_m"]),
+            smoothing_window=len(series),
+        )
+    except RiskInputError as exc:
+        # Defence in depth: validation refuses a non-finite metric before it gets here, so this
+        # is a state the request should not be able to produce - but if it ever is produced, the
+        # reading is refused with a reason instead of being scored (and, before M17, instead of
+        # being scored CRITICAL because "not a number" fell through to the top band).
+        LOGGER.error("scoring_refused zone_id=%s error=%s", zone_id, type(exc).__name__)
+        raise ValidationError("every metric must be a finite number", "readings") from exc
 
     previous_latest = store.get_latest(zone_id)
     previous_state = (previous_latest or {}).get("hysteresis")
@@ -2080,12 +2111,32 @@ def _parse_event(event: Mapping[str, Any]) -> tuple[str, str, dict[str, Any], st
     return str(method), str(path), dict(query), body, dict(headers)
 
 
+def _jsonable(value: Any) -> Any:
+    """Copy ``value`` with any non-finite float replaced by ``None``.
+
+    BUG CLASS (M16/M17): ``json.dumps`` writes ``NaN``/``Infinity`` as a bare token, which is not
+    JSON; one such value anywhere in a payload makes a browser reject the *whole* document. The
+    individual writers already keep non-finite numbers out (``_readings_without_non_finite_numbers``,
+    the history reader, the scoring guards); this is the last line of defence at the response
+    boundary, so no route can emit an unparseable body even if a new one forgets.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
 def _respond(status: int, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Wrap a payload as an API Gateway (proxy) response."""
     return {
         "statusCode": status,
         "headers": {"content-type": "application/json"},
-        "body": json.dumps(payload, separators=(",", ":"), sort_keys=False),
+        # allow_nan=False makes an invalid number an exception here rather than an invalid body
+        # on the wire; _jsonable means it should never come to that.
+        "body": json.dumps(_jsonable(payload), separators=(",", ":"), sort_keys=False, allow_nan=False),
     }
 
 
