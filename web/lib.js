@@ -2989,14 +2989,18 @@
       row('Direction', d) + row('Peak', escapeHtml(formatScore(s.maxScore)) + ' at ' + tClock(s.peakTs)) +
       row('Rainfall', s.rainfallSamples ? s.firstRainfall.toFixed(1) + ' \u2192 ' + s.lastRainfall.toFixed(1) + ' mm/h' : 'not stored in this window') + '</dl>';
   }
-  /* The window controls, computed from the stored span: a window the history does not cover is shown
-   * disabled, with the reason in the data's own words - never hidden, never hard-coded. */
-  function tWindows(series) {
+  /* The window controls, computed from what the stored history covers. A window counts as covered when
+   * the document was asked for at least that width: the API returns the last N minutes ending at the
+   * newest stored sample, so a sampled window never spans its full width (measured live: 1414 of 1440
+   * minutes) and comparing the sample span to the width left the 24H control permanently unreachable.
+   * A document that does not say what it was asked for falls back to the span: never optimism. */
+  function tWindows(series, askedMinutes) {
     var P = (series && series.points) || [], span = P.length ? P[P.length - 1].ts - P[0].ts : null;
+    var asked = toNumber(askedMinutes);
     return [{ label: '1H', minutes: 60 }, { label: '6H', minutes: 360 }, { label: '24H', minutes: 1440 }, { label: 'AVAILABLE', minutes: null }]
       .map(function (op) {
-        var ok = op.minutes === null || (span !== null && span >= op.minutes * 60);
-        return { label: op.label, minutes: op.minutes, enabled: ok, reason: ok ? '' : (span ? 'only ' + formatDuration(span) + ' of history so far' : 'no history stored yet') };
+        var ok = op.minutes === null || (asked !== null && asked >= op.minutes) || (span !== null && span >= op.minutes * 60);
+        return { label: op.label, minutes: op.minutes, enabled: ok, reason: ok ? '' : (span ? 'the stored history covers ' + formatDuration(span) + ' so far' : 'no history is stored yet') };
       });
   }
   /* Incident records as a timeline needs them, on the fields the API actually returns: a record that

@@ -532,18 +532,33 @@ async function main() {
       assert.match(dom.text('history-summary'), /Falling: least-squares slope -0\./);
     });
 
-    await check('a window with one large gap discloses it and disables the windows it cannot cover', async () => {
+    await check('a window with one large gap discloses it and leaves the covered windows reachable', async () => {
       // five samples across 50 minutes, with 40 minutes missing in the middle: inside the hour the
       // window control can offer, above max(3 x median, 900 s), and disclosed in both sentences
       const gapped = [[0, 0.35, 0.1], [300, 0.4, 0.2], [600, 0.45, 0.3], [3000, 0.5, 0.2], [3000 + 300, 0.55, 0.1]];
       const { dom } = await panel(document(rows(gapped)));
       assert.match(dom.text('history-summary'), /Read with care/);
-      assert.match(dom.text('history-window-note'), /largest gap/);
-      assert.match(dom.text('history-window-note'), /not offered yet: only 55 min of history so far/);
+      const note = dom.text('history-window-note');
+      assert.match(note, /largest gap/);
+      // the coverage is stated in the data's own words: 5 samples over 55 minutes, whatever the gap
+      assert.match(note, /5 samples/);
+      assert.match(note, /55 min/);
       const range = dom.node('history-range').innerHTML;
-      assert.match(range, /data-range="1440"[^>]*disabled/, 'the 24H window should be shown disabled');
-      assert.match(range, /data-range="all"[^>]*aria-pressed="true"/, 'the widest covered window should be selected');
-      assert.match(range, /data-range="60"[^>]*disabled/, 'the 1H window is not covered by 55 minutes either');
+      // M17: the chips follow the window the document was asked for. This document was asked for
+      // 1440 minutes, so a 24H window is offered (it shows these five samples) - the old rule
+      // compared the samples' own span and left the 24H control permanently disabled, a control no
+      // live city could ever reach because a sampled window never spans its full width.
+      assert.ok(!/data-range="(60|360|1440)"[^>]*disabled/.test(range), 'a covered window is shown disabled');
+      assert.match(range, /data-range="60"[^>]*aria-pressed="true"/, 'the default window should be selected');
+    });
+
+    await check('a window the document was not asked for is disabled, with the data\'s own reason', async () => {
+      const short = [[0, 0.35, 0.1], [600, 0.4, 0.2], [1200, 0.45, 0.3]];
+      const { dom } = await panel(document(rows(short), { minutes: 60 }));
+      const range = dom.node('history-range').innerHTML;
+      assert.match(range, /data-range="1440"[^>]*disabled/, '24H should be disabled for a 60-minute document');
+      assert.match(dom.text('history-window-note'),
+        /not offered from this document: the stored history covers 20 min so far/);
     });
 
     await check('switching city while a history request is in flight never shows the other city', async () => {
@@ -574,9 +589,85 @@ async function main() {
       assert.match(dom.html('history-facts'), /0\.64/, 'the panel is not showing the city the reader is on');
       assert.match(dom.text('history-meta'), /4 points/, 'the panel lost the city it is showing');
     });
-  })();
+    await check('a city switch repaints the panel before the new answer arrives', async () => {
+      // M17 audit P1: the new city's heading sat above the previous city's chart, sentence, facts,
+      // window note and hover tooltip for the whole fetch timeout, because drawHistory is the only
+      // thing that reconciles the panel with the route and no route change called it.
+      const runtime = createRuntime();
+      const cityA = live.payload.zones[0].zone_id;
+      const cityB = live.payload.zones[1].zone_id;
+      let openB = null;
+      const gate = new Promise((resolve) => { openB = resolve; });
+      runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
+      runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+      // the second city's answer is held open until this check has looked at the panel. Registered
+      // before the catch-all: the runtime answers with the first handler that matches.
+      runtime.on('/zones/' + cityB + '/history', async () => {
+        await gate;
+        return { body: Object.assign(document(rows([[0, 0.61, 0.5], [1800, 0.62, 0.6]])).body, { zone_id: cityB }) };
+      });
+      runtime.on(historyRoute, (path) => ({ body: Object.assign(document(rows([
+        [0, 0.61, 0.5], [1800, 0.62, 0.6], [3600, 0.63, 0.7], [5400, 0.64, 0.8]
+      ])).body, { zone_id: /^\/zones\/([^/]+)\/history$/.exec(path)[1] }) }));
+      const dom = boot(runtime, '#/city/' + cityA);
+      await runtime.settle();
+      assert.match(dom.text('history-summary'), /0\.6[1234]/, 'the first city never painted');
+      dom.window.location.hash = '#/city/' + cityB;
+      dom.fire(dom.window, 'hashchange', {});
+      await runtime.settle();
+      assert.match(dom.text('history-summary'), /Loading the stored history/i,
+        `the panel kept the previous city's sentence: ${dom.text('history-summary')}`);
+      assert.ok(!/0\.6[1234]/.test(dom.html('history-facts')), "the previous city's numbers are still in the facts");
+      assert.ok(!/0\.6[1234]/.test(dom.node('history-canvas').getAttribute('aria-label') || ''),
+        'the chart label still reads the previous city');
+      assert.equal(dom.node('history-tooltip').hidden, true, 'the tooltip still holds the previous city values');
+      openB();
+      await runtime.settle();
+      await runtime.settle();
+      // two samples is below the three-sample minimum, so the sentence states that rather than a
+      // direction: the panel's own facts block is what proves which document is on screen
+      assert.match(dom.html('history-facts'), /0\.6[12]/,
+        `the new city never painted after the answer arrived: ${dom.text('history-summary')} / meta ${dom.text('history-meta')}`);
+      assert.ok(!/Loading the stored history/i.test(dom.text('history-summary')), 'the panel is still loading');
+      assert.match(dom.text('history-meta'), /2 points/, 'the panel is not showing the new document');
+    });
 
-  /* ---------------------------------------------------- hostile payloads --- */
+    await check('one city\'s failed history does not block the next city', async () => {
+      // M17 audit P2: the 45 s backoff was one global timestamp, so a failed city showed its failure
+      // message under the next city's heading and blocked that city's fetch.
+      const runtime = createRuntime();
+      const cityA = live.payload.zones[0].zone_id;
+      const cityB = live.payload.zones[1].zone_id;
+      runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
+      runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+      runtime.on('/zones/' + cityA + '/history', () => ({ status: 500, body: { error: 'internal_error' } }));
+      runtime.on(historyRoute, (path) => ({ body: Object.assign(document(rows([[0, 0.71, 0.1], [600, 0.72, 0.2]])).body,
+        { zone_id: /^\/zones\/([^/]+)\/history$/.exec(path)[1] }) }));
+      const dom = boot(runtime, '#/city/' + cityA);
+      await runtime.settle();
+      assert.match(dom.text('history-meta'), /unavailable|500/, `the failure is not reported: ${dom.text('history-meta')}`);
+      dom.window.location.hash = '#/city/' + cityB;
+      dom.fire(dom.window, 'hashchange', {});
+      await runtime.settle();
+      assert.match(runtime.lastRequest(), new RegExp('/zones/' + cityB + '/history'),
+        "the next city was blocked by the previous city's backoff");
+      assert.match(dom.text('history-meta'), /2 points/, `the next city did not paint: ${dom.text('history-meta')}`);
+      assert.ok(!/unavailable|500/.test(dom.text('history-meta')), "the failed city's message is still on screen");
+    });
+
+    await check('an unknown city id never asks for another city\'s history', async () => {
+      // M17 audit P3: the poll re-points selectedZone to the fleet leader, so a visit to an unknown
+      // id issued one pointless request for the leader's document under "this city is not monitored".
+      const runtime = createRuntime();
+      runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
+      runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+      runtime.on(historyRoute, () => ({ body: document(rows([[0, 0.5, 0.1]])).body }));
+      const dom = boot(runtime, '#/city/not-a-real-city');
+      await runtime.settle();
+      assert.equal(runtime.count(historyRoute), 0, 'an unknown city id asked for a history document');
+      assert.ok(!/0\.[0-9]/.test(dom.html('history-facts')), 'a history panel was painted for an unknown city');
+    });
+  })();
 
   group('Hostile and malformed payload content cannot break or inject into the board');
 
@@ -833,10 +924,12 @@ async function main() {
       assert.notEqual(dom.text('history-window-note'), beforeNote,
         'the panel did not restate what the chosen window covers');
       assert.match(dom.node('history-range').innerHTML, /data-range="360"[^>]*aria-pressed="true"/);
-      // and the window the history cannot cover yet explains itself instead of going quiet
+      // the coverage is restated from the data, and every chip the document covers stays reachable
       const note = dom.text('history-window-note');
-      assert.match(note, /24H/, `the disabled window is not explained: ${note}`);
-      assert.match(note, /only/, `the reason should come from the data: ${note}`);
+      assert.match(note, /available/, `the window note must state what is stored: ${note}`);
+      const chips = dom.node('history-range').innerHTML;
+      assert.ok(!/data-range="1440"[^>]*disabled/.test(chips),
+        '24H is disabled although the document was asked for 1440 minutes');
     });
 
     await check('resizing the window repaints both canvases without throwing', () => {

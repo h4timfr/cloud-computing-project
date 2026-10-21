@@ -75,7 +75,10 @@
     incidentsInFlight: false,
     // history bookkeeping: which zone the loaded series belongs to, and when a failed
     // attempt happened, so a broken history route is not retried on every 5 s poll.
+    // The backoff remembers *which* city failed: one city's failure must not block another
+    // city's first fetch, or show its failure message under the next city's heading.
     historyZone: null,
+    historyFailedZone: null,
     // the slice of the loaded series the panel is showing, and its numbers: the arrow keys and
     // the tooltip read these, so they always describe what is on screen
     windowPoints: [],
@@ -896,9 +899,13 @@
 
   function loadHistory() {
     if (!state.selectedZone || state.route.view !== 'city') return;
+    // the city the URL names, not the poll's leader: an id the fleet does not have is never fetched
+    if (state.route.zoneId && state.route.zoneId !== state.selectedZone) return;
     if (state.historyInFlight && state.historyLoadingZone === state.selectedZone) return;
-    // a broken history route must not be hammered by the poll, the ticker and a tab return at once
-    if (state.historyFailedMs !== null && Date.now() - state.historyFailedMs < HISTORY_RETRY_MS) return;
+    // a broken history route must not be hammered - but the backoff belongs to the city that failed,
+    // not to the panel: one city's outage must not block another city's first fetch or show its message
+    if (state.historyFailedMs !== null && state.historyFailedZone === state.selectedZone &&
+      Date.now() - state.historyFailedMs < HISTORY_RETRY_MS) return;
     var zone = state.selectedZone, seq = ++state.historySeq;
     state.historyInFlight = true;
     state.historyLoadingZone = zone;
@@ -909,6 +916,7 @@
       state.historyInFlight = false;
       state.historyLoadingZone = null;
       state.historyFailedMs = Date.now();
+      state.historyFailedZone = zone;
       state.historyError = 'no answer';
       state.history = null;
       state.historyZone = null;
@@ -920,6 +928,7 @@
       state.historyInFlight = false;
       state.historyLoadingZone = null;
       state.historyFailedMs = null;
+      state.historyFailedZone = null;
       state.historyError = null;
       if (zone !== state.selectedZone || state.route.view !== 'city') return; // nobody is on that city
       if (data && data.zone_id && data.zone_id !== zone) return; // an answer for another city is not this city's history
@@ -933,6 +942,7 @@
       state.historyInFlight = false;
       state.historyLoadingZone = null;
       state.historyFailedMs = Date.now();
+      state.historyFailedZone = zone;
       state.historyError = error.message;
       state.history = null;
       state.historySeries = null;
@@ -964,7 +974,7 @@
     if (el['history-window-note']) {
       var off = choices.filter(function (option) { return !option.enabled; });
       var note = FP.temporal.quality(summary) + (off.length ? '. The ' + off.map(function (option) { return option.label; }).join(' and ') +
-        ' window' + (off.length > 1 ? 's are' : ' is') + ' not offered yet: ' + off[0].reason + '.' : '');
+        ' window' + (off.length > 1 ? 's are' : ' is') + ' not offered from this document: ' + off[0].reason + '.' : '');
       if (el['history-window-note'].textContent !== note) el['history-window-note'].textContent = note;
     }
   }
@@ -986,13 +996,17 @@
     // a stored series belongs to one city: a switch shows the loading state, never the previous city's
     // line, and loadHistory's sequence guard drops an answer that arrives too late
     var series = zoneId && state.historyZone === zoneId ? state.historySeries : null;
-    var choices = FP.temporal.windows(series), selected = state.historyWindow, active = null;
+    // the document on screen *with* that series, so the meta line cannot describe a payload that is
+    // not the one being drawn. No series means no tooltip either: it would read the other city's values
+    var data = series ? state.history : null;
+    if (!series) showPoint(null);
+    var choices = FP.temporal.windows(series, data && data.minutes), selected = state.historyWindow, active = null;
     choices.forEach(function (option) { if (option.minutes === selected) active = option; });
     if (!active || !active.enabled) { selected = null; active = choices[choices.length - 1]; }
     var summary = FP.temporal.summary(series, { minutes: selected, nowSeconds: Math.round(Date.now() / 1000) });
     var riskWidth = Math.max(200, Math.round((el['history-canvas'] && el['history-canvas'].clientWidth) || 640));
     var rainWidth = Math.max(200, Math.round((el['rain-chart'] && el['rain-chart'].clientWidth) || riskWidth));
-    var data = state.history, loading = 'Loading the stored history…', failed = Boolean(state.historyError);
+    var loading = 'Loading the stored history…', failed = Boolean(state.historyError);
     state.windowPoints = summary.points;
     state.windowSummary = summary;
     renderWindows(choices, selected, summary);
@@ -1136,7 +1150,12 @@
       state.userSelected = true;
       renderZonePicker(state.zones);
       // One request per city view, and none at all for an id the fleet does not have.
-      if (findZone(route.zoneId) && (zoneChanged || state.historyZone !== route.zoneId)) loadHistory();
+      if (findZone(route.zoneId)) {
+        // repaint before fetching: the new city's heading must never sit above the previous city's
+        // chart, sentence, facts, window note or tooltip while an answer is in flight
+        if (state.historyZone !== route.zoneId) drawHistory();
+        if (zoneChanged || state.historyZone !== route.zoneId) loadHistory();
+      }
     }
 
     if (viewChanged || zoneChanged) {
@@ -1931,7 +1950,6 @@
       button.disabled = true;
       setText('conn-detail', 'checking the API again…');
       state.lastError = false;
-      state.incidentsFailedMs = null;
       poll();
       loadIncidents();
       // every renderer is signature-guarded, so the retry has to defeat those guards explicitly
@@ -1973,9 +1991,11 @@
       state.historySeries = null;
       state.historyZone = null;
       state.historyFailedMs = null; // an explicit click always retries immediately
+      state.historyFailedZone = null;
       renderZonePicker(state.zones);
-      // keep the URL on the city that is actually on screen; the browser then fires
-      // hashchange, which re-renders the detail panel for the same city
+      // keep the URL on the city that is actually on screen, and treat the route as already there:
+      // the hash change re-renders the detail panel, and the reload is started here either way
+      state.route.zoneId = picked;
       if (window.location.hash !== FP.hashFor('city', picked)) {
         window.location.hash = FP.hashFor('city', picked);
       }
@@ -2195,7 +2215,8 @@
     setInterval(tickIncidentDurations, 1000);
     setInterval(function () {
       var total = Object.keys(state.series).reduce(function (sum, key) { return sum + state.series[key].length; }, 0);
-      el['poll-count'].textContent = total + ' live samples buffered';
+      // guarded like every other DOM write here: a page from another revision must not make a timer throw
+      setText('poll-count', total + ' live samples buffered');
     }, POLL_MS);
   }
 

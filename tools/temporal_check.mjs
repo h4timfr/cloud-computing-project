@@ -203,8 +203,9 @@ for (const incidentCase of fixture.incident_cases) {
 
 /* ---------------------------------------------------------------- the panel --- */
 
-/* The window controls are computed from the stored span, never hard-coded: a window the history cannot
- * cover yet is offered disabled, with the reason in the data's own words. */
+/* The window controls are computed from what the stored history covers, never hard-coded: a window
+ * the history cannot cover is offered disabled, with the reason in the data's own words, and a window
+ * the document was asked for is offered even when its samples do not span its full width (M17). */
 check('windows: a short history only offers what it can cover', () => {
   const short = temporal.clean(toPoints(Array.from({ length: 12 }, (unused, index) => [index * 600, 0.4, 0])));
   const offered = temporal.windows(short);
@@ -213,10 +214,22 @@ check('windows: a short history only offers what it can cover', () => {
   equal(offered[1].enabled, false, 'six hours is not covered by 110 minutes');
   equal(offered[2].enabled, false, 'a day is not covered');
   equal(offered[3].enabled, true, 'available is always offered');
-  if (!/only .*of history so far/.test(offered[2].reason)) throw new Error(`the reason does not name the span: ${offered[2].reason}`);
+  if (!/covers .*so far/.test(offered[2].reason)) throw new Error(`the reason does not name the span: ${offered[2].reason}`);
   if (/NaN|undefined|null/.test(offered.map((option) => option.reason).join(' '))) throw new Error('a reason leaked a raw value');
   const none = temporal.windows(null);
   equal(none.filter((option) => option.enabled).length, 1, 'with no history only available is offered');
+});
+check('windows: a window the document asked for is offered even when its samples are short', () => {
+  // M17 audit finding: the panel asks for the widest window the API keeps, so a sampled window never
+  // spans its full width (measured live: 1414 of 1440 minutes) and comparing the sample span to the
+  // window left the 24H control permanently disabled - a control no live city could ever reach.
+  const short = temporal.clean(toPoints(Array.from({ length: 12 }, (unused, index) => [index * 600, 0.4, 0])));
+  const offered = temporal.windows(short, 1440);
+  equal(offered.filter((option) => option.enabled).length, 4, 'a 1440-minute document covers every window');
+  if (offered.some((option) => option.reason)) throw new Error('an offered window carries a refusal reason');
+  const narrow = temporal.windows(short, 60);
+  equal(narrow[1].enabled, false, 'a 60-minute document cannot offer six hours');
+  equal(narrow[2].enabled, false, 'a 60-minute document cannot offer a day');
 });
 check('windows: a long history offers every window', () => {
   const long = temporal.clean(toPoints(Array.from({ length: 60 }, (unused, index) => [index * 1800, 0.3 + index / 200, 0])));

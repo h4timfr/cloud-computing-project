@@ -2125,7 +2125,9 @@ check('both canvases size their bitmap from the layout, not from the markup', ()
   assert.match(spark[1], /devicePixelRatio/, 'the sparkline ignores the device pixel ratio');
   assert.ok(/canvas\.width\s*=\s*pixelWidth/.test(spark[1]),
     'the sparkline never resizes its backing store');
-  const history = /function drawHistory\(\)\s*\{([\s\S]{0,900})/.exec(appSource);
+  // a proximity proxy, not a parser: the window only has to reach the chart sizing inside the
+  // function, and drawHistory also carries comments about what it repaints
+  const history = /function drawHistory\(\)\s*\{([\s\S]{0,2000})/.exec(appSource);
   assert.ok(history, 'drawHistory was not found');
   assert.match(history[1], /clientWidth/, 'the history bitmap is not sized from its layout width');
 });
