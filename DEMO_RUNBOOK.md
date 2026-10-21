@@ -18,7 +18,7 @@ Two things to be honest about, out loud, at the start and if anyone asks:
 
 ```powershell
 # 1. the fleet is live and the weather feed is healthy (expect HTTP 200, zone_mode "live_weather",
-#    five cities, REAL rainfall, cache ages well under 600 s)
+#    zone_count 12, REAL rainfall, cache ages well under 600 s)
 python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com/zones')); print(d['zone_mode'], d['zone_count'], d['data_classification'], d['weather']['cache_age_seconds'])"
 
 # 2. the deployed stack is the code in this repository (expect 'RESULT: ... identical' and
@@ -55,7 +55,7 @@ and write it down rather than dismissing it as noise. Close the console afterwar
 the demo needs it.
 
 On the dashboard, confirm with your own eyes (it opens on **Overview**): the connection badge reads
-**LIVE**, the headline answers the question in one sentence (e.g. "2 of 5 cities are at a critical
+**LIVE**, the headline answers the question in one sentence (e.g. "2 of 12 cities are at a critical
 flood risk right now."), the four summary cards are filled, the highest-risk spotlight names a city
 with its band and says **why** in a sentence ("Risk is currently NORMAL. Soil saturation is the main
 contributor, while rainfall, drain level, water level and flow rate remain below their watch
@@ -82,7 +82,7 @@ sideways, and the tap targets are finger-sized. Widths worth a glance: 320, 360,
 | **Cities → a city** | Score and class **as the API reported them**, a plain-English reason, five measurement tiles with thresholds, provenance and per-metric help, what is driving risk with shares, freshness, history chart (click it and use the arrow keys), then folded *Technical details* and the city's own alert history | "Same city, detail on demand. The model is one click away, not in the visitor's face — open it and you get the variable names, the weights and the arithmetic." |
 | **Alerts** | Active and resolved as separate sections, then System status: reporting count, weather freshness, and an alert-delivery panel that separates *publishing* from *delivery* | "Nothing is open right now — and look at the wording: publishing is configured, but this page will not pretend an email arrived. It cannot know that." |
 | **Data & Methodology** | REAL / MODEL_DERIVED / SIMULATED as three cards, Open-Meteo attribution, `heuristic-v1` broken down visually, **the calculation number by number** as a folded worked example of the highest-risk reading, the simulated hydraulics, and the limitations | "This is the honest page: what is measured, what is simulated, and what this score is **not** — and if you want the arithmetic, here it is, one fold down." |
-| **About** | What FloodPulse is, why it exists, the five cities, how it works, what it is built on, flood safety guidance with links to IMD and NDMA, and the limitations | "And this is the part a professor or a resident should read: it is an academic prototype, it is not an official warning service, and for official guidance follow the authorities it links to." |
+| **About** | What FloodPulse is, why it exists, the twelve coastal cities, how it works, what it is built on, flood safety guidance with links to IMD and NDMA, and the limitations | "And this is the part a professor or a resident should read: it is an academic prototype, it is not an official warning service, and for official guidance follow the authorities it links to." |
 
 The URL follows the section (`#/overview`, `#/cities/city-chennai`, `#/alerts`, `#/data`, `#/about`),
 so you can jump straight to a city, the browser back button works, and a mistyped fragment falls back
@@ -167,8 +167,10 @@ two fleets never appear in the same payload (the API answers for exactly one fle
 Nothing to switch: this is the deployed default. Best used when the audience cares more about "is it
 real" than about drama.
 
-* Five cities — Chennai, Mumbai, Bengaluru, Hyderabad, Kochi — with **REAL** rainfall and
-  **MODEL_DERIVED** soil moisture from Open-Meteo, and **SIMULATED** drain/water/flow.
+* Twelve coastal cities — Mumbai, Surat, Kochi, Mangaluru, Kozhikode, Kolkata, Puri, Paradip,
+  Visakhapatnam, Chennai, Puducherry and Port Blair — with **REAL** rainfall and **MODEL_DERIVED**
+  soil moisture from Open-Meteo, and **SIMULATED** drain/water/flow. One batched provider request
+  covers all twelve; the fleet covers 10 states and three coast groups.
 * The weather feed block shows the provider, the attribution (CC BY 4.0), the 600 s refresh window
   and, per city, how old the cached value is. The dashboard adds local elapsed time, so the age keeps
   moving between polls instead of freezing at the last poll.

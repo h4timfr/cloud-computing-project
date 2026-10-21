@@ -18,12 +18,15 @@ import unittest
 from floodpulse.config import (
     SUBSCRIPTION_BODY_MAX_BYTES,
     SUBSCRIPTION_MAX_EMAIL_LENGTH,
+    SUBSCRIPTION_MESSAGE_UNAVAILABLE,
     SUBSCRIPTION_RATE_LIMIT,
     SUBSCRIPTION_RATE_PREFIX,
     SUBSCRIPTION_RATE_TTL_SECONDS,
+    SUBSCRIPTION_SOURCE_RATE_LIMIT,
+    SUBSCRIPTION_SOURCE_RATE_PREFIX,
     SUBSCRIPTION_WINDOW_SECONDS,
 )
-from floodpulse.handler import dispatch
+from floodpulse.handler import dispatch, redact_addresses, source_ip_of
 from floodpulse.notify import (
     NoopNotifier,
     SnsNotifier,
@@ -39,6 +42,8 @@ from floodpulse.subscriptions import (
     parse_subscription_request,
     rate_limit_key,
     redact_email,
+    redact_source,
+    source_rate_limit_key,
     window_expiry,
     window_sort_key,
 )
@@ -99,10 +104,14 @@ class NormaliseEmailTests(unittest.TestCase):
             with self.subTest(address=address):
                 self.assertEqual(normalise_email(address), address.strip())
 
-    def test_the_local_part_keeps_its_case(self) -> None:
-        # Some mail systems treat the local part as case-sensitive, so what is sent to SNS
-        # is what the visitor typed (whitespace removed). Lowercasing is for the digest only.
-        self.assertEqual(normalise_email("  Visitor.Name@Example.COM "), "Visitor.Name@Example.COM")
+    def test_the_local_part_keeps_its_case_and_the_domain_is_folded(self) -> None:
+        # Some mail systems treat the local part as case-sensitive, so the part before '@'
+        # is sent to SNS exactly as the visitor typed it. The domain carries no case (RFC
+        # 5321 s2.4), so it is folded here: otherwise one mailbox would hold two SNS
+        # endpoints - two confirmation mails and two copies of every alert - while
+        # FloodPulse's own counter already treated the spellings as one address.
+        self.assertEqual(normalise_email("  Visitor.Name@Example.COM "), "Visitor.Name@example.com")
+        self.assertEqual(normalise_email("visitor@example.com"), "visitor@example.com")
         self.assertEqual(email_identity("Visitor.Name@Example.COM"), "visitor.name@example.com")
 
     def test_rejected_addresses_name_the_field(self) -> None:
@@ -382,7 +391,11 @@ class SubscriptionRouteTests(unittest.TestCase):
         failing = SnsNotifier(TOPIC_ARN, client=RecordingSnsClient(fail=f"AccessDenied {TOPIC_ARN}"))
         status, payload = self.post(json.dumps({"email": VALID}), notifier=failing)
         self.assertEqual(status, 503)
-        self.assertEqual(payload["message"], "We couldn't create the subscription request right now. Please try again.")
+        # The copy may not claim that nothing was subscribed: SNS can fail *after* it
+        # accepted the call (a read timeout), in which case the confirmation mail is
+        # already on its way.
+        self.assertEqual(payload["message"], SUBSCRIPTION_MESSAGE_UNAVAILABLE)
+        self.assertNotIn("subscribed", payload["message"])
         text = json.dumps(payload)
         self.assertNotIn(TOPIC_ARN, text)
         self.assertNotIn("AccessDenied", text)
@@ -477,6 +490,173 @@ class PrivacyTests(unittest.TestCase):
         self.assertNotIn("other@example.com", joined)
         self.assertNotIn(TOPIC_ARN, joined)
         self.assertIn(redact_email(VALID), joined)
+
+
+class SourceBudgetTests(unittest.TestCase):
+    """M17: one caller cannot spend a stranger's hourly budget, and cannot read it out."""
+
+    def setUp(self) -> None:
+        self.store = LocalStore()
+        self.client = RecordingSnsClient()
+        self.notifier = SnsNotifier(TOPIC_ARN, client=self.client)
+        self.caller = "203.0.113.7"
+
+    def post(self, email: str, source_ip: str | None = None, notifier=None):
+        return dispatch(
+            "POST",
+            "/subscriptions",
+            json.dumps({"email": email}),
+            self.store,
+            NOW,
+            {},
+            {},
+            self.notifier if notifier is None else notifier,
+            source_ip=self.caller if source_ip is None else source_ip,
+        )
+
+    def address_counter(self, email: str):
+        return self.store._items.get((rate_limit_key(email), window_sort_key(NOW, SUBSCRIPTION_WINDOW_SECONDS)))
+
+    def test_a_single_caller_has_its_own_hourly_budget(self) -> None:
+        for index in range(SUBSCRIPTION_SOURCE_RATE_LIMIT):
+            status, _ = self.post(f"person{index}@example.com")
+            self.assertEqual(status, 202)
+        status, payload = self.post("onemore@example.com")
+        self.assertEqual(status, 429)
+        self.assertEqual(payload["status"], "rate_limited")
+        # The refused request never reached SNS.
+        self.assertEqual(len(self.client.subscribe_calls), SUBSCRIPTION_SOURCE_RATE_LIMIT)
+
+    def test_a_spent_caller_cannot_spend_somebody_elses_address_budget(self) -> None:
+        for index in range(SUBSCRIPTION_SOURCE_RATE_LIMIT):
+            self.post(f"person{index}@example.com")
+        victim = "neighbour@example.com"
+        status, _ = self.post(victim)
+        self.assertEqual(status, 429)
+        # The victim's counter was never even created: a caller who is out of budget cannot
+        # make a stranger's address look busy.
+        self.assertIsNone(self.address_counter(victim))
+
+    def test_the_two_throttle_answers_are_indistinguishable(self) -> None:
+        # address-limited
+        while self.post("one@example.com")[0] == 202:
+            pass
+        address_limited = self.post("one@example.com")
+        # source-limited (a different caller, so the address budget is untouched)
+        for index in range(SUBSCRIPTION_SOURCE_RATE_LIMIT):
+            self.post(f"other{index}@example.com", source_ip="198.51.100.9")
+        source_limited = self.post("fresh@example.com", source_ip="198.51.100.9")
+        self.assertEqual(address_limited, source_limited)
+
+    def test_two_callers_do_not_share_a_budget(self) -> None:
+        for index in range(SUBSCRIPTION_SOURCE_RATE_LIMIT):
+            self.assertEqual(self.post(f"person{index}@example.com")[0], 202)
+        self.assertEqual(self.post("person0@example.com", source_ip="198.51.100.9")[0], 202)
+
+    def test_the_source_counter_holds_a_digest_and_not_the_address(self) -> None:
+        self.post("person@example.com")
+        keys = [str(pk) for pk, _ in self.store._items]
+        source_keys = [pk for pk in keys if pk.startswith(SUBSCRIPTION_SOURCE_RATE_PREFIX)]
+        self.assertEqual(len(source_keys), 1)
+        self.assertEqual(source_keys[0], source_rate_limit_key(self.caller))
+        dumped = json.dumps(list(self.store._items.values()), default=str)
+        self.assertNotIn(self.caller, dumped)
+        self.assertNotIn("203.0.113", dumped)
+
+    def test_an_event_without_a_source_leaves_the_route_as_it_was(self) -> None:
+        for _ in range(SUBSCRIPTION_RATE_LIMIT):
+            self.assertEqual(self.post("solo@example.com", source_ip="")[0], 202)
+        self.assertEqual(self.post("solo@example.com", source_ip="")[0], 429)
+        self.assertFalse(any(str(pk).startswith(SUBSCRIPTION_SOURCE_RATE_PREFIX) for pk, _ in self.store._items))
+
+    def test_a_counter_that_cannot_be_read_is_a_503_not_a_500(self) -> None:
+        self.post("person@example.com")
+        (key, item), = [(k, v) for k, v in self.store._items.items() if str(k[0]).startswith(SUBSCRIPTION_RATE_PREFIX)]
+        item["attempts"] = "not-a-number"
+        status, payload = self.post("person@example.com")
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["status"], "subscription_unavailable")
+        self.assertEqual(payload["message"], SUBSCRIPTION_MESSAGE_UNAVAILABLE)
+
+    def test_a_store_failure_is_a_503_not_a_500(self) -> None:
+        class Exploding:
+            zone_ids = ()
+
+            def claim_subscribe_attempt(self, *_args, **_kwargs):
+                raise RuntimeError("ProvisionedThroughputExceededException")
+
+        status, payload = dispatch(
+            "POST",
+            "/subscriptions",
+            json.dumps({"email": VALID}),
+            Exploding(),
+            NOW,
+            {},
+            {},
+            self.notifier,
+            source_ip=self.caller,
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["message"], SUBSCRIPTION_MESSAGE_UNAVAILABLE)
+
+    def test_the_source_address_is_read_from_both_event_shapes(self) -> None:
+        self.assertEqual(
+            source_ip_of({"requestContext": {"http": {"sourceIp": "203.0.113.7"}}}), "203.0.113.7"
+        )
+        self.assertEqual(
+            source_ip_of({"requestContext": {"identity": {"sourceIp": "203.0.113.7"}}}), "203.0.113.7"
+        )
+        self.assertEqual(source_ip_of({"requestContext": {"http": {"sourceIp": "  203.0.113.7  "}}}), "203.0.113.7")
+        self.assertIsNone(source_ip_of({}))
+        self.assertIsNone(source_ip_of({"requestContext": {"http": {}}}))
+        self.assertIsNone(source_ip_of({"requestContext": {"http": {"sourceIp": "   "}}}))
+
+
+class RedactionTests(unittest.TestCase):
+    """A log line must not carry an address, however the error string spells it."""
+
+    def test_the_submitted_spelling_is_replaced_by_its_digest(self) -> None:
+        text = redact_addresses("Endpoint=person@example.com rejected", "person@example.com")
+        self.assertIn(redact_email("person@example.com"), text)
+        self.assertNotIn("person@example.com", text)
+
+    def test_a_differently_cased_or_truncated_echo_is_still_masked(self) -> None:
+        for echo in (
+            "Endpoint=Person@Example.COM rejected",
+            "Endpoint=PERSON@EXAMPLE.COM rejected",
+            "Endpoint=person@example.co rejected",
+            "Endpoint=person%40example.com rejected",
+        ):
+            with self.subTest(echo=echo):
+                text = redact_addresses(echo, "person@example.com")
+                self.assertNotIn("person", text.lower().replace("[redacted-address]", ""))
+                self.assertNotIn("@", text.replace(redact_email("person@example.com"), ""))
+
+    def test_any_address_is_masked_when_the_submitted_one_is_unknown(self) -> None:
+        text = redact_addresses("some@where.example leaked", None)
+        self.assertNotIn("@", text)
+        self.assertIn("[redacted-address]", text)
+
+    def test_the_route_logs_no_address_even_when_sns_echoes_it_in_another_case(self) -> None:
+        client = RecordingSnsClient(fail="AccessDenied Endpoint=Visitor@Example.COM")
+        notifier = SnsNotifier(TOPIC_ARN, client=client)
+        store = LocalStore()
+        with self.assertLogs("floodpulse.handler", level=logging.DEBUG) as captured:
+            dispatch(
+                "POST",
+                "/subscriptions",
+                json.dumps({"email": "visitor@example.com"}),
+                store,
+                NOW,
+                {},
+                {},
+                notifier,
+                source_ip="203.0.113.7",
+            )
+        joined = "\n".join(captured.output)
+        self.assertNotIn("visitor", joined.lower().replace("[redacted-address]", ""))
+        self.assertNotIn("Visitor@Example.COM", joined)
+        self.assertNotIn("203.0.113.7", joined)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1463,7 +1463,7 @@ sentence, and the unsubscribe explanation.
 | idle | the field, the button, nothing else (`#subscribe-result` ships `hidden`) |
 | accepted (202) | **"Check your inbox"** + "We sent a subscription confirmation request through Amazon SNS. Click 'Confirm subscription' in that email to activate FloodPulse alerts." |
 | invalid address | "Enter a valid email address.", the field marked `aria-invalid="true"`, focus kept in the field |
-| rate limited (429) | "Too many subscription requests. Please try again later." |
+| rate limited (429) | "Too many subscription requests. Please try again later." (the same answer for the per-address and the per-caller budget, so neither is readable from outside) |
 | SNS failure / offline | "We couldn't create the subscription request right now. Please try again." |
 | in flight | the button is `aria-busy="true"` and a second submit is ignored |
 
@@ -1476,25 +1476,38 @@ that string on the deployed page, and the runtime harness asserts the accepted s
 
 * **Validation** (in `src/floodpulse/subscriptions.py`, pure and unit-tested): JSON object only —
   an array, a string or a scalar body is rejected; exactly one allowed key; whitespace stripped;
-  case-folded for the dedupe and rate-limit identity *while the original spelling is sent to SNS*;
+  the domain case-folded (RFC 5321 §2.4, so one mailbox gets one SNS endpoint) while the local
+  part keeps the visitor's spelling *and that spelling is what is sent to SNS*;
   254-character maximum; CR, LF, NUL and other control characters rejected (so no
   multiple-address or header-injection trick); a shape check on `local@domain.tld`; empty string
   rejected; the body read from a bounded length so a huge payload is refused before parsing; and no
   client-supplied protocol, topic or endpoint.
 * **Abuse protection lives in the existing DynamoDB table** — no new resource, no new table, no
-  new index: `PK = SUBRATE#<sha256(normalized email)>`, `SK = WINDOW#<hour bucket>`, attribute
-  `count`, attribute `ttl`. Three attempts per address per hour, and the attempt is counted *before*
-  the SNS call, so a failure storm cannot be used to hammer SNS. The item holds a **hash**, never the
-  address: the rate limit works and the table still contains no one's email.
+  new index, and two counters since M17:
+  `PK = SUBRATE#<sha256(normalised address)>` / `PK = SUBSRC#<sha256(source address)>`, both with
+  `SK = WINDOW#<hour bucket>`, attribute `attempts`, attribute `ttl`. Three attempts per address per
+  hour **and** twenty per caller per hour; the caller's own budget is claimed *first*, so a spent
+  caller cannot spend a stranger's address budget, and both refusals return the same body (a caller
+  therefore cannot read out whether an address has been asked about). The attempt is counted
+  *before* the SNS call, so a failure storm cannot be used to hammer SNS. Both items hold a
+  **hash**, never the address: the limits work and the table still contains nobody's email and
+  nobody's IP.
 * **Privacy**: FloodPulse stores no visitor email address anywhere. SNS owns the endpoint and the
-  confirmation state; the address exists in this system only inside the `subscribe` call. There is no
+  confirmation state; the address exists in this system only inside the `subscribe` call. The caller
+  counter holds a digest of the source address for an hour and nothing else. There is no
   marketing list, no analytics, no third-party processor, and the page says so in one sentence.
-* **Logging**: the handler never logs the submitted address in full. A rejected address is logged
-  truncated through `redact_addresses`, and authorization headers and the ingest key are never logged
-  at all.
-* The **outer bound** remains the API Gateway stage throttle (still unset, so account defaults apply)
-  plus API Gateway's own request-size limit; the per-address window is the application-level bound on
-  top of it.
+* **Logging**: the handler never logs the submitted address in full. `redact_addresses` replaces the
+  submitted spelling with its digest *and* masks any remaining address-shaped token (a differently
+  cased echo, a truncated copy, a `%40`-escaped one), so the only branch whose text comes from
+  outside FloodPulse cannot leak one; authorization headers and the ingest key are never logged at
+  all.
+* The **outer bound** is the API Gateway stage throttle — measured on `$default` in M17 as
+  **20 requests/second, burst 40** (`aws apigatewayv2 get-stages`) — plus API Gateway's own
+  request-size limit; the two application-level windows sit on top of it.
+* **Removing a subscriber** is the one subscription action FloodPulse cannot perform: `sns:Unsubscribe`
+  is deliberately not granted to the Lambda. An operator removes one with
+  `aws sns unsubscribe --subscription-arn <arn> --profile cloud-project --region eu-north-1`, or from
+  the SNS console; the visitor's own path is the unsubscribe link inside any alert email.
 
 ### Test results after this pass
 
@@ -1542,7 +1555,9 @@ inline policies:
 | `FloodPulseDynamoDBAccess` | `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query` | `arn:aws:dynamodb:eu-north-1:725934295966:table/floodpulse` |
 | `FloodPulseSnsPublish` | `sns:Publish` | `arn:aws:sns:eu-north-1:725934295966:floodpulse-alerts` |
 
-`sns:Subscribe` is **absent**, so a deployed `POST /subscriptions` would answer 500. The brief's rule
+`sns:Subscribe` is **absent**, so a deployed `POST /subscriptions` answers **503**
+(`subscription_unavailable`) until the manual step below is applied — not 500, because the notifier
+turns the failed call into a documented unavailability. The brief's rule
 is explicit — do not apply IAM changes automatically — so the deploy stopped here, as designed.
 `infra/deploy.ps1` documents the one manual step in a comment and deliberately does **not** apply it
 (a test fails if a later edit widens the automated policy document beyond `sns:Publish`).
@@ -1604,8 +1619,12 @@ acceptance run gains a malformed-address probe against the live route.
   that, and it stops exactly where it must: at the confirmation mail.
 * The dashboard still cannot prevent being framed: S3 static website hosting sends no response
   headers, and CloudFront would be a new AWS resource, deliberately not created.
-* API Gateway's stage throttle is still unset, so the account defaults remain the outer bound for
-  abuse protection (recorded in M8; unchanged).
+* API Gateway's stage throttle is **set on `$default` and was measured in M17**: 20 requests/second
+  with a burst of 40 (`aws apigatewayv2 get-stages --api-id 2rg2u8quzd`). The earlier M8 note that
+  "the stage throttle is unset so account defaults apply" described the stage before that was
+  configured and was still carried here; the deploy script reports the values it reads but does not
+  manage them, so this README is the record. The two application-level subscription windows sit on
+  top of it.
 * One adversarial test (`ModeIsolationTest`) makes real Open-Meteo calls and can fail for a single
   run when the provider answers `http_503`.
 

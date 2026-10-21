@@ -16,6 +16,7 @@ There is intentionally **no** aggregate snapshot item: zones are read individual
 
 from __future__ import annotations
 
+import decimal
 import math
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping
@@ -303,6 +304,44 @@ def build_history_item(
     return item
 
 
+class SubscribeThrottleUnavailable(RuntimeError):
+    """The subscription counter could not be read or written.
+
+    Raised instead of a bare ``ValueError``/store exception so the route can answer 503
+    ("could not complete the request") rather than 500, and so a counter item whose
+    ``attempts`` is not a number cannot turn every request from one address into an
+    unhandled error for the rest of its window.
+    """
+
+
+def _counter_attempts(stored: Mapping[str, Any] | None) -> int:
+    """The attempt count in a stored counter item, or a loud failure.
+
+    A missing item counts as zero; anything that is not a non-negative whole number is
+    treated as unusable rather than coerced, because guessing here would either hand a
+    caller extra attempts or refuse them for the wrong reason. DynamoDB returns numbers as
+    :class:`decimal.Decimal`, so a whole ``Decimal`` (and a whole float) is accepted.
+    """
+    if not stored:
+        return 0
+    raw = stored.get("attempts")
+    if isinstance(raw, bool) or raw is None:
+        raise SubscribeThrottleUnavailable("counter item holds an unusable attempts value")
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, (decimal.Decimal, float)):
+        if not raw.is_finite():
+            raise SubscribeThrottleUnavailable("counter item holds a non-finite attempts value")
+        if raw != int(raw):
+            raise SubscribeThrottleUnavailable("counter item holds a fractional attempts value")
+        value = int(raw)
+    else:
+        raise SubscribeThrottleUnavailable(f"counter item holds an unusable attempts value: {type(raw).__name__}")
+    if value < 0:
+        raise SubscribeThrottleUnavailable("counter item holds a negative attempts value")
+    return value
+
+
 class LocalStore:
     """In-process stand-in for the DynamoDB table, keyed by ``(pk, sk)``."""
 
@@ -573,7 +612,7 @@ class LocalStore:
         pk = str(key["pk"])
         sk = str(key["sk"])
         stored = self._items.get((pk, sk))
-        attempts = int((stored or {}).get("attempts") or 0)
+        attempts = _counter_attempts(stored)
         if attempts >= int(limit):
             return None
         attempts += 1

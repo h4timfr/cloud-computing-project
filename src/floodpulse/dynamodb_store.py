@@ -26,7 +26,9 @@ from .storage import (
     READING_DUPLICATE,
     READING_STALE,
     READING_STORED,
+    SubscribeThrottleUnavailable,
     WriteOutcome,
+    _counter_attempts,
     build_history_item,
     build_latest_item,
     build_zone_pk,
@@ -614,8 +616,14 @@ class DynamoDbStore:
         except Exception as exc:  # noqa: BLE001 - narrowed immediately below
             if is_conditional_check_failure(exc):
                 return None
-            raise
-        return int(response.get("Attributes", {}).get("attempts", 0))
+            # Anything else - throttling, a validation failure caused by a counter item
+            # whose ``attempts`` attribute is not a number, a transient error - is reported
+            # as "the request could not be completed" by the route, never as a 500.
+            raise SubscribeThrottleUnavailable(type(exc).__name__) from exc
+        try:
+            return _counter_attempts({"attempts": response.get("Attributes", {}).get("attempts")})
+        except SubscribeThrottleUnavailable:
+            return None
 
     def _query(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Run a query, following ``LastEvaluatedKey`` up to ``MAX_QUERY_PAGES``.

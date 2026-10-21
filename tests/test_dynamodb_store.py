@@ -39,7 +39,12 @@ from floodpulse.dynamodb_store import (
 )
 from floodpulse.incidents import build_alert_marker, build_incident_item
 from floodpulse.risk import apply_hysteresis, score_zone
-from floodpulse.storage import LATEST_SORT_KEY, LocalStore, build_zone_pk
+from floodpulse.storage import (
+    LATEST_SORT_KEY,
+    LocalStore,
+    SubscribeThrottleUnavailable,
+    build_zone_pk,
+)
 from floodpulse.subscriptions import rate_limit_key, window_expiry, window_sort_key
 
 ZONE = "zone-riverside-north"
@@ -752,6 +757,32 @@ class SubscribeThrottleTests(unittest.TestCase):
         other = {"pk": rate_limit_key("someone-else@example.com"), "sk": self.key["sk"]}
         self.remote.claim_subscribe_attempt(self.key, **self.kwargs)
         self.assertEqual(self.remote.claim_subscribe_attempt(other, **self.kwargs), 1)
+
+    def test_a_store_error_is_reported_as_unavailable_not_as_a_bare_failure(self) -> None:
+        class Broken:
+            def update_item(self, **_kwargs):
+                raise RuntimeError("ProvisionedThroughputExceededException")
+
+            def __getattr__(self, name):
+                raise AssertionError(f"unexpected table call: {name}")
+
+        with self.assertRaises(SubscribeThrottleUnavailable):
+            DynamoDbStore(table_name="floodpulse", table=Broken()).claim_subscribe_attempt(
+                self.key, **self.kwargs
+            )
+
+    def test_a_counter_whose_attempts_is_not_a_number_is_unavailable(self) -> None:
+        # A hand-edited or legacy counter item must not turn every request from that address
+        # into an unhandled error: the store refuses the claim loudly and the route turns
+        # that into a 503.
+        with self.assertRaises(SubscribeThrottleUnavailable):
+            self.local._items[(self.key["pk"], self.key["sk"])] = {
+                "pk": self.key["pk"],
+                "sk": self.key["sk"],
+                "attempts": "not-a-number",
+                "ttl": 1,
+            }
+            self.local.claim_subscribe_attempt(self.key, **self.kwargs)
 
 
 if __name__ == "__main__":  # pragma: no cover

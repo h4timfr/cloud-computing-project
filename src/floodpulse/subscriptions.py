@@ -12,8 +12,11 @@ subscription is owned by SNS from end to end:
   cannot name the topic, the protocol or the region, and none of the three is echoed back.
 
 Privacy: the address is *not* stored. The only thing FloodPulse keeps is a throttling
-counter whose key is a SHA-256 digest of the normalised address, with a TTL. SNS holds the
-endpoint; there is no marketing list, no analytics and no export.
+counter whose key is a SHA-256 digest of the normalised address, with a TTL, plus - since
+M17 - a second counter keyed by a SHA-256 digest of the caller's source address, so that
+one caller cannot spend a stranger's hourly budget. Both counters hold a digest, a window
+bucket and a number; neither can be read back as an address. SNS holds the endpoint; there
+is no marketing list, no analytics and no export.
 
 This module is pure: no AWS calls, no clock reads. ``parse_subscription_request`` decides
 what is acceptable, and the handler decides what to do about it.
@@ -33,6 +36,7 @@ from .config import (
     SUBSCRIPTION_MAX_LOCAL_LENGTH,
     SUBSCRIPTION_RATE_PREFIX,
     SUBSCRIPTION_RATE_WINDOW_PREFIX,
+    SUBSCRIPTION_SOURCE_RATE_PREFIX,
 )
 from .validation import ValidationError
 
@@ -120,7 +124,12 @@ def normalise_email(value: Any) -> str:
     if not labels[-1].isalpha() or len(labels[-1]) < 2:
         raise ValidationError("the domain must end in a two-letter or longer name", "email")
 
-    return address
+    # The domain's case carries no meaning (RFC 5321 s2.4: domains are case-insensitive),
+    # so it is folded here - the string sent to SNS, the string used for the counter and
+    # the string this module returns all agree, and one mailbox gets one SNS endpoint
+    # instead of one per spelling. The local part keeps its case: some mail systems treat
+    # it as significant, so discarding it would be a guess.
+    return f"{local}@{lowered_domain}"
 
 
 def parse_subscription_request(raw_body: str | None) -> str:
@@ -179,6 +188,35 @@ def email_digest(address: str) -> str:
 def rate_limit_key(address: str) -> str:
     """The partition key of the counter for this address (``SUBRATE#<digest>``)."""
     return f"{SUBSCRIPTION_RATE_PREFIX}{email_digest(address)}"
+
+
+def source_identity(source_ip: Any) -> str:
+    """The throttling identity of a caller: the source address as reported by API Gateway.
+
+    Only used to key a counter, never returned and never stored in plaintext. Takes the
+    first value when a forwarded list arrives (API Gateway reports a single ``sourceIp``,
+    but a test or a local run may hand over anything).
+    """
+    text = str(source_ip or "").split(",")[0].strip().lower()
+    return text
+
+
+def source_digest(source_ip: Any) -> str:
+    """SHA-256 hex digest of the caller identity, for the per-connection counter."""
+    return hashlib.sha256(source_identity(source_ip).encode("utf-8")).hexdigest()
+
+
+def source_rate_limit_key(source_ip: Any) -> str:
+    """The partition key of the counter for this caller (``SUBSRC#<digest>``)."""
+    return f"{SUBSCRIPTION_SOURCE_RATE_PREFIX}{source_digest(source_ip)}"
+
+
+def redact_source(source_ip: Any) -> str:
+    """A log-safe stand-in for a caller address: the digest, never the address."""
+    try:
+        return f"sha256:{source_digest(source_ip)[:12]}"
+    except Exception:  # noqa: BLE001 - logging must never raise
+        return "sha256:unavailable"
 
 
 def window_sort_key(now_epoch: float, window_seconds: int) -> str:

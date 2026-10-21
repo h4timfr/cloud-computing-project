@@ -30,6 +30,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,6 +67,7 @@ from .config import (
     SUBSCRIPTION_MESSAGE_UNAVAILABLE,
     SUBSCRIPTION_RATE_LIMIT,
     SUBSCRIPTION_RATE_TTL_SECONDS,
+    SUBSCRIPTION_SOURCE_RATE_LIMIT,
     SUBSCRIPTION_STATUS_CONFIRMATION_REQUIRED,
     SUBSCRIPTION_STATUS_RATE_LIMITED,
     SUBSCRIPTION_STATUS_UNAVAILABLE,
@@ -136,6 +138,8 @@ from .subscriptions import (
     parse_subscription_request,
     rate_limit_key,
     redact_email,
+    redact_source,
+    source_rate_limit_key,
     window_expiry,
     window_sort_key,
 )
@@ -1555,6 +1559,7 @@ def _handle_subscriptions(
     store: Any,
     now_epoch: float,
     notifier: Any,
+    source_ip: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """``POST /subscriptions`` - a visitor asks to be emailed about flood risk.
 
@@ -1565,8 +1570,9 @@ def _handle_subscriptions(
     * the address must pass the syntax check in :mod:`floodpulse.subscriptions`;
     * the topic and the protocol come from trusted configuration, never from the request -
       the client cannot name a topic, a protocol, a region or a subscription ARN;
-    * attempts are counted per address in the existing DynamoDB table, so the confirmation
-      messages AWS sends cannot be turned into a way to mail a stranger repeatedly;
+    * attempts are counted per address *and* per caller in the existing DynamoDB table, so
+      the confirmation messages AWS sends cannot be turned into a way to mail a stranger
+      repeatedly, and one caller cannot spend a stranger's hourly budget;
     * the success answer is the same whether the address is new, already pending or already
       confirmed, so the endpoint cannot be used to test whether somebody is subscribed.
 
@@ -1607,21 +1613,53 @@ def _handle_subscriptions(
         }
 
     identity = redact_email(address)
-    key = {
-        "pk": rate_limit_key(address),
-        "sk": window_sort_key(now_epoch, SUBSCRIPTION_WINDOW_SECONDS),
-    }
-    # The attempt is counted *before* the SNS call, so a caller cannot spend a failing
-    # endpoint's worth of requests: three confirmation requests an hour per address, whether
-    # or not SNS accepted them. The counter holds a digest and a number, never the address.
-    attempts = store.claim_subscribe_attempt(
-        key,
-        limit=SUBSCRIPTION_RATE_LIMIT,
-        ttl=window_expiry(now_epoch, SUBSCRIPTION_WINDOW_SECONDS, SUBSCRIPTION_RATE_TTL_SECONDS),
-        now_epoch=now_epoch,
-    )
+    window_sort = window_sort_key(now_epoch, SUBSCRIPTION_WINDOW_SECONDS)
+    ttl = window_expiry(now_epoch, SUBSCRIPTION_WINDOW_SECONDS, SUBSCRIPTION_RATE_TTL_SECONDS)
+    # The caller's own budget is claimed first, so a caller with nothing left cannot spend
+    # somebody else's address budget, and the answer is the same 429 either way: whether an
+    # address has already been asked about is not something a stranger can read out of this
+    # endpoint. The counter holds a digest and a number, never the address or the source.
+    try:
+        if source_ip:
+            source_attempts = store.claim_subscribe_attempt(
+                {"pk": source_rate_limit_key(source_ip), "sk": window_sort},
+                limit=SUBSCRIPTION_SOURCE_RATE_LIMIT,
+                ttl=ttl,
+                now_epoch=now_epoch,
+            )
+            if source_attempts is None:
+                LOGGER.warning(
+                    "subscribe_rate_limited scope=source identity=%s source=%s",
+                    identity,
+                    redact_source(source_ip),
+                )
+                return 429, {
+                    "status": SUBSCRIPTION_STATUS_RATE_LIMITED,
+                    "error": "rate_limited",
+                    "message": SUBSCRIPTION_MESSAGE_RATE_LIMITED,
+                }
+        # The attempt is counted *before* the SNS call, so a caller cannot spend a failing
+        # endpoint's worth of requests: three confirmation requests an hour per address,
+        # whether or not SNS accepted them.
+        attempts = store.claim_subscribe_attempt(
+            {"pk": rate_limit_key(address), "sk": window_sort},
+            limit=SUBSCRIPTION_RATE_LIMIT,
+            ttl=ttl,
+            now_epoch=now_epoch,
+        )
+    except Exception as exc:  # noqa: BLE001 - every store failure is a transient 503
+        # A counter that cannot be read or written is not the notification service's fault,
+        # but it is not the visitor's either: report it as "could not complete" rather than
+        # letting it become the route's only unhandled 500.
+        LOGGER.warning("subscribe_unavailable reason=throttle_unavailable error=%s", type(exc).__name__)
+        return 503, {
+            "status": SUBSCRIPTION_STATUS_UNAVAILABLE,
+            "error": "subscription_unavailable",
+            "message": SUBSCRIPTION_MESSAGE_UNAVAILABLE,
+        }
+
     if attempts is None:
-        LOGGER.warning("subscribe_rate_limited identity=%s", identity)
+        LOGGER.warning("subscribe_rate_limited scope=address identity=%s", identity)
         return 429, {
             "status": SUBSCRIPTION_STATUS_RATE_LIMITED,
             "error": "rate_limited",
@@ -1658,16 +1696,28 @@ def _handle_subscriptions(
     }
 
 
-def redact_addresses(text: str, address: str) -> str:
-    """Replace a submitted address with its digest inside a log line.
+#: Any token that looks like an address, for the log-line guard below. Deliberately wider
+#: than the subscription syntax check: the point is to catch a *third party's* rendering of
+#: an address (an AWS error message, a differently-cased echo, a truncated copy), not to
+#: validate one. A percent-escaped ``%40`` form is matched too.
+ADDRESS_IN_TEXT = re.compile(r"[^\s@]+@[^\s@]+|[^\s@%]+%40[^\s@]+")
+
+
+def redact_addresses(text: str, address: str | None = None) -> str:
+    """Remove every address-shaped token from a log line.
 
     AWS error messages for a bad endpoint quote the endpoint, so the one place a full
-    address could reach the log is an error string. It is replaced here, and the digest
-    keeps the line useful.
+    address could reach the log is an error string. Replacing the exact submitted spelling
+    alone was too narrow: an error string may repeat it in different case, truncated, or
+    percent-escaped. The submitted spelling is therefore replaced by its digest (so the
+    line stays useful) and *any* remaining address-shaped token is masked outright.
     """
     if not text:
         return ""
-    return text.replace(str(address), redact_email(address))
+    rendered = str(text)
+    if address:
+        rendered = rendered.replace(str(address), redact_email(address))
+    return ADDRESS_IN_TEXT.sub("[redacted-address]", rendered)
 
 
 # --------------------------------------------------------------------------- #
@@ -1694,6 +1744,7 @@ def dispatch(
     cooldown_seconds: int | None = None,
     env: Mapping[str, str] | None = None,
     weather_client: Any = None,
+    source_ip: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Route one request without touching AWS. Returns ``(status_code, payload)``.
 
@@ -1701,7 +1752,9 @@ def dispatch(
     ``notifier`` and ``cooldown_seconds`` default to the environment configuration.
     ``env`` (default: the process environment) selects the active zone fleet and the
     weather configuration; ``weather_client`` injects a weather provider for tests so
-    the test suite never performs a network call.
+    the test suite never performs a network call. ``source_ip`` (from
+    ``requestContext.http.sourceIp``) is used only to key the subscription route's
+    per-caller budget and is never echoed or stored in plaintext.
     """
     store = store if store is not None else get_store()
     now_epoch = time.time() if now_epoch is None else float(now_epoch)
@@ -1776,6 +1829,7 @@ def dispatch(
             store,
             now_epoch,
             notifier if notifier is not None else get_notifier(),
+            source_ip=source_ip,
         )
 
     if route.startswith("/zones/"):
@@ -1818,6 +1872,31 @@ def _respond(status: int, payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def source_ip_of(event: Mapping[str, Any]) -> str | None:
+    """The caller's source address as API Gateway reports it, or ``None``.
+
+    Only the subscription route uses it, and only as a digest: it bounds what one caller
+    can spend per hour. An event without a request context (a unit test, a local run)
+    yields ``None``, which leaves the per-address counter as the only bound.
+    """
+    request_context = event.get("requestContext")
+    if not isinstance(request_context, Mapping):
+        return None
+    http = request_context.get("http")
+    if isinstance(http, Mapping):
+        value = http.get("sourceIp")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    value = request_context.get("sourceIp") or request_context.get("identity")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, Mapping):
+        inner = value.get("sourceIp")
+        if isinstance(inner, str) and inner.strip():
+            return inner.strip()
+    return None
+
+
 def lambda_handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
     """AWS Lambda entry point for the single MVP function."""
     try:
@@ -1826,7 +1905,16 @@ def lambda_handler(event: Mapping[str, Any], context: Any = None) -> dict[str, A
         return _respond(400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason})
 
     try:
-        status, payload = dispatch(method, path, body, get_store(), time.time(), query, headers)
+        status, payload = dispatch(
+            method,
+            path,
+            body,
+            get_store(),
+            time.time(),
+            query,
+            headers,
+            source_ip=source_ip_of(event),
+        )
     except Exception:  # noqa: BLE001 - never leak internals to the caller
         LOGGER.exception("unhandled error while processing request")
         return _respond(500, {

@@ -2801,14 +2801,14 @@
       rate_limited: {
         tone: 'warn',
         title: 'Too many subscription requests. Please try again later.',
-        body: 'This address has asked more than three times in the last hour, so FloodPulse ' +
-          'has not asked Amazon SNS again. Nothing new has been sent.'
+        body: 'FloodPulse allows only a few alert requests an hour from one address and one ' +
+          'connection, and that limit is used up. Nothing new has been sent.'
       },
       unavailable: {
         tone: 'warn',
         title: "We couldn\u2019t create the subscription request right now. Please try again.",
-        body: 'FloodPulse could not reach its notification service, so nothing was subscribed ' +
-          'and no address was stored.'
+        body: 'FloodPulse could not complete this request, and it stored no address for it. ' +
+          'If a confirmation email does arrive, it is real: use it. Otherwise try again later.'
       },
       offline: {
         tone: 'warn',

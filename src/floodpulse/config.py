@@ -546,15 +546,24 @@ SUBSCRIPTION_MAX_LABEL_LENGTH = 63
 SUBSCRIPTION_BODY_MAX_BYTES = 512
 #: Attempts per address per window, and the window they are counted in.
 SUBSCRIPTION_RATE_LIMIT = 3
+#: Attempts per *connection* per window. The per-address counter above protects one
+#: mailbox; on its own it also let a single caller spend a stranger's hourly budget and
+#: read back how many attempts that address had already made. This second counter caps
+#: what one source address can do in an hour, so spraying many addresses or probing one
+#: address repeatedly costs the caller its own budget first. It is deliberately far above
+#: what a household needs (a visitor uses one or two requests) and far below what a
+#: spray needs. The source is hashed before storage exactly like the email address is.
+SUBSCRIPTION_SOURCE_RATE_LIMIT = 20
 SUBSCRIPTION_WINDOW_SECONDS = 60 * 60
 #: DynamoDB TTL on the counter: the window plus a little slack, so the item is gone
 #: shortly after the window it counted. TTL deletion is asynchronous and best-effort
 #: (AWS removes items "typically within 48 hours"), which is why the counter is also
 #: keyed by the window: a stale item can never be counted against a later window.
 SUBSCRIPTION_RATE_TTL_SECONDS = SUBSCRIPTION_WINDOW_SECONDS + 60 * 60
-#: Storage prefixes for the counter items. The key is a SHA-256 digest of the
-#: normalised address, never the address itself.
+#: Storage prefixes for the counter items. Both keys are SHA-256 digests - of the
+#: normalised address and of the caller's source address - never the value itself.
 SUBSCRIPTION_RATE_PREFIX = "SUBRATE#"
+SUBSCRIPTION_SOURCE_RATE_PREFIX = "SUBSRC#"
 SUBSCRIPTION_RATE_WINDOW_PREFIX = "WINDOW#"
 
 #: The three answers this route can give. They are deliberately indistinguishable
@@ -566,8 +575,11 @@ SUBSCRIPTION_MESSAGE_CONFIRMATION_REQUIRED = "Check your email to confirm the su
 SUBSCRIPTION_STATUS_RATE_LIMITED = "rate_limited"
 SUBSCRIPTION_MESSAGE_RATE_LIMITED = "Too many subscription requests. Please try again later."
 SUBSCRIPTION_STATUS_UNAVAILABLE = "subscription_unavailable"
+#: Kept deliberately free of claims FloodPulse cannot check: the SNS call can fail
+#: *after* AWS accepted it (a read timeout), so "nothing was subscribed" would be false
+#: on that branch, and a failed counter write is not the notification service's fault.
 SUBSCRIPTION_MESSAGE_UNAVAILABLE = (
-    "We couldn't create the subscription request right now. Please try again."
+    "The subscription request could not be completed right now. Please try again."
 )
 
 #: Documented in API responses so the dashboard can be honest about what exists.
