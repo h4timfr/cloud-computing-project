@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -62,10 +62,11 @@ from .config import (
     WEATHER_TIMEOUT_MIN_SECONDS,
     WEATHER_TIMEOUT_SECONDS,
     WEATHER_TIMEOUT_ENV,
+    ZONE_MODE_LIVE,
     zone_definitions_for_mode,
 )
 from .storage import build_zone_pk
-from .validation import validate_reading
+from .validation import ValidationError, validate_reading
 from .weather import Observation, WeatherClient
 
 LOGGER = logging.getLogger("floodpulse.live_weather")
@@ -323,12 +324,30 @@ def attempt_age_seconds(cache: Mapping[str, Any] | None, now_epoch: float) -> fl
 
 
 def _age_from(cache: Mapping[str, Any] | None, now_epoch: float, field: str) -> float | None:
-    if not cache:
+    """Seconds since a recorded instant in a cache item, or ``None`` when it cannot be read.
+
+    A cache item that is not a mapping is treated as *no cache at all*, not as one with a
+    missing field: a single corrupt or foreign-written item at ``ZONE#<zone>/WEATHER#CACHE``
+    used to raise out of the zone view and make the deployed Lambda answer 500 for the whole
+    public board. It now means "refresh this zone", like any other unusable cache.
+
+    A timestamp *ahead* of the server clock yields ``None`` rather than ``0``. Clamping it to
+    zero reported an age we cannot know ("fetched 0 seconds ago") and made the refresh window
+    look used, so the zone would not be refreshed until the clock caught up. An unknowable age
+    is reported as unknown and the window is treated as expired.
+    """
+    if not isinstance(cache, Mapping):
         return None
     recorded = cache.get(field)
     if not isinstance(recorded, (int, float)) or isinstance(recorded, bool):
         return None
-    return max(0.0, float(now_epoch) - float(recorded))
+    if not math.isfinite(float(recorded)):
+        return None
+    age = float(now_epoch) - float(recorded)
+    if age < 0.0:
+        LOGGER.warning("weather_cache_clock_skew field=%s ahead_seconds=%s", field, int(-age))
+        return None
+    return age
 
 
 def observation_age_seconds(cache: Mapping[str, Any] | None, now_epoch: float) -> float | None:
@@ -386,6 +405,11 @@ class RefreshOutcome:
     failed: tuple[str, ...] = ()
     error: str | None = None
     reason: str | None = None
+    #: The cache items this pass read (and, for every zone it wrote, the item it wrote), so the
+    #: caller can build the response from the values the refresh decision was made on instead of
+    #: paying a second round of consistent reads and risking a different answer. Not part of
+    #: equality or the JSON view: it is wire-room, not a fact about the refresh.
+    caches: Mapping[str, Mapping[str, Any] | None] = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def ok(self) -> bool:
@@ -415,21 +439,35 @@ def _record_failed_attempts(
     """Advance the attempt anchor for zones whose fetch failed (values are left alone).
 
     Best effort by design: bookkeeping failing must never turn a cleanly reported provider
-    problem into an exception.
+    problem into an exception. Two consequences are accepted and stated rather than hidden:
+
+    * the block a viewer sees is built from the item this pass *decided*, so an outage is
+      reported per zone even when the store refused the write; the write failure itself is
+      logged once;
+    * with the anchor unwritable, the next poll asks the provider again. That is still at most
+      one batched call per poll (the cost of a poll with a broken store, not of a broken
+      provider), and the alternative - skipping the remaining zones to save ten doomed writes -
+      would report the outage for one zone and leave the other eleven looking healthy.
     """
+    reported = False
     for zone in stale:
         zone_id = str(zone["zone_id"])
+        item = build_weather_failure_item(
+            zone_id=zone_id,
+            now_epoch=now_epoch,
+            error=error,
+            previous=caches.get(zone_id),
+        )
+        if isinstance(caches, dict):
+            caches[zone_id] = item
         try:
-            store.put_weather_cache(
-                build_weather_failure_item(
-                    zone_id=zone_id,
-                    now_epoch=now_epoch,
-                    error=error,
-                    previous=caches.get(zone_id),
+            store.put_weather_cache(item)
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not break the response
+            if not reported:
+                LOGGER.warning(
+                    "weather_anchor_write_failed zone_id=%s error=%s", zone_id, type(exc).__name__
                 )
-            )
-        except Exception:  # noqa: BLE001 - diagnostics must not break the response
-            continue
+                reported = True
 
 
 def weather_zones(mode: str, env: Mapping[str, str] | None = None) -> tuple[dict[str, Any], ...]:
@@ -516,7 +554,9 @@ def refresh_live_weather(
             fresh.append(zone_id)
 
     if not stale:
-        return RefreshOutcome(enabled=True, attempted=False, skipped_fresh=tuple(fresh), reason="cache_fresh")
+        return RefreshOutcome(
+            enabled=True, attempted=False, skipped_fresh=tuple(fresh), reason="cache_fresh", caches=caches
+        )
 
     provider = client if client is not None else WeatherClient(timeout=weather_timeout_seconds(environment))
     result = provider.fetch(stale)
@@ -529,6 +569,7 @@ def refresh_live_weather(
             skipped_fresh=tuple(fresh),
             failed=tuple(str(zone["zone_id"]) for zone in stale),
             error=error,
+            caches=caches,
         )
 
     refreshed: list[str] = []
@@ -552,14 +593,14 @@ def refresh_live_weather(
         failed.append(zone_id)
         errors.append(f"{zone_id}: {detail}")
         try:
-            store.put_weather_cache(
-                build_weather_failure_item(
-                    zone_id=zone_id,
-                    now_epoch=now_epoch,
-                    error=detail,
-                    previous=caches.get(zone_id),
-                )
+            item = build_weather_failure_item(
+                zone_id=zone_id,
+                now_epoch=now_epoch,
+                error=detail,
+                previous=caches.get(zone_id),
             )
+            store.put_weather_cache(item)
+            caches[zone_id] = item
         except Exception:  # noqa: BLE001 - diagnostics must not break the response
             pass
 
@@ -582,10 +623,16 @@ def refresh_live_weather(
             continue
         try:
             record = build_live_record(zone_id, metrics, now_epoch=now_epoch, observation=observation)
-            store.put_weather_cache(
-                build_weather_cache_item(observation, zone_id=zone_id, now_epoch=now_epoch, record=record)
-            )
+            item = build_weather_cache_item(observation, zone_id=zone_id, now_epoch=now_epoch, record=record)
+            store.put_weather_cache(item)
+            caches[zone_id] = item
             ingest(record, observation)
+        except ValidationError as exc:
+            # The provider answered, but with a value FloodPulse refuses to store. Naming that
+            # "ingest_failed" pointed a viewer at FloodPulse's own ingest path for what is bad
+            # provider data - the wrong subsystem, and the wrong place to go looking.
+            record_failure(zone_id, f"implausible_provider_value: {exc}")
+            continue
         except Exception as exc:  # noqa: BLE001 - one bad zone must not stop the others
             record_failure(zone_id, f"ingest_failed: {type(exc).__name__}: {exc}")
             continue
@@ -602,6 +649,7 @@ def refresh_live_weather(
         skipped_fresh=tuple(fresh),
         failed=tuple(failed),
         error=error,
+        caches=caches,
     )
 
 
@@ -632,17 +680,19 @@ def weather_view(
         attempts[zone_id] = None if attempt is None else int(attempt)
         observations[zone_id] = None if observation is None else int(observation)
         current[zone_id] = observation_is_current(observation, refresh_seconds=refresh_seconds)
-        failed[zone_id] = (cache or {}).get("last_attempt_error")
-        ok[zone_id] = (cache or {}).get("last_attempt_ok")
-    # With no live zone there is no provider reading anywhere in the fleet, so the block must
-    # not claim rainfall is REAL: in simulator mode (and with the provider switched off) every
-    # metric is generated, and the note has to describe the rainfall this fleet actually uses.
-    live = bool(zones)
+        failed[zone_id] = cache.get("last_attempt_error") if isinstance(cache, Mapping) else None
+        ok[zone_id] = cache.get("last_attempt_ok") if isinstance(cache, Mapping) else None
+    # The provenance of the metrics this block describes is a property of the *fleet*, not of the
+    # refresh switch. With FLOODPULSE_WEATHER=off on a live fleet the cards keep serving the
+    # provider rainfall already stored, so claiming "every channel is SIMULATED" there would
+    # contradict the top-level provenance in the same body. ``enabled: false`` and the refresh
+    # reason are what say the refresh is switched off.
+    live_fleet = mode == ZONE_MODE_LIVE
     return {
         "provider": WEATHER_PROVIDER,
         "attribution": WEATHER_ATTRIBUTION,
         "docs": WEATHER_DOCS_URL,
-        "enabled": live,
+        "enabled": bool(zones),
         "refresh_seconds": int(refresh_seconds),
         "live_zones": [str(zone["zone_id"]) for zone in zones],
         # freshness contract, stated once for the whole fleet:
@@ -658,8 +708,8 @@ def weather_view(
         # per zone, like the per-zone blocks: did the last provider attempt succeed?
         "last_attempt_ok": ok,
         "last_refresh": outcome.as_view(refresh_seconds=refresh_seconds) if outcome else None,
-        "hydraulics_note": HYDRAULICS_NOTE if live else SIMULATED_HYDRAULICS_NOTE,
-        "metric_sources": dict(METRIC_SOURCES_LIVE if live else METRIC_SOURCES_SIMULATED),
+        "hydraulics_note": HYDRAULICS_NOTE if live_fleet else SIMULATED_HYDRAULICS_NOTE,
+        "metric_sources": dict(METRIC_SOURCES_LIVE if live_fleet else METRIC_SOURCES_SIMULATED),
     }
 
 

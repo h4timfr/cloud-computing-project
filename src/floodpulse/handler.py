@@ -1076,10 +1076,18 @@ def _zone_view(
     # risk statement: the live score is computed elsewhere and says nothing about it.
     if scope.get("selection_reason") is not None:
         view["selection_reason"] = scope["selection_reason"]
-    if weather_cache is not None:
+    if isinstance(weather_cache, Mapping):
+        # A cache item is only this city's if it says so. An item copied under the wrong key (a
+        # hand-edit, a bad migration) would otherwise be served as this city's weather: another
+        # city's rainfall under this city's name is worse than no weather block at all.
+        if str(weather_cache.get("zone_id") or "") not in ("", str(zone["zone_id"])):
+            LOGGER.warning("weather.cache_zone_mismatch zone_id=%s", zone["zone_id"])
+            weather_cache = None
+    if isinstance(weather_cache, Mapping):
         age = cache_age_seconds(weather_cache, now_epoch)
         attempt = attempt_age_seconds(weather_cache, now_epoch)
         observation = observation_age_seconds(weather_cache, now_epoch)
+        stored_sources = weather_cache.get("metric_sources")
         view["weather"] = {
             "provider": weather_cache.get("provider", WEATHER_PROVIDER),
             "observed_at": weather_cache.get("observed_at"),
@@ -1109,7 +1117,9 @@ def _zone_view(
             "rainfall_mm_per_hr": weather_cache.get("rainfall_mm_per_hr"),
             "soil_moisture_m3m3": weather_cache.get("soil_moisture_m3m3"),
             "soil_saturation_pct": weather_cache.get("soil_saturation_pct"),
-            "metric_sources": dict(weather_cache.get("metric_sources") or sources),
+            # A stored metric_sources that is not an object (a string, a list) is ignored rather
+            # than merged: it used to raise out of the zone view and 500 the whole board.
+            "metric_sources": dict(stored_sources if isinstance(stored_sources, Mapping) else sources),
         }
     if latest is None:
         return view
@@ -1292,13 +1302,24 @@ def _refresh_weather(
         else:
             LOGGER.info("weather refresh outcome: %s", json.dumps(summary, sort_keys=True))
 
-    try:
-        caches = {
-            str(zone["zone_id"]): store.get_weather_cache(str(zone["zone_id"]))
-            for zone in live_weather_zones(mode, env)
-        }
-    except Exception:  # noqa: BLE001 - never fail the whole response for a cache read
-        LOGGER.exception("weather cache read failed")
+    # Reuse the items the refresh pass already read (and, for every zone it wrote, the items it
+    # wrote). Two reasons: 12 zones cost one read each per poll instead of two, and the block a
+    # viewer sees is built from the same values the refresh decision was made on - a second read
+    # could report "fresh" next to a refresh that just failed. Only when there is no outcome (the
+    # provider is off, or the refresh never ran) is the cache read here, one zone at a time so a
+    # single unreadable item cannot blank the block for all twelve.
+    caches: dict[str, Any] = dict(getattr(outcome, "caches", None) or {})
+    for zone in live_weather_zones(mode, env):
+        zone_id = str(zone["zone_id"])
+        if zone_id in caches:
+            continue
+        try:
+            caches[zone_id] = store.get_weather_cache(zone_id)
+        except Exception as exc:  # noqa: BLE001 - one unreadable cache must not blank the fleet
+            LOGGER.warning(
+                "weather.cache_read_failed zone_id=%s error=%s", zone_id, type(exc).__name__
+            )
+            caches[zone_id] = None
 
     return outcome, caches
 

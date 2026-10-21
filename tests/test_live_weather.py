@@ -9,8 +9,10 @@ from __future__ import annotations
 from unittest import mock
 import json
 import logging
+import math
 import sys
 import unittest
+import urllib.parse
 
 sys.path.insert(0, "src")
 
@@ -869,6 +871,262 @@ class LiveZonesEndpointTest(unittest.TestCase):
         self.assertNotIn("FLOODPULSE", captured.output[0])
         self.assertNotIn("x-fp-key", captured.output[0])
         self.assertEqual(payload["weather"]["last_refresh"]["error"], logged["error"])
+
+
+class CacheItemRobustnessTest(unittest.TestCase):
+    """A cache item FloodPulse did not write must not be able to take the board down.
+
+    Proven by the M17 weather/cache audit against the deployed handler: one non-mapping value at
+    ``ZONE#<zone>/WEATHER#CACHE`` raised out of the zone view and made ``GET /zones`` answer 500
+    for all twelve cities, and one zone's unreadable cache blanked the freshness block for every
+    zone. Reachability is low (the shipped writers only store dicts), which is why the audit rated
+    these P2 - but the failure mode is a public route serving nothing, so each one is pinned here.
+    """
+
+    def setUp(self):
+        self.client = FakeClient()
+
+    def zones(self, store, *, now_epoch=NOW, env=None):
+        status, payload = dispatch(
+            "GET", "/zones", store=store, now_epoch=now_epoch,
+            env=env or dict(LIVE_ENV), weather_client=self.client,
+        )
+        self.assertEqual(status, 200)
+        return payload
+
+    def corrupt_city_weather_cache(self, value, *, refuse_write=False):
+        class CorruptStore(LocalStore):
+            def get_weather_cache(self, zone_id):
+                if zone_id == CITY:
+                    return value
+                return super().get_weather_cache(zone_id)
+
+            if refuse_write:
+                def put_weather_cache(self, item):
+                    if item.get("zone_id") == CITY:
+                        raise RuntimeError("cache write failed")
+                    return super().put_weather_cache(item)
+
+        return CorruptStore()
+
+    def test_a_stale_unreadable_cache_item_is_replaced_rather_than_served(self):
+        """A corrupt item means "refresh this zone". Once refreshed, the board serves the real
+        observation for every city - the corrupt value is replaced, not reported and not deleted."""
+        for value in ("WEATHER#CACHE", ["not", "an", "item"], 5, True):
+            with self.subTest(value=value):
+                store = self.corrupt_city_weather_cache(value)
+                payload = self.zones(store)
+                self.assertEqual(payload["zone_count"], LIVE_FLEET)
+                self.assertEqual(payload["weather"]["last_refresh"]["failed"], [])
+                chennai = next(zone for zone in payload["zones"] if zone["zone_id"] == CITY)
+                # this poll's observation, not the unreadable item and not another city's numbers
+                self.assertEqual(chennai["weather"]["rainfall_mm_per_hr"], 12.5)
+
+    def test_an_unwritable_unreadable_cache_item_leaves_one_zone_without_a_block(self):
+        store = self.corrupt_city_weather_cache("WEATHER#CACHE", refuse_write=True)
+        payload = self.zones(store)
+        chennai = next(zone for zone in payload["zones"] if zone["zone_id"] == CITY)
+        self.assertNotIn("weather", chennai)
+        self.assertEqual(payload["weather"]["last_refresh"]["failed"], [CITY])
+        others = [zone for zone in payload["zones"] if zone["zone_id"] != CITY]
+        self.assertEqual(len(others), LIVE_FLEET - 1)
+        self.assertTrue(all("weather" in zone for zone in others))
+
+    def test_a_cache_item_that_is_not_an_object_does_not_break_the_direct_call(self):
+        """The engine functions themselves, not just the route: no attribute error either way."""
+        for value in ("WEATHER#CACHE", 5, True, ["x"], None):
+            with self.subTest(value=value):
+                self.assertIsNone(live_weather.cache_age_seconds(value, NOW))
+                self.assertIsNone(live_weather.attempt_age_seconds(value, NOW))
+                self.assertIsNone(live_weather.observation_age_seconds(value, NOW))
+                self.assertTrue(live_weather.needs_refresh(value, NOW, WEATHER_REFRESH_SECONDS))
+
+    def test_a_metric_sources_field_that_is_not_an_object_is_ignored(self):
+        for value in ("REAL", ["REAL"], 7):
+            with self.subTest(value=value):
+                store = self.corrupt_city_weather_cache(
+                    {"pk": f"ZONE#{CITY}", "sk": WEATHER_CACHE_SORT_KEY, "zone_id": CITY,
+                     "fetched_at_epoch": int(NOW), "last_attempt_epoch": int(NOW),
+                     "metric_sources": value}
+                )
+                payload = self.zones(store)
+                chennai = next(zone for zone in payload["zones"] if zone["zone_id"] == CITY)
+                # the fleet's own provenance is used rather than a value that cannot be read
+                self.assertEqual(chennai["weather"]["metric_sources"], METRIC_SOURCES_LIVE)
+
+    def test_a_fresh_cache_item_for_another_city_is_not_served_under_this_city(self):
+        """Another city's rainfall under this city's name is worse than no weather block: the
+        item is fresh (so this poll reuses it) but it belongs to a different zone."""
+        other = next(
+            str(zone["zone_id"]) for zone in LIVE_ZONE_DEFINITIONS if str(zone["zone_id"]) != CITY
+        )
+        store = self.corrupt_city_weather_cache(
+            {"pk": f"ZONE#{CITY}", "sk": WEATHER_CACHE_SORT_KEY, "zone_id": other,
+             "fetched_at_epoch": int(NOW), "last_attempt_epoch": int(NOW),
+             "rainfall_mm_per_hr": 99.0}
+        )
+        payload = self.zones(store)
+        chennai = next(zone for zone in payload["zones"] if zone["zone_id"] == CITY)
+        self.assertNotIn("weather", chennai)
+        # the item was fresh, so this poll reused it (and refused to serve it) rather than
+        # fetching and replacing it: the mismatch is a data problem, not a staleness problem
+        self.assertIn(CITY, payload["weather"]["last_refresh"]["already_fresh"])
+
+    def test_one_unreadable_cache_read_costs_one_zone_not_the_whole_block(self):
+        """The refresh's own read is per zone; a failure there must not blank eleven cities."""
+
+        class HalfBlindStore(LocalStore):
+            def get_weather_cache(self, zone_id):
+                if zone_id == CITY:
+                    raise RuntimeError("cache read failed")
+                return super().get_weather_cache(zone_id)
+
+            def put_weather_cache(self, item):
+                if item.get("zone_id") == CITY:
+                    raise RuntimeError("cache write failed")
+                return super().put_weather_cache(item)
+
+        payload = self.zones(HalfBlindStore())
+        blocks = [zone for zone in payload["zones"] if "weather" in zone]
+        self.assertEqual(len(blocks), LIVE_FLEET - 1)
+        self.assertEqual(payload["weather"]["last_refresh"]["failed"], [CITY])
+        # and the failed zone is still served, with its reading from before
+        chennai = next(zone for zone in payload["zones"] if zone["zone_id"] == CITY)
+        self.assertEqual(chennai["zone_id"], CITY)
+
+    def test_a_cache_item_dated_in_the_future_is_stale_and_its_age_is_unknown(self):
+        """Clamping a future anchor to zero said "fetched 0 seconds ago" and used up the window."""
+        ahead = {"last_attempt_epoch": int(NOW + 3600), "fetched_at_epoch": int(NOW + 3600)}
+        with self.assertLogs("floodpulse.live_weather", level="WARNING") as captured:
+            self.assertIsNone(live_weather.attempt_age_seconds(ahead, NOW))
+            self.assertIsNone(live_weather.cache_age_seconds(ahead, NOW))
+            self.assertTrue(live_weather.needs_refresh(ahead, NOW, WEATHER_REFRESH_SECONDS))
+        self.assertIn("clock_skew", captured.output[0])
+
+    def test_the_provider_is_not_asked_again_because_of_a_future_anchor(self):
+        store = LocalStore()
+        store.put_weather_cache(
+            {"pk": f"ZONE#{CITY}", "sk": WEATHER_CACHE_SORT_KEY, "zone_id": CITY,
+             "last_attempt_epoch": int(NOW + 3600), "fetched_at_epoch": int(NOW + 3600),
+             "rainfall_mm_per_hr": 1.0}
+        )
+        outcome = refresh_live_weather(
+            store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
+            ingest=lambda record, obs: None, client=self.client,
+        )
+        self.assertTrue(outcome.attempted, "a future anchor must not look like a used window")
+        self.assertIn(CITY, outcome.refreshed)
+
+    def test_a_poll_that_needs_no_refresh_reads_the_cache_items_exactly_once(self):
+        """Measured before this change: 24 cache GetItems per poll, 12 of them duplicates - the
+        refresh pass read every anchor to decide, then the response built its blocks from a
+        second round of reads that could disagree with the decision it was reporting."""
+        store = LocalStore()
+        refresh_live_weather(
+            store, mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
+            ingest=lambda record, obs: None, client=FakeClient(),
+        )
+
+        class CountingStore(LocalStore):
+            reads = 0
+
+            def get_weather_cache(self, zone_id):
+                CountingStore.reads += 1
+                return super().get_weather_cache(zone_id)
+
+        counting = CountingStore()
+        counting._items = store._items
+        payload = self.zones(counting, now_epoch=NOW + 60)
+        self.assertEqual(payload["weather"]["last_refresh"]["attempted"], False)
+        # one read per live zone is the floor: the refresh cannot know the window is unused
+        # without reading the anchor it is anchored on
+        self.assertEqual(CountingStore.reads, LIVE_FLEET, "the duplicate read pass is back")
+        self.assertTrue(all("weather" in zone for zone in payload["zones"]))
+
+    def test_the_provenance_block_describes_the_fleet_not_the_refresh_switch(self):
+        """With the provider switched off on a live fleet the cards keep serving the provider
+        rainfall already stored, so the block must not claim every channel is SIMULATED - that
+        contradicted the top-level provenance in the same response."""
+        from floodpulse.config import (
+            HYDRAULICS_NOTE,
+            METRIC_SOURCES_SIMULATED,
+            SIMULATED_HYDRAULICS_NOTE,
+        )
+
+        off_live = live_weather.weather_view(
+            mode=ZONE_MODE_LIVE, outcome=None, caches={},
+            env={WEATHER_MODE_ENV: WEATHER_MODE_OFF}, now_epoch=NOW,
+        )
+        self.assertFalse(off_live["enabled"], "the refresh is off and the block says so")
+        self.assertEqual(off_live["metric_sources"], METRIC_SOURCES_LIVE)
+        self.assertEqual(off_live["metric_sources"]["rainfall_mm_per_hr"], "REAL")
+        self.assertEqual(off_live["hydraulics_note"], HYDRAULICS_NOTE)
+
+        demo = live_weather.weather_view(
+            mode="simulated", outcome=None, caches={}, env={}, now_epoch=NOW,
+        )
+        self.assertFalse(demo["enabled"])
+        self.assertEqual(demo["metric_sources"], METRIC_SOURCES_SIMULATED)
+        self.assertEqual(demo["hydraulics_note"], SIMULATED_HYDRAULICS_NOTE)
+
+        # end to end: the zone blocks and the weather block agree about the rainfall
+        status, payload = dispatch(
+            "GET", "/zones", store=LocalStore(), now_epoch=NOW,
+            env={ZONE_MODE_ENV: ZONE_MODE_LIVE, WEATHER_MODE_ENV: WEATHER_MODE_OFF},
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["weather"]["enabled"])
+        self.assertEqual(payload["weather"]["last_refresh"]["reason"], "disabled")
+        for zone in payload["zones"]:
+            self.assertEqual(zone["metric_sources"], METRIC_SOURCES_LIVE)
+            self.assertEqual(
+                zone["metric_sources"]["rainfall_mm_per_hr"],
+                payload["weather"]["metric_sources"]["rainfall_mm_per_hr"],
+            )
+
+    def test_an_implausible_provider_value_is_named_as_a_provider_problem(self):
+        """The error used to read "ingest_failed", pointing a viewer at FloodPulse's own ingest
+        path for what is bad provider data."""
+        bad = observation(CITY, rain=-5.0)
+        outcome = refresh_live_weather(
+            LocalStore(), mode=ZONE_MODE_LIVE, env=LIVE_ENV, now_epoch=NOW,
+            ingest=lambda record, obs: None, client=FakeClient({CITY: bad}),
+        )
+        self.assertEqual(outcome.failed, (CITY,))
+        self.assertIn("implausible_provider_value", str(outcome.error))
+        self.assertNotIn("ingest_failed", str(outcome.error))
+
+    def test_no_two_live_cities_share_a_coordinate(self):
+        """The fleet is served by one batched request, so per-city separation is the only thing
+        keeping the provider's answer for one city off another city's card."""
+        pairs = [
+            (float(zone["latitude"]), float(zone["longitude"])) for zone in LIVE_ZONE_DEFINITIONS
+        ]
+        self.assertEqual(len(pairs), len(set(pairs)), "two cities share a coordinate pair")
+        for index, (lat_a, lon_a) in enumerate(pairs):
+            for lat_b, lon_b in pairs[index + 1 :]:
+                # equirectangular approximation: good to well under a percent at these distances,
+                # and the threshold below is 10 km, not a metre
+                km = 111.0 * (
+                    (lat_a - lat_b) ** 2
+                    + (math.cos(math.radians((lat_a + lat_b) / 2.0)) * (lon_a - lon_b)) ** 2
+                ) ** 0.5
+                self.assertGreater(km, 10.0, "cities too close to tell apart in one request")
+
+    def test_the_batched_request_carries_every_city_exactly_once(self):
+        zones = live_weather.weather_zones(ZONE_MODE_LIVE, LIVE_ENV)
+        url = weather.build_url(zones)
+        query = urllib.parse.parse_qs(url.split("?", 1)[1])
+        latitudes = query["latitude"][0].split(",")
+        longitudes = query["longitude"][0].split(",")
+        self.assertEqual(len(latitudes), len(zones))
+        self.assertEqual(len(longitudes), len(zones))
+        for zone in zones:
+            with self.subTest(zone_id=zone["zone_id"]):
+                latitude = f"{float(zone['latitude']):.4f}"
+                longitude = f"{float(zone['longitude']):.4f}"
+                self.assertEqual(latitudes.count(latitude), 1)
+                self.assertEqual(longitudes.count(longitude), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover
