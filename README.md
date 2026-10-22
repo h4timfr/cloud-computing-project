@@ -3849,14 +3849,33 @@ checks pin.
 
 ### Response compression
 
-The deployed API stage had `MinimumCompressionSize` unset, so the board's first paint travelled
-uncompressed. Measured against the live API: `GET /zones` is 49,583 bytes uncompressed and 5,554 bytes
-with gzip - an 89% saving on the request the page repeats every five seconds per visitor. `infra/deploy.ps1`
-now sets the stage to compress responses above 1,024 bytes, which leaves the small answers
-(`/zones/<id>/history` at 933 bytes, `/incidents` at 4,299 bytes) alone, because a ~20-byte gzip envelope
-is not worth the CPU there. The setting is applied the next time that script runs, and it is idempotent:
-it reads the stage, compares, and reports "already enabled" when the value matches. The dry run prints
-exactly the command it would run.
+The board's first paint travelled uncompressed: measured against the live API, `GET /zones` is 49,583
+bytes of JSON (50,365 bytes on a later sample as the stored data grew) and 5,554 bytes gzipped - an 89%
+saving on the request the page repeats every five seconds per visitor. The obvious place to fix that is
+the API stage, and the stage object does carry `MinimumCompressionSize` (`get-stage` returns it as
+`null` on this deployment), but the AWS CLI cannot set it: `apigatewayv2 update-stage` has no such
+parameter (the command fails with `Unknown options: --minimum-compression-size, 1024`, and the same
+field is absent from the command's own `--generate-cli-skeleton`). Rather than enable a setting by hand
+in a console - which would leave the deployed state and the repository disagreeing - the integration
+does it, in one place and under test:
+
+* `_maybe_compress()` runs at the single response boundary in `floodpulse.handler`, after the route has
+  produced its body.
+* It acts only when the caller's own `Accept-Encoding` asks for gzip (an explicit `gzip;q=0` is honoured
+  as a refusal), only on bodies at or above `GZIP_FLOOR_BYTES` (1,024 bytes), and only when the gzipped
+  body is actually smaller.
+* A caller that does not ask for gzip receives the exact bytes it received before - the tests assert
+  byte-for-byte equality, which is what makes this a safe change for every existing client, including
+  this repository's own tools (`live_acceptance.py`, `history_analysis.py` and the deployment
+  verifiers all send no `Accept-Encoding` and are unaffected).
+* The floor leaves the small answers alone (`/zones/<id>/history` at 933 bytes, `/incidents` at 4,299
+  bytes, every error body), where a ~20-byte gzip envelope is not worth the CPU.
+
+`tools/test_compression`-style coverage lives in `tests/test_compression.py`: the floor's value, the
+`Accept-Encoding` parsing (including `q=0` and `*`), the identity path, an incompressible body, and an
+end-to-end round trip through `lambda_handler` with the clock frozen - the compressed board must
+decompress to exactly the board a caller without the header receives, and the wire form must be less
+than half the size after base64's own overhead.
 
 ### Performance, as measured
 

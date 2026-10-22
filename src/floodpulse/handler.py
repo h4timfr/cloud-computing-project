@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import json
 import logging
 import math
@@ -2161,6 +2162,67 @@ def _respond(status: int, payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# Below this many bytes a gzip envelope is not worth the CPU: a city's history is ~933 bytes and the
+# incident list ~4.3 kB (measured), while the board itself is ~50 kB, which is what this is for.
+GZIP_FLOOR_BYTES = 1024
+
+
+def _accepts_gzip(accept_encoding: str | None) -> bool:
+    """Whether the caller asked for gzip, honouring an explicit ``gzip;q=0`` refusal."""
+    if not accept_encoding:
+        return False
+    for part in str(accept_encoding).lower().split(","):
+        token, _, parameters = part.strip().partition(";")
+        if token.strip() not in ("gzip", "*"):
+            continue
+        quality = 1.0
+        for parameter in parameters.split(";"):
+            name, _, value = parameter.partition("=")
+            if name.strip() == "q":
+                try:
+                    quality = float(value.strip())
+                except ValueError:
+                    quality = 0.0
+        if quality > 0:
+            return True
+    return False
+
+
+def _maybe_compress(response: dict[str, Any], event: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Gzip a large JSON body when the caller says it can take one.
+
+    Measured against the live API: ``GET /zones`` is 49,583 bytes of JSON and 5,554 bytes gzipped
+    (89% smaller), and the board asks for it every five seconds. The stage cannot be told to do this
+    for us - an HTTP API's stage object carries ``MinimumCompressionSize``, but the AWS CLI's
+    ``apigatewayv2 update-stage`` does not accept the parameter ("Unknown options") - so the
+    integration does it, where a test can pin it and the repository stays the whole truth about the
+    deployed behaviour. A caller that does not ask for gzip gets the exact bytes it got before, so no
+    route's contract changes for any existing client; the floor keeps the small answers (a city's
+    history, the incident list, every error body) uncompressed, because a ~20 byte gzip envelope is
+    not worth the CPU there.
+    """
+    if not event:
+        return response
+    headers = event.get("headers") or {}
+    if not _accepts_gzip(_header_value(headers, "accept-encoding")):
+        return response
+    body = response.get("body")
+    if not isinstance(body, str) or len(body) < GZIP_FLOOR_BYTES:
+        return response
+    raw = body.encode("utf-8")
+    compressed = gzip.compress(raw, 6)
+    if len(compressed) >= len(raw):
+        return response
+    carried = dict(response.get("headers") or {})
+    carried["content-encoding"] = "gzip"
+    return {
+        "statusCode": response.get("statusCode"),
+        "headers": carried,
+        "body": base64.b64encode(compressed).decode("ascii"),
+        "isBase64Encoded": True,
+    }
+
+
 def source_ip_of(event: Mapping[str, Any]) -> str | None:
     """The caller's source address as API Gateway reports it, or ``None``.
 
@@ -2191,7 +2253,9 @@ def lambda_handler(event: Mapping[str, Any], context: Any = None) -> dict[str, A
     try:
         method, path, query, body, headers = _parse_event(event)
     except ValidationError as exc:
-        return _respond(400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason})
+        return _maybe_compress(
+            _respond(400, {"error": "invalid_body", "field": exc.field, "detail": exc.reason}), event
+        )
 
     try:
         status, payload = dispatch(
@@ -2206,8 +2270,8 @@ def lambda_handler(event: Mapping[str, Any], context: Any = None) -> dict[str, A
         )
     except Exception:  # noqa: BLE001 - never leak internals to the caller
         LOGGER.exception("unhandled error while processing request")
-        return _respond(500, {
+        return _maybe_compress(_respond(500, {
             "error": "internal_error",
             "detail": "the request could not be processed",
-        })
-    return _respond(status, payload)
+        }), event)
+    return _maybe_compress(_respond(status, payload), event)
