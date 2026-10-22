@@ -3759,3 +3759,183 @@ redeployed.
   byte-identical to `src/`, and `live_acceptance.py` passes 62/0 against the live API afterwards, including
   `POST /readings` still answering 401 without its key. The front-end deploy reported Lambda, API Gateway,
   DynamoDB, IAM, SNS and log groups untouched.
+
+## M17 - submission-grade finalisation (no new AWS resources; no scientific claim changed)
+
+M17 is not a feature milestone. It is a hardening and verification pass over everything M1-M16 built: a
+full inventory of the repository, the deployed AWS state and the shipped page; a defect backlog graded
+P0-P4; one audit per route and per subsystem; and then nine small commits that fix what those audits
+proved broken and document what they proved merely different.
+
+Nothing in M17 changes what FloodPulse claims. `heuristic-v1` keeps its thresholds, its weights and its
+band edges; there is still no forecast, no probability and no calibrated hydrology anywhere in the
+system; REAL, MODEL_DERIVED and SIMULATED stay attached to exactly the fields they were attached to
+before; no new AWS resource was created, no IAM policy was widened, and no scientific number moved.
+
+### The nine commits, and what each one proved
+
+| Commit | What the audit proved | What changed |
+| --- | --- | --- |
+| `2838a56` | `POST /subscriptions` throttled on the address alone, so a stranger could spend a third party's hourly slots and read back how many attempts that address had made | a caller counter (`SUBSRC#<sha256>`, hashed, TTL'd) is claimed before the address counter; both refusals return one byte-identical body, so a spent caller cannot make a stranger's address look busy or read one out; the domain half of an address is case-folded everywhere |
+| `7996985` | `str.isdigit()` accepts superscript, circled, full-width and Arabic-Indic digits that `int()` refuses, so `?minutes=` and an incident id could reach a bare `int()` and escape as `internal_error` | both routes accept ASCII digits only (`+60` stays refused, as the documented contract had it); a ~309-digit metric literal and a 39-digit `meta.seq` became fielded 400s instead of 500s |
+| `8a20a40` | "at most one open incident per zone" was a read-then-write race, and a stale view could erase a newer escalation | the open-incident pointer item makes the fact atomic; a version guard refuses a write built from an older view; a refused write deliberately skips the alert and the next reading re-decides against the stored record |
+| `1f956a6` | a non-finite reading was scored and classified `CRITICAL`, which is a claim the input does not support | a non-finite reading is refused at the door, never stored, never served, and never scored |
+| `e065d94` | one unreadable weather-cache item could 500 the whole board, and a foreign `zone_id` in a cache item would have served another city's rainfall | every cache read is guarded (non-mapping item, non-object `metric_sources`, future-dated anchor, foreign zone), each degrading to that one city; the refresh reads each anchor exactly once (12 reads per poll, the irreducible floor, pinned by test) |
+| `3948d94` | switching city mid-fetch could leave the previous city's retrospective panel painted under the new city's name | the route change repaints before it fetches, the history fetch refuses a zone that no longer matches, and the retry backoff is keyed per city |
+| `4363f01` | with every driver at zero the page still named "the largest contributor"; a printed breakdown could disagree with its own printed total by a rounding step | a driver is only named when its contribution is above zero; the signed change is rounded once, so `-0.00` cannot carry a downwards arrow; the breakdown sums the values as printed and says so |
+| `24e221d` | the city picker and the window chips were rebuilt every five seconds, so a keyboard reader lost focus mid-use; the skip link routed to the Data page instead of skipping; the map was one `role="img"` with twelve unnamed links inside it | both control renderers write through one change-checked helper; a non-route fragment is no longer a route; the image role is gone and each marker keeps its own accessible name; `#history-summary` is a live region; the incident scroll box is focusable; the "outside this window" rows were raised to the opacity the closed rows already use (measured 4.22:1 at 0.74, 4.52:1 at 0.78, floor 4.5:1) |
+| `05ac2f0` | an insufficient window reported `trend: null` in Python and `"INSUFFICIENT"` in JavaScript; the page ignored the nested rainfall fallback the server applies; a stored `risk_class` was trimmed on one side only | one word for one absent direction; both sides fall back to `readings.rainfall_mm_per_hr` when the top-level value is unusable; both sides trim a stored label and treat a blank one as absent |
+
+### Two rules M17 wrote down
+
+**A refused write is not a computed transition.** When the incident version guard refuses a write, the
+response reports the state that is actually stored, never the transition that would have happened. The
+alert is deliberately not sent, and the next reading decides again from the stored record. This is the
+reason the pointer item exists at all: DynamoDB cannot express "no open incident exists for this zone"
+without one, and the pointer is what makes "at most one open incident" an atomic fact rather than a
+hope. The Lambda has no `DeleteItem` permission, so the open slot and the weather cache are released by
+rewriting, never by deleting - a constraint that turned out to be a useful one.
+
+**One city's bad data cannot cost the board.** A weather-cache item that is corrupt, foreign or
+future-dated degrades exactly one city's freshness block and is logged (`weather.cache_read_failed`,
+`weather_cache_clock_skew`); the other eleven cities keep their scores. The same shape is applied to the
+zones view: one zone with an unreadable `metric_sources` no longer blanks the fleet.
+
+### What the page is allowed to say
+
+* A driver is named ("the largest contributor", "the main driver") only when its contribution is above
+  zero. An all-zero reading still shows its score, its band and its metric values, and names no driver.
+* A printed breakdown sums the values as printed and says so in words; the score itself is computed from
+  the unrounded values.
+* A direction is only claimed when the least-squares slope leaves the documented ± 0.02 per hour band,
+  and a window shorter than three valid samples or ten minutes says how many samples it has instead.
+* A window chip (1H, 6H, 24H) is offered when the *requested* window is what the document was asked
+  for, because a sampled window can never span its full width - measured at 1,414 of 1,440 minutes for
+  the 24-hour chip. The contract "a document asked for 60 minutes cannot offer 6H or 24H" is pinned in
+  both `tools/temporal_check.mjs` and `tools/dashboard_scenarios.mjs`.
+* The retrospective panel repaints on a city switch before it fetches, so no value on screen is ever
+  attributed to the wrong city.
+
+### Accessibility
+
+Six defects, all reproduced and all now pinned by a check:
+
+1. **Focus survives a poll.** The city picker, the window chips, the band strip and the stat rows write
+   through one change-checked helper (`swapHtml`), so a control that has not changed is not rebuilt and
+   the reader keeps their place. The rule is pinned in `tools/dashboard_check.mjs`, and the behaviour
+   needs a real browser to confirm - see the last section.
+2. **The skip link skips.** `#main` used to be parsed as a route, so "Skip to main content" sent a
+   reader on the Data page back to the Overview. A fragment that is not a route is now ignored, and the
+   browser's own jump-and-focus on `<main id="main" tabindex="-1">` works as shipped.
+3. **The map's markers are named.** The map was a single `role="img"` subtree with twelve links inside
+   it; each marker keeps its own accessible name and the image role is gone.
+4. **The chart readout is a live region.** `#history-summary` is `role="status" aria-live="polite"`, so
+   the arrow-key readout is announced instead of only being drawn.
+5. **The sideways-scrolling incident table can be reached.** It is focusable and shares the page's focus
+   outline.
+6. **Faded rows clear the contrast floor.** `opacity: 0.74` measured 4.22:1 for the muted text inside it
+   (floor 4.5:1 for body text); the value is now the 0.78 the closed-incident rows already use, measured
+   4.52:1. Every other measured pair passes: risk-class text 8.92-11.74:1, `slate-300` at row opacity
+   0.78 at 7.37:1 or better. The measurement lives in `build/m17/contrast_m17.py` and composites the
+   declared tokens over the declared surfaces.
+
+Two more presentation fixes from the same audit: the empty incident rows and the "loading incidents" row
+are real rows with a cell each, and `#ov-stats` is a labelled `role="group"` rather than an `aria-label`
+on a role-less `div`. A copy conflict the audit raised - the subscribe note promising a confirmation
+email while the delivery panel says an email reaching an inbox is not confirmed here - is *considered
+and deliberately not changed*: the first describes the request the page makes, the second describes what
+this page can observe, and the wording is a verbatim requirement of the M10 brief that three harness
+checks pin.
+
+### Response compression
+
+The deployed API stage had `MinimumCompressionSize` unset, so the board's first paint travelled
+uncompressed. Measured against the live API: `GET /zones` is 49,583 bytes uncompressed and 5,554 bytes
+with gzip - an 89% saving on the request the page repeats every five seconds per visitor. `infra/deploy.ps1`
+now sets the stage to compress responses above 1,024 bytes, which leaves the small answers
+(`/zones/<id>/history` at 933 bytes, `/incidents` at 4,299 bytes) alone, because a ~20-byte gzip envelope
+is not worth the CPU there. The setting is applied the next time that script runs, and it is idempotent:
+it reads the stage, compares, and reports "already enabled" when the value matches. The dry run prints
+exactly the command it would run.
+
+### Performance, as measured
+
+| Path | Bytes | Cold/warm | Notes |
+| --- | --- | --- | --- |
+| `GET /zones` | 49,583 (5,554 gzipped) | warm median 1,730 ms | the board's whole first paint, unfiltered |
+| `GET /incidents` | 4,299 | warm median 819 ms | includes the stored alert decision per incident |
+| `GET /zones/<id>/history?minutes=60` | 933 | warm median 659 ms | one city, one hour |
+
+CloudWatch over the same traffic: p50 164 ms, p90 2,845 ms, max 5,568 ms, four cold starts, peak memory
+99 MB of the 256 MB configured. The p50/p90 spread is the honest shape of a Python Lambda with no
+provisioned concurrency: a cold start or a concurrent weather refresh dominates the tail, and the answer
+to it is the client's own caching and retry behaviour rather than a bigger instance. The page fetches
+`/zones` on a 5-second poll, keeps the last good board on screen while a poll is in flight, and backs a
+city off for 45 seconds after its history fetch fails instead of hammering it; the retry button is there
+for a reader who would rather not wait.
+
+### The byte budget
+
+The shipped frontend has a hard ceiling of **409,600 bytes** for `index.html` + `styles.css` + `lib.js` +
+`app.js`, enforced by `build/m16_bytes.py`, which also reports line endings (a CRLF file would silently
+cost one byte per line). M17 leaves the tree at **409,501 bytes**, 99 bytes of headroom, with the
+line-ending column at zero. Getting there cost real work rather than deleting features: M17 removed 33
+entries from a dead export map in `lib.js`, routed the three control renderers (band strip, city picker,
+window chips) through one change-checked helper instead of a guard written out at each of them, merged
+two identical focus rules in `styles.css`, and tightened a dozen comments that restated their own code.
+The CSS audit (`build/m17_dead_css.py`) reported 417 selectors, of which 13 are
+built at runtime from band, trend, connection and status names - so there is no dead CSS left to reclaim
+in the stylesheet, and the budget is now held by the code that earns it.
+
+### Where the browser module and the analysis module still differ, and why
+
+The page and the analysis tool read the same stored rows. Where they differ, the difference is a
+decision, not an oversight:
+
+| Behaviour | Python (`src/floodpulse/temporal.py`) | JavaScript (`web/lib.js`) | Why it stays |
+| --- | --- | --- | --- |
+| A numeric-looking string (`"0.30 mm"`) | refused: only a strict number is a number | accepted by `toNumber`, which reads a numeric prefix | the page prefers to draw a value it can read rather than blank a chart over one dirty field, and dropping rows is the server's job; the page only ever reads this API's own output in normal operation |
+| Interval durations | truncated to whole seconds | keeps sub-second precision | reachable only with fractional stored timestamps, which the API does not produce; both sides agree on every whole-second series |
+
+Everything else the audit compared is now identical: the cleaning rules, the drop and duplicate counts,
+the window anchoring, the peak and minimum tie-break, the slope and its tolerance, the gap rule, the
+rainfall fallback, the label trimming, the band fallback and the trend vocabulary.
+
+### Read-only AWS findings, deliberately unchanged
+
+The read-only inventory found four things worth recording and none worth changing without a decision:
+
+* **Inert retired images.** About ten images from an earlier milestone's map still sit in the dashboard
+  bucket and are referenced by no shipped file. Deleting them is a user-asset deletion, so they stay.
+* **No API Gateway access logging.** The stage has no access log group. Enabling one adds a CloudWatch
+  log stream per request and therefore a cost that this project's credit budget does not need; the
+  Lambda's own log group (7-day retention) carries the operational story instead.
+* **SNS subscriber states.** One confirmed, five pending, five deleted addresses. Pending and deleted
+  endpoints are the subscribers' own state; nothing is removed on their behalf.
+* **CORS is absent from the API's own 404.** An unrouted path is answered by API Gateway itself before
+  the integration runs, so it carries no CORS headers. The five real routes all answer with the
+  allow-listed origin.
+
+### City comparison: the M18 candidate, deliberately not built
+
+A three-city comparison view was designed in M17 and **not built**, because it cannot be added inside
+the byte budget: the smallest honest version (a route, a third city slot, a shared axis and the empty
+and error states) measured against the remaining 99 bytes needs roughly 4-6 kB, and paying for it would
+mean deleting working presentation. M17 records the design instead: a `#/compare` route holding up to
+three zone ids, each panel reusing the existing per-city history fetch and the existing retrospective
+summary, one shared y-axis, and an explicit statement that the panels are retrospective and not a
+forecast. That is M18 work, and it starts with a byte reclamation pass.
+
+### What M17 did not verify
+
+Honesty about the gaps is part of the deliverable:
+
+* The keyboard and focus behaviour (finding 1 above) is pinned in the repository's DOM harness, which
+  cannot distinguish a real DOM rewrite from an identical one; the browser-level confirmation needs a
+  headless browser session, which was not available during this pass. The claim is therefore labelled
+  *harness-verified* rather than *browser-verified*.
+* The live responsive matrix (320-1600 px) was measured in the repository's own layout harness and by
+  hand in a desktop browser; it was not re-run in a second browser engine.
+* The tests, not the live system, are the evidence for every rate limit, refusal and degradation rule
+  above; the live system was verified separately for the deployed code identity, the five routes, the
+  resource inventory and the deployed page's content.
