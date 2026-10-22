@@ -2866,9 +2866,11 @@
     for (i = 0; i < L.length; i++) {
       r = L[i]; ts = tStamp(r); sc = toNumber(r && r.risk_score);
       if (ts === null || sc === null || sc < 0 || sc > 1) { bad++; continue; }
-      ra = r.rainfall_mm_per_hr;
-      if (ra === undefined && r.readings) ra = r.readings.rainfall_mm_per_hr;
-      k.push({ ts: ts, score: sc, rainfall: toNumber(ra), klass: r.risk_class || null, row: r });
+      // the nested field is the fallback when the top-level one is absent or unusable, as on the server
+      ra = toNumber(r.rainfall_mm_per_hr);
+      if (ra === null && r.readings) ra = toNumber(r.readings.rainfall_mm_per_hr);
+      k.push({ ts: ts, score: sc, rainfall: ra,
+        klass: typeof r.risk_class === 'string' && r.risk_class.trim() ? r.risk_class.trim() : null, row: r });
     }
     for (i = 0; i < k.length; i++) for (j = i + 1; j < k.length; j++) if (k[i].ts > k[j].ts) pr++;
     k.sort(function (a, b) { return a.ts - b.ts; });

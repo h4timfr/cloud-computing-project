@@ -605,10 +605,13 @@ class WindowEdgeMatrixTests(HistoryEndpointTestCase):
     def test_the_endpoint_window_reproduces_the_contract_exactly(self) -> None:
         """Every shape the fixture pins, through stored rows and the served points."""
         matrix = {
-            "empty": ([], 0, temporal.STATUS_INSUFFICIENT, temporal.REASON_NO_SAMPLES, None),
-            "one_sample": ([(0.20, 0.0)], 1, temporal.STATUS_INSUFFICIENT, temporal.REASON_TOO_FEW_SAMPLES, None),
+            # M17: an insufficient window names its trend 'INSUFFICIENT' rather than None, so both
+            # modules use one word for one absent direction.
+            "empty": ([], 0, temporal.STATUS_INSUFFICIENT, temporal.REASON_NO_SAMPLES, temporal.STATUS_INSUFFICIENT),
+            "one_sample": ([(0.20, 0.0)], 1, temporal.STATUS_INSUFFICIENT, temporal.REASON_TOO_FEW_SAMPLES,
+                           temporal.STATUS_INSUFFICIENT),
             "two_samples": ([(0.20, 0.0), (0.30, 0.0)], 2, temporal.STATUS_INSUFFICIENT,
-                            temporal.REASON_TOO_FEW_SAMPLES, None),
+                            temporal.REASON_TOO_FEW_SAMPLES, temporal.STATUS_INSUFFICIENT),
             "three_samples": ([(0.20, 0.0), (0.30, 0.0), (0.40, 0.0)], 3, temporal.STATUS_OK, None, "RISING"),
             "flat": ([(0.20, 0.0)] * 4, 4, temporal.STATUS_OK, None, "STEADY"),
             "rising": ([(0.10, 0.0), (0.16, 2.0), (0.22, 3.5), (0.31, 5.8)], 4, temporal.STATUS_OK, None, "RISING"),

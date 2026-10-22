@@ -241,16 +241,17 @@ class HistoryAnalysisTests(unittest.TestCase):
         self.assertEqual(row["samples"], 1)
         self.assertEqual(row["status"], temporal.STATUS_INSUFFICIENT)
         self.assertEqual(row["reason"], temporal.REASON_TOO_FEW_SAMPLES)
-        self.assertIsNone(row["trend"])
+        # M17: the word, not a None that meant the same thing as the status beside it
+        self.assertEqual(row["trend"], temporal.STATUS_INSUFFICIENT)
         self.assertEqual(row["duration_seconds"], 0, "one sample spans no time at all")
         self.assertIsNone(row["median_interval"])
         self.assertEqual(row["net_change"], 0.0, "one sample changed by nothing measurable")
         self.assertEqual(row["current_risk"], 0.20, "a single sample is still a real measurement")
         self.assertEqual(row["min_risk"], 0.20)
-        self.assertEqual(history_analysis.cell(row, "trend", None), "-")
+        self.assertEqual(history_analysis.cell(row, "trend", None), "INSUFFICIENT")
         self.assertEqual(history_analysis.cell(row, "median_interval", 0), "-")
         self.assertEqual(history_analysis.cell(row, "current_risk", 4), "0.2000")
-        self.assertIn('"trend": null', serialise(row))
+        self.assertIn('"trend": "INSUFFICIENT"', serialise(row))
 
     def test_an_empty_window_reports_no_samples(self) -> None:
         body = history_body([])
@@ -262,6 +263,9 @@ class HistoryAnalysisTests(unittest.TestCase):
             with self.subTest(column=key):
                 if key in ("samples", "invalid_samples"):
                     self.assertEqual(row[key], 0)
+                elif key == "trend":
+                    # M17: an empty window says INSUFFICIENT rather than printing a placeholder
+                    self.assertEqual(history_analysis.cell(row, key, decimals), "INSUFFICIENT")
                 else:
                     self.assertEqual(history_analysis.cell(row, key, decimals), "-")
 
@@ -318,13 +322,13 @@ class HistoryAnalysisTests(unittest.TestCase):
         written = json.loads(target.read_text(encoding="utf-8"))
         self.assertEqual(written["city_count"], 2)
         thin_row, healthy_row = written["cities"]
-        self.assertIsNone(thin_row["trend"])
+        self.assertEqual(thin_row["trend"], temporal.STATUS_INSUFFICIENT)
         self.assertEqual(thin_row["samples"], 1)
         self.assertEqual(healthy_row["trend"], temporal.TREND_RISING)
         self.assertEqual(healthy_row["samples"], 4)
         text = output.getvalue()
         self.assertIn("RISING", text)
-        self.assertRegex(text, r"(?m)^Chennai\s+1\s.*\s-\s")  # the thin city prints a placeholder
+        self.assertRegex(text, r"(?m)^Chennai\s+1\s.*INSUFFICIENT")  # the thin city's direction is named as such
         self.assertIn("1 rising", text)
         self.assertIn("1 unknown", text)
 

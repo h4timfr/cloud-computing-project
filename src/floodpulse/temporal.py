@@ -264,7 +264,9 @@ class Summary:
     count: int = 0
     status: str = STATUS_INSUFFICIENT
     reason: str | None = REASON_NO_SAMPLES
-    trend: str | None = None
+    # an insufficient window says INSUFFICIENT, never a bare None: the browser module uses the same
+    # word for the same absent direction, and one absent value deserves one spelling
+    trend: str = STATUS_INSUFFICIENT
     slope_per_hour: float | None = None
     net_change: float | None = None
     first_score: float | None = None

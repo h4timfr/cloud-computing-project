@@ -139,7 +139,35 @@ for (const testCase of fixture.cases) {
   });
 }
 
-/* Windows: sliced from the newest sample, never from "now". */
+/* Parity with the analysis tool on the two row-level rules the fixture cannot express, because its
+ * points are already numbers: a stored class is trimmed, and an unusable top-level rainfall falls
+ * back to the nested reading. tests/test_temporal_m16.py reads the same rows the same way. */
+check('a stored class is trimmed, as the server trims it', () => {
+  const cleaned = temporal.clean([
+    { ts_epoch: 1792400000, risk_score: 0.2, risk_class: ' WATCH ' },
+    { ts_epoch: 1792400600, risk_score: 0.24, risk_class: 'watch' },
+    { ts_epoch: 1792401200, risk_score: 0.26, risk_class: '   ' }
+  ]);
+  equal(cleaned.points[0].klass, 'WATCH', 'surrounding whitespace is not part of the label');
+  equal(cleaned.points[1].klass, 'watch', 'an unknown label is kept as stored, not re-cased');
+  equal(cleaned.points[2].klass, null, 'a blank label is no label');
+  const summary = temporal.summary(cleaned, {});
+  equal(summary.classes.join(','), 'WATCH,watch,NORMAL', 'a missing label falls back to the score band');
+});
+
+check('an unusable top-level rainfall falls back to the nested reading', () => {
+  const cleaned = temporal.clean([
+    { ts_epoch: 1792400000, risk_score: 0.2, rainfall_mm_per_hr: 'n/a',
+      readings: { rainfall_mm_per_hr: 12.5 } },
+    { ts_epoch: 1792400600, risk_score: 0.22, readings: { rainfall_mm_per_hr: 3.5 } },
+    { ts_epoch: 1792401200, risk_score: 0.24, rainfall_mm_per_hr: 7.5 }
+  ]);
+  equal(cleaned.points[0].rainfall, 12.5, 'the nested field is the fallback when the top-level is unusable');
+  equal(cleaned.points[1].rainfall, 3.5, 'the nested field is the fallback when the top-level is absent');
+  equal(cleaned.points[2].rainfall, 7.5, 'a usable top-level value wins');
+  equal(temporal.summary(cleaned, {}).maxRainfall, 12.5, 'and the fallback reaches the window');
+});
+
 check('window 1h keeps a one-hour series', () => {
   // Newest sample at +6000 s: a one-hour window therefore starts at +2400 s and keeps three of the six.
   const cleaned = temporal.clean(toPoints([[0, 0.2, 0], [600, 0.3, 0], [1200, 0.4, 0], [4800, 0.45, 0], [5400, 0.5, 0], [6000, 0.55, 0]]));

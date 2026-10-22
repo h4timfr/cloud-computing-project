@@ -96,7 +96,10 @@ class FixtureCaseTests(TemporalTestCase):
                     self.assertEqual(summary.trend, case["expect"]["trend"])
                     continue
                 if summary.status != temporal.STATUS_OK:
-                    self.assertIsNone(summary.trend, "an insufficient window named a direction")
+                    # M17: an insufficient window says so in the module's own word - the same word the
+                    # browser module uses - instead of a bare None that meant the same thing.
+                    self.assertEqual(summary.trend, temporal.STATUS_INSUFFICIENT,
+                                     "an insufficient window named a direction")
                     continue
                 # An OK window still follows the slope rule; the fixture simply does not pin
                 # the label (band_crossings pins the slope's sign instead).
@@ -251,12 +254,41 @@ class TemporalEdgeMatrixTests(TemporalTestCase):
     def analyse(self, rows, now_epoch=None):
         return temporal.analyse(rows, now_epoch=now_epoch)
 
+    def test_a_stored_class_is_trimmed_and_a_blank_one_is_absent(self) -> None:
+        """M17 parity: tools/temporal_check.mjs holds the browser module to the same two rules."""
+        series = temporal.clean_series([
+            {"ts_epoch": self.BASE, "risk_score": 0.20, "risk_class": " WATCH "},
+            {"ts_epoch": self.BASE + 600, "risk_score": 0.24, "risk_class": "watch"},
+            {"ts_epoch": self.BASE + 1200, "risk_score": 0.26, "risk_class": "   "},
+        ])
+        summary = temporal.summarise(series)
+        self.assertEqual([sample.risk_class for sample in series.samples], ["WATCH", "watch", None],
+                         "a stored label is trimmed; an unknown one is kept as stored; a blank one is absent")
+        self.assertEqual(summary.classes, ["WATCH", "watch", "NORMAL"],
+                         "a missing label falls back to the band the score is in")
+
+    def test_an_unusable_top_level_rainfall_falls_back_to_the_nested_reading(self) -> None:
+        """M17 parity: the same rows read the same way in the browser module."""
+        series = temporal.clean_series([
+            {"ts_epoch": self.BASE, "risk_score": 0.20, "rainfall_mm_per_hr": "n/a",
+             "readings": {"rainfall_mm_per_hr": 12.5}},
+            {"ts_epoch": self.BASE + 600, "risk_score": 0.22,
+             "readings": {"rainfall_mm_per_hr": 3.5}},
+            {"ts_epoch": self.BASE + 1200, "risk_score": 0.24, "rainfall_mm_per_hr": 7.5},
+        ])
+        summary = temporal.summarise(series)
+        self.assertEqual([sample.rainfall for sample in series.samples], [12.5, 3.5, 7.5])
+        self.assertEqual(summary.max_rainfall, 12.5, "the fallback value reaches the window")
+
     def test_no_samples_invent_nothing(self) -> None:
         summary = self.analyse([])
         self.assertEqual(summary.count, 0)
         self.assertEqual(summary.status, temporal.STATUS_INSUFFICIENT)
         self.assertEqual(summary.reason, temporal.REASON_NO_SAMPLES)
-        for field in ("trend", "net_change", "peak", "min", "first_score", "last_score",
+        # M17: the trend is the word, not None, because INSUFFICIENT is what "no direction exists"
+        # is called on both sides of the language boundary.
+        self.assertEqual(summary.trend, temporal.STATUS_INSUFFICIENT)
+        for field in ("net_change", "peak", "min", "first_score", "last_score",
                       "first_ts", "last_ts", "duration_seconds", "median_interval",
                       "largest_gap", "gap_limit", "max_rainfall", "newest_age_seconds"):
             with self.subTest(field=field):
@@ -268,7 +300,7 @@ class TemporalEdgeMatrixTests(TemporalTestCase):
         summary = self.analyse(self.rows((0.20, None)))
         self.assertEqual(summary.count, 1)
         self.assertEqual(summary.reason, temporal.REASON_TOO_FEW_SAMPLES)
-        self.assertIsNone(summary.trend)
+        self.assertEqual(summary.trend, temporal.STATUS_INSUFFICIENT)
         self.assertClose(summary.net_change, 0.0)
         self.assertClose(summary.peak, 0.20)
         self.assertClose(summary.min, 0.20)
@@ -280,7 +312,7 @@ class TemporalEdgeMatrixTests(TemporalTestCase):
         summary = self.analyse(self.rows((0.20, None), (0.30, None)))
         self.assertEqual(summary.count, 2)
         self.assertEqual(summary.reason, temporal.REASON_TOO_FEW_SAMPLES)
-        self.assertIsNone(summary.trend)
+        self.assertEqual(summary.trend, temporal.STATUS_INSUFFICIENT)
         self.assertClose(summary.net_change, 0.10)
         self.assertClose(summary.median_interval, 600)
         self.assertClose(summary.largest_gap, 600)
@@ -300,7 +332,7 @@ class TemporalEdgeMatrixTests(TemporalTestCase):
         self.assertEqual(summary.count, 3, "the count rule was not the one that fired")
         self.assertEqual(summary.status, temporal.STATUS_INSUFFICIENT)
         self.assertEqual(summary.reason, temporal.REASON_TOO_SHORT)
-        self.assertIsNone(summary.trend)
+        self.assertEqual(summary.trend, temporal.STATUS_INSUFFICIENT)
         # The window is still described: only the direction is withheld.
         self.assertClose(summary.peak, 0.28)
         self.assertClose(summary.net_change, 0.08)

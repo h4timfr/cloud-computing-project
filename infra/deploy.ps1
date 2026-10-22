@@ -1115,6 +1115,18 @@ if (-not $apiId) {
     } else {
         Write-Ok 'stage already exists'
     }
+    # Response compression. GET /zones is the board's whole first paint: measured at 49,583 bytes
+    # uncompressed and 5,554 bytes gzipped (an 89% saving), repeated every five seconds per visitor.
+    # 1 kB is the floor: the small answers (one city's history, the incident list) are left alone,
+    # because a ~20 byte gzip envelope is not worth the CPU for a 933 byte payload.
+    $minimumCompression = 1024
+    if ($stage -and $stage.MinimumCompressionSize -ne $minimumCompression) {
+        Invoke-AwsWrite apigatewayv2 update-stage --api-id $apiId --stage-name $StageName `
+            --minimum-compression-size $minimumCompression | Out-Null
+        Write-OkApplied "response compression enabled above $minimumCompression bytes"
+    } elseif ($stage) {
+        Write-Ok "response compression already enabled above $minimumCompression bytes"
+    }
 }
 
 # --------------------------------------------------------------------------- logs --------------------------------------------------------------------------- #
