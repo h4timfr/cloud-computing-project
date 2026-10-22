@@ -319,24 +319,36 @@ check('the rainfall chart is drawn and is labelled as a rate', () => {
   assert.match(seen.rainShape.label, /Rainfall rate over time, mm\/h/, 'the rainfall chart is not labelled as a rate');
 });
 check('both text summaries exist and describe their own chart', () => {
-  assert.match(seen.summary, /Risk score \d\.\d\d to \d\.\d\d over/, 'the risk summary does not state the range and span');
+  // M17: a window with too few usable samples describes no direction and says so in its own words; a
+  // window that can be described states the range and span. The contract is one of the two, never
+  // neither, so a live deployment whose stored history is momentarily thin is not reported as a defect.
+  assert.match(seen.summary, /Risk score \d\.\d\d to \d\.\d\d over|usable historical samples/,
+    'the risk summary neither states the range and span nor says why it cannot');
   assert.match(seen.rainSummary, /Rainfall rate|No stored rainfall reading/, 'the rainfall summary is missing');
   assert.match(seen.rainSummary, /Instantaneous rate, not an accumulation|No stored rainfall reading/, 'the rainfall summary could be read as an accumulation');
 });
 check('the change block agrees with the sentence under the chart', () => {
   const riskNow = /Risk now\s*([0-9.]+)/.exec(seen.facts);
   assert.ok(riskNow, 'the change block has no "Risk now" figure');
-  assert.match(seen.summary, new RegExp(`ending ${riskNow[1]}`), 'the summary and the change block disagree about the newest score');
+  if (/Risk score \d\.\d\d to \d\.\d\d over/.test(seen.summary)) {
+    assert.match(seen.summary, new RegExp(`ending ${riskNow[1]}`), 'the summary and the change block disagree about the newest score');
+  } else {
+    assert.match(seen.summary, /usable historical samples/,
+      'the sentence under the chart neither agrees with the change block nor says why it cannot');
+  }
   // dt and dd are separate nodes, so textContent joins them without a space: "Risk now0.23 · NORMAL".
   assert.match(seen.facts, /Net change\s*[+-]?\d/, 'the change block does not state how much changed');
   assert.match(seen.facts, /Peak\s*\d\.\d\d at \d\d:\d\d:\d\dZ/, 'the change block does not say when it peaked');
 });
-check('the window the stored history cannot cover is disabled and explains itself with the span', () => {
+check('the window the stored history cannot span is still offered, and the note states the span', () => {
   const day = seen.buttons.find((button) => button.range === '1440');
   assert.ok(day, 'there is no 24H button');
-  assert.equal(day.disabled, true, 'the 24H window is offered although the history cannot cover it');
-  assert.equal(day.explains, 'history-window-note', 'the disabled button is not tied to the note that explains it');
-  assert.match(seen.note, /24H window is not offered yet: only .+ of history so far/, 'the note does not explain the disabled window in the data\'s own words');
+  // M17: a window is offered when the document was asked for it, because a sampled history never spans
+  // its full width (measured live: 1414 of 1440 minutes). A disabled 24H button made the window
+  // unreachable forever; the note is what tells the reader how much history the document actually has.
+  assert.equal(day.disabled, false, 'a window the document asked for must stay reachable');
+  assert.match(seen.note, /\d+ samples? · .+ available|stored history covers|no history is stored yet/,
+    'the note does not state the history the document covers in the data\'s own words');
 });
 /* All measurements are taken here, at the top level, so that every check below is synchronous and a
  * failure inside it is counted rather than turned into an unhandled rejection. */
