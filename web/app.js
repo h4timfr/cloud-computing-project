@@ -145,9 +145,8 @@
     if (node.textContent !== value) node.textContent = value;
   }
 
-  /* The coverage map. Positions come from the payload's latitude and longitude and from nothing else, so
-     neither the grid's sort order nor the DOM order can move a marker. Emphasis and the panel reuse the
-     grid's own visible[] list, the payload's highest_risk_zone and stale_zone_ids. */
+  /* The coverage map: positions come from the payload's latitude and longitude and from nothing else,
+     so no sort order or DOM order can move a marker. */
   function renderMap(visible) {
     var host = el['map-markers'];
     if (!host) return;
@@ -225,8 +224,8 @@
     }) : '');
   }
 
-  /* The fleet's own highest-risk zone when the filters kept it, else the best score still visible.
-     Deliberately not "the first card": the grid's sort must not decide what the map shows. */
+  /* The fleet's own highest-risk zone when the filters kept it, else the best score still visible:
+     the grid's sort order must not decide what the map shows. */
   function mapDefault() {
     var pool = (state.mapVisible || []).filter(function (zone) { return zone && zone.latest; });
     var flagged = (state.mapById || {})[state.mapTop];
@@ -404,8 +403,7 @@
     // information architecture and stay fixed; only sentences about the data follow the data
   }
 
-  /* A payload element that is not an object (null, a string, a number) is not a zone and not an
-   * incident, so it is dropped before anything tries to read a field from it. */
+  /* A payload element that is not an object is neither a zone nor an incident: dropped on sight. */
   function usableEntries(list) {
     return (Array.isArray(list) ? list : []).filter(function (entry) {
       return entry && typeof entry === 'object';
@@ -452,28 +450,33 @@
     var plural = FP.zoneNounPlural(payload);
     setText('ranking-title', 'Risk ranking by ' + noun);
     if (el['zones-title']) {
-      el['zones-title'].innerHTML = noun.charAt(0).toUpperCase() + noun.slice(1) +
-        ' detail <span class="muted">live values from DynamoDB via the API</span>';
+      // The grid is named by this heading, so the datastore aside stays out of its accessible name.
+      el['zones-title'].innerHTML = 'All ' + plural +
+        ' <span class="muted" aria-hidden="true">live values from DynamoDB via the API</span>';
     }
     if (el['summary-live'] && el['summary-live'].title !== plural) {
       el['summary-live'].title = 'How many ' + plural + ' have a scored reading in this snapshot';
     }
   }
 
-  /* Fleet risk distribution: rendered from the payload only, so an empty or partial
-   * snapshot shows the counts it can prove instead of a reassuring zero. */
+  /* Rebuild a control only when its content changed: a poll must not redraw what the reader is using. */
+  function swapHtml(host, key, html) {
+    if (!host || host.getAttribute('data-rendered') === key) return;
+    host.setAttribute('data-rendered', key);
+    host.innerHTML = html;
+  }
+
+  /* Fleet risk distribution: from the payload only, so a partial snapshot shows the counts it can
+   * prove instead of a reassuring zero. */
   function renderBandStrip(payload) {
     if (!el['band-strip']) return;
     var html = FP.renderBandStrip(payload);
-    if (el['band-strip'].getAttribute('data-rendered') !== html) {
-      el['band-strip'].innerHTML = html;
-      el['band-strip'].setAttribute('data-rendered', html);
-    }
+    swapHtml(el['band-strip'], html, html);
     setText('band-strip-label', FP.bandStripLabel(payload));
   }
 
-  /* What changed since the last poll. The comparison is against the previous *successful*
-   * claiming attention on every subsequent poll. */
+  /* What changed since the last poll: this snapshot's classes against the previous snapshot's, so a
+   * fleet that is holding its ground says nothing at all. */
   function renderChangeNote(payload) {
     var note = el['change-note'];
     var change = FP.fleetChange(state.previousClasses, payload);
@@ -485,8 +488,9 @@
     if (!note) return;
     var classes = 'change-note' + (change.tone ? ' ' + change.tone : '');
     note.className = classes;
-    note.textContent = change.text;
+    // unhide first: a live region that is filled while hidden is not announced when it appears
     note.hidden = !change.text;
+    note.textContent = change.text;
   }
 
   function findZone(zoneId) {
@@ -706,8 +710,7 @@
     return '[data-zone="' + escaped + '"]';
   }
 
-  /* The card grid holds cards and nothing else: an empty fleet leaves it empty, and the
-   * sentence that explains the emptiness lives beside it (see renderCitiesPage). */
+  /* The grid holds cards and nothing else: the sentence explaining an empty fleet lives beside it. */
   function renderCards(zones) {
     var grid = el.zones;
     if (!grid) return;
@@ -951,29 +954,30 @@
     });
   }
 
-  /* The panel's own city picker: the control that was here before, kept because a reader on one city's
-   * chart should not have to go back to the Cities list to compare another. */
+  /* The panel's own city picker and the window chips, both through swapHtml: neither may be rebuilt
+   * under the reader's fingers by a poll that changed nothing about them. */
   function renderZonePicker(zones) {
-    if (!el['history-zone']) return;
-    var list = (zones || []).slice().sort(function (a, b) { return a.name < b.name ? -1 : 1; });
-    el['history-zone'].innerHTML = list.map(function (zone) {
+    var host = el['history-zone'], list = (zones || []).slice().sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+    var rendered = list.map(function (zone) { return zone.zone_id + (zone.zone_id === state.selectedZone ? '*' : ''); }).join('|');
+    swapHtml(host, rendered, list.map(function (zone) {
       var on = zone.zone_id === state.selectedZone;
       return '<button type="button" class="ghost' + (on ? ' is-active' : '') + '" data-zone-pick="' +
         FP.escapeHtml(zone.zone_id) + '" aria-pressed="' + (on ? 'true' : 'false') + '">' + FP.escapeHtml(zone.name) + '</button>';
-    }).join('');
+    }).join(''));
   }
 
   function renderWindows(choices, selected, summary) {
-    if (el['history-range']) {
-      el['history-range'].innerHTML = choices.map(function (option) {
-        var on = selected === option.minutes;
-        return '<button type="button" class="ghost' + (on ? ' is-active' : '') + '" data-range="' + (option.minutes === null ? 'all' : option.minutes) +
-          '" aria-pressed="' + (on ? 'true' : 'false') + '"' + (option.enabled ? '' : ' disabled aria-describedby="history-window-note"') + '>' + option.label + '</button>';
-      }).join('');
-    }
+    var host = el['history-range'], rendered = choices.map(function (option) {
+      return option.minutes + (option.minutes === selected ? '*' : '') + (option.enabled ? '' : '-');
+    }).join('|');
+    swapHtml(host, rendered, choices.map(function (option) {
+      var on = selected === option.minutes;
+      return '<button type="button" class="ghost' + (on ? ' is-active' : '') + '" data-range="' + (option.minutes === null ? 'all' : option.minutes) +
+        '" aria-pressed="' + (on ? 'true' : 'false') + '"' + (option.enabled ? '' : ' disabled aria-describedby="history-window-note"') + '>' + option.label + '</button>';
+    }).join(''));
     if (el['history-window-note']) {
       var off = choices.filter(function (option) { return !option.enabled; });
-      var note = FP.temporal.quality(summary) + (off.length ? '. The ' + off.map(function (option) { return option.label; }).join(' and ') +
+      var note = FP.temporal.quality(summary) + (off.length ? '. The ' + FP.labelList(off.map(function (option) { return option.label; })) +
         ' window' + (off.length > 1 ? 's are' : ' is') + ' not offered from this document: ' + off[0].reason + '.' : '');
       if (el['history-window-note'].textContent !== note) el['history-window-note'].textContent = note;
     }
@@ -1124,6 +1128,9 @@
 
   function applyRoute(options) {
     var opts = options || {};
+    // '#main' is the skip link's fragment, not a route: treating it as one sends a reader who asked
+    // for the main content back to the Overview. Other non-route fragments are left to the browser.
+    if (window.location.hash && window.location.hash.charAt(1) !== '/') return;
     var route = FP.routeFromHash(window.location.hash);
     var viewChanged = route.view !== state.route.view;
     var zoneChanged = route.zoneId !== state.route.zoneId;
@@ -1169,8 +1176,8 @@
     }
   }
 
-  /* Moving between views moves the keyboard focus with the content, the way a page
-   * navigation would: the next Tab lands inside the view just opened, not in the nav. */
+  /* Moving between views moves the keyboard focus with the content: the next Tab lands in the view
+   * just opened, not in the nav. */
   function focusView() {
     var section = el['view-' + state.route.view];
     if (!section || typeof section.focus !== 'function') return;
@@ -1260,8 +1267,8 @@
     }
   }
 
-  /* "What should I pay attention to?" - the changes the page has actually observed since it was
-   * is inferred, and an empty list says so rather than showing a blank panel. */
+  /* "What should I pay attention to?": the changes the page has actually observed since it loaded,
+   * never an inferred one. An empty list says so rather than showing a blank panel. */
   function renderRecentActivity() {
     var host = el['recent-activity'];
     if (!host) return;
@@ -1426,8 +1433,8 @@
       noun: noun, limit: 5, windowStartSeconds: opts.windowStartSeconds, windowLabel: opts.windowLabel });
   }
 
-  /* The freshness sentence inside the city view moves with the clock, like the one in
-   * the snapshot panel; the rest of the panel is only rewritten when data changes. */
+  /* The city view's freshness sentence moves with the clock, like the snapshot panel's; the rest of
+   * the panel is rewritten only when data changes. */
   function tickDetailFreshness() {
     var slot = el['city-detail'];
     if (!slot || !state.payload || !slot.querySelector) return;
@@ -1565,8 +1572,8 @@
     if (input) {
       var invalid = kind === 'invalid';
       input.setAttribute('aria-invalid', invalid ? 'true' : 'false');
-      if (invalid) input.setAttribute('aria-describedby', 'subscribe-result subscribe-note');
-      else input.removeAttribute('aria-describedby');
+      // the note is static markup: only the result token comes and goes, so it survives every submit
+      input.setAttribute('aria-describedby', (kind === 'idle' ? '' : 'subscribe-result ') + 'subscribe-note');
       if (kind === 'pending' && address) {
         // the address stays in the field so the visitor can see what was sent, and can still
         // copy it - the form never says an address is subscribed, so this is not a claim either
@@ -1625,8 +1632,8 @@
 
   /* --------------------------------------------------------- data and method --- */
 
-  /* The whole methodology page is static prose plus the live provenance per metric, so
-   * to be readable when the API is down, which is exactly when somebody looks at it. */
+  /* The methodology page: static prose plus the live provenance per metric, so it still reads when
+   * the API is down, which is exactly when somebody looks at it. */
   function renderDataPage(payload) {
     var metricSources = (payload && payload.metric_sources) || null;
     var signature = (payload ? [payload.model, payload.zone_mode, payload.data_classification].join('|') : 'none');
@@ -1779,8 +1786,8 @@
 
   /* ---------------------------------------------------------------- about --- */
 
-  /* The About page repeats two live facts - which cities are monitored, and what the model does
-   * fleet changes. Everything else on that page is static prose in index.html. */
+  /* The About page repeats two live facts - which cities are monitored, and what the model does - so
+   * it cannot drift from the fleet. Everything else on that page is static prose in index.html. */
   function renderAbout(payload) {
     var names = state.zones.map(function (zone) { return zone.name; }).filter(Boolean);
     var signature = (payload ? 'loaded' : 'loading') + '|' + names.join(',') + '|' +

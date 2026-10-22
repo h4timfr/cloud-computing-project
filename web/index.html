@@ -109,7 +109,7 @@
     </div>
 
     <h3 class="sr-only">Fleet summary</h3>
-    <div id="ov-stats" class="stat-row" aria-label="Fleet summary"></div>
+    <div id="ov-stats" class="stat-row" role="group" aria-label="Fleet summary"></div>
 
     <section class="band-strip-bar card" aria-label="Fleet risk distribution">
       <h3 class="block-title" id="band-strip-title">Cities by risk level</h3>
@@ -195,8 +195,6 @@
 
   </section>
 
-  </section>
-
   <section id="view-cities" class="view" tabindex="-1" data-view="cities" aria-labelledby="cities-title" hidden>
     <header class="view-head">
       <h2 class="view-title" id="cities-title">Cities</h2>
@@ -242,10 +240,10 @@
       <p class="map-purpose">City locations only, not a flood-risk surface.</p>
       <div class="map-split">
         <div>
-          <svg class="coast-map" id="coast-map" viewBox="0 0 269 205" role="img"
+          <svg class="coast-map" id="coast-map" viewBox="0 0 269 205"
                aria-labelledby="map-svg-title" aria-describedby="map-svg-desc">
             <title id="map-svg-title">Monitored coastal cities</title>
-            <desc id="map-svg-desc">Schematic coastline, one marker per monitored coastal city.</desc>
+            <desc id="map-svg-desc">Schematic coastline, one marker per monitored coastal city. Each marker is a link to that city.</desc>
             <path class="map-land" d="M22 23L33 34L46 50L57 45L58 56L59 69L63 81L67 97L70 111L74 121L78 131L83 141L86 147L89 155L91 161L93 170L97 177L102 179L109 172L115 167L120 157L124 141L128 129L127 115L126 102L134 95L137 90L147 87L155 83L167 72L179 62L186 57L190 50L198 44L203 34L209 40L207 15L195 -5L172 -20L125 -35L70 -30L37 -5L17 14Z"/>
             <path class="map-island" d="M243 124L247 134L249 146L251 160L252 176L249 190L247 194L243 189L245 175L246 160L244 145L242 133L240 125Z"/>
             <text class="map-label" x="14" y="108" text-anchor="start">Arabian Sea</text>
@@ -295,7 +293,7 @@
         <svg id="history-canvas" class="chart-svg" viewBox="0 0 640 190" role="img" tabindex="0" aria-label="Risk score history chart"></svg>
         <div id="history-tooltip" class="chart-tooltip" hidden></div>
       </div>
-      <p class="chart-summary" id="history-summary"></p>
+      <p class="chart-summary" id="history-summary" role="status" aria-live="polite"></p>
       <h3 class="block-title">Rainfall over time</h3>
       <div class="chart-wrap">
         <svg id="rain-chart" class="chart-svg" viewBox="0 0 640 190" role="img" aria-label="Rainfall rate history chart"></svg>
@@ -393,7 +391,7 @@
 
     <details class="tech">
       <summary>Full incident record (technical table)</summary>
-      <div class="incident-scroll" role="table" aria-label="Full incident record, newest first">
+      <div class="incident-scroll" role="table" aria-label="Full incident record, newest first" tabindex="0">
         <ol class="incident-head" role="rowgroup">
           <li class="incident-row" role="row">
             <span class="incident-severity" role="columnheader">Severity</span>

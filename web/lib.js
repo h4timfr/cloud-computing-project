@@ -1078,15 +1078,18 @@
   }
 
   function renderIncidents(payload, nowMs, options) {
-    if (!payload) return '<li class="incident-row incident-empty muted" role="row">loading incidents…</li>';
+    if (!payload) {
+      return '<li class="incident-row incident-empty muted" role="row"><span role="cell">loading incidents…</span></li>';
+    }
     var incidents = payload.incidents || [];
     if (!incidents.length) {
       var noun = (options && options.noun) || 'zone';
-      return '<li class="incident-row incident-empty muted">' +
+      // a row of a role="table" needs its cell, or the sentence is not part of any row
+      return '<li class="incident-row incident-empty muted" role="row"><span role="cell">' +
         'No flood incidents recorded yet. An incident opens automatically when a ' + noun +
         '\'s effective risk class reaches WARNING or CRITICAL, and closes once the ' + noun +
         ' is back to NORMAL.' +
-        '</li>';
+        '</span></li>';
     }
     return incidents.map(function (incident) {
       return renderIncidentRow(incident, nowMs, options);
@@ -1968,8 +1971,8 @@
         icon: 'rain',
         plain: SOURCE_PLAIN.REAL,
         title: 'Measured upstream, passed through unchanged',
-        body: 'Rainfall (and the provider\'s soil moisture field) comes from Open-Meteo for the city\'s coordinates. ' +
-          'FloodPulse does not modify these numbers before scoring them.'
+        body: 'Rainfall for the city\u2019s coordinates comes from Open-Meteo, passed through ' +
+          'unchanged: FloodPulse does not modify it before scoring.'
       },
       {
         tag: 'MODEL_DERIVED',

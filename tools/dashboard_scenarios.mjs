@@ -712,6 +712,36 @@ async function main() {
     });
   })();
 
+  group('The keyboard can reach everything, and nothing moves under it');
+
+  await (async () => {
+    const runtime = createRuntime();
+    runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
+    runtime.on(incidentsRoute, () => ({ body: live.incidents }));
+    runtime.on(historyRoute, () => ({ body: document(rows([[0, 0.5, 0.1], [600, 0.52, 0.2]])).body }));
+    const dom = boot(runtime, '#/data');
+    await runtime.settle();
+
+    await check('the skip link moves the reader within the view they are on', async () => {
+      // '#main' was read as a route, so "Skip to main content" sent a reader on the Data page back
+      // to the Overview - the opposite of skipping past the navigation.
+      assert.equal(dom.node('view-data').hidden, false, 'the Data view is not the one on screen');
+      dom.window.location.hash = '#main';
+      dom.fire(dom.window, 'hashchange', {});
+      await runtime.settle();
+      assert.equal(dom.node('view-data').hidden, false, 'the skip link changed the view');
+      assert.equal(dom.node('view-overview').hidden, true, 'the skip link switched to the Overview');
+    });
+
+    await check('a fragment that is not a route leaves the view alone', async () => {
+      dom.window.location.hash = '#some-anchor';
+      dom.fire(dom.window, 'hashchange', {});
+      await runtime.settle();
+      assert.equal(dom.node('view-data').hidden, false, 'an unknown fragment switched the view');
+      assert.equal(runtime.count(historyRoute), 0, 'an unknown fragment asked for a city document');
+    });
+  })();
+
   group('Hostile and malformed payload content cannot break or inject into the board');
 
   await (async () => {
@@ -848,7 +878,9 @@ async function main() {
       // coastal fleet, so the assertion covers the product name and the fleet noun.
       assert.match(dom.text('brand-subtitle'), /^FloodPulse Coastal India · \d+ coastal cities/);
       assert.match(dom.text('ranking-title'), /Risk ranking by city/);
-      assert.match(dom.html('zones-title'), /City detail/);
+      assert.match(dom.html('zones-title'), /^All cities/);
+      // the grid is named by this heading, so the datastore aside is hidden from the accessible name
+      assert.match(dom.html('zones-title'), /aria-hidden="true">live values from DynamoDB/);
       assert.match(dom.text('banner-title'), /LIVE WEATHER/);
       assert.match(dom.text('banner-detail'), /Open-Meteo/);
       assert.match(dom.text('attribution'), /Open-Meteo\.com/);

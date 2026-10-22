@@ -3575,8 +3575,68 @@ check('M11.2: one metric is four columns, and the phone gets two lines', () => {
     'the chip is not its own cell in the row');
 });
 
-/* ------------------------------------------------------------------ report --- */
+/* ------------------------------------------------- the keyboard and the reader --- */
 
+/*
+ * The M17 accessibility audit ran the real page in a fake browser, walked it with the keyboard only
+ * and measured contrast from the stylesheet. These checks pin the fixes that can be verified from
+ * the sources; the behavioural ones (focus surviving a poll, the skip link keeping the view) are
+ * pinned in tools/dashboard_scenarios.mjs, which runs the real assets.
+ */
+
+check('the skip link is a fragment, not a route, and the router leaves it alone', () => {
+  // '#main' used to be read as a route, so "Skip to main content" sent the reader to the Overview
+  // from whatever view they were on.
+  assert.match(htmlSource, /<a class="skip-link" href="#main">/, 'the skip link is not in the markup');
+  assert.match(htmlSource, /<main id="main" tabindex="-1">/, 'the skip target cannot take focus');
+  assert.match(appSource, /function applyRoute[\s\S]{0,700}?location\.hash\.charAt\(1\) !== '\/'\) return;/,
+    'the router still treats a non-route fragment as a route');
+});
+
+check('the map is not one image with links hidden inside it', () => {
+  // The SVG was role="img", so its 12 markers - each a link to a city - had no name and no role.
+  const map = /<svg class="coast-map"[^>]*>/.exec(htmlSource);
+  assert.ok(map, 'the map svg was not found');
+  assert.ok(!/role="img"/.test(map[0]), 'the map is still exposed as a single image');
+  assert.match(map[0], /aria-labelledby="map-svg-title"/, 'the map lost its title');
+  assert.match(libSource, /'<title>' \+ escapeHtml\(name \+ ' - '/, 'a map marker has no accessible name');
+  assert.match(libSource, /href="#\/cities\/' \+ encodeURIComponent\(zone\.zone_id\)/,
+    'a map marker is not a link to its city');
+});
+
+check('the chart readout is announced, and the scroll box can be reached', () => {
+  assert.match(htmlSource, /id="history-summary" role="status" aria-live="polite"/,
+    'the point-by-point readout lands in a node nothing announces');
+  assert.match(htmlSource, /class="incident-scroll"[^>]*tabindex="0"/,
+    'the incident table scrolls sideways in a box the keyboard cannot reach');
+  assert.match(cssSource, /\.table-scroll:focus-visible, \.incident-scroll:focus-visible/,
+    'the focusable scroll box has no visible focus ring');
+});
+
+check('the faded incident rows stay above the contrast floor', () => {
+  const rule = /\.alert-row\.is-outside \{ opacity: ([\d.]+)/.exec(cssSource);
+  assert.ok(rule, 'the faded row rule was not found');
+  assert.ok(Number(rule[1]) >= 0.78, `faded rows sit at opacity ${rule[1]}, measured below 4.5:1`);
+});
+
+check('a poll cannot rebuild a control the reader is using', () => {
+  // The picker and the window chips were rebuilt on every 5 s poll, so a keyboard reader lost the
+  // button they were on; both now go through the same change-checked write the rest of the page uses.
+  assert.match(appSource, /function swapHtml\(host, key, html\)/, 'there is no change-checked write');
+  assert.match(appSource, /function renderZonePicker[\s\S]{0,900}?swapHtml\(host, rendered,/,
+    'the city picker is still redrawn unconditionally');
+  assert.match(appSource, /function renderWindows[\s\S]{0,700}?swapHtml\(host, rendered,/,
+    'the window chips are still redrawn unconditionally');
+});
+
+check('the fleet summary group and the empty incident rows carry their roles', () => {
+  assert.match(htmlSource, /<div id="ov-stats" class="stat-row" role="group" aria-label="Fleet summary">/,
+    'aria-label on a role-less div names nothing');
+  assert.match(libSource, /incident-empty muted" role="row"><span role="cell">/,
+    'an empty incident row is a row without a cell');
+});
+
+/* ------------------------------------------------------------------ report --- */
 console.log(`\n${passed} checks passed, ${failures.length} failed`);
 if (failures.length > 0) {
   failures.forEach((failure) => {

@@ -819,7 +819,8 @@ main {
 .history-facts { margin: 12px 0 0; }
 .city-context { display: grid; gap: 18px; }
 .incident-outside { margin: 6px 0 0; color: var(--slate-400); }
-.alert-row.is-outside { opacity: 0.74; }
+/* 0.74 measured 4.22:1. */
+.alert-row.is-outside { opacity: 0.78; }
 /* The chart is focusable because it is the only place some values can be read. */
 #history-canvas:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 2px; }
 .chart-tooltip {
@@ -1190,7 +1191,7 @@ body.is-disconnected main::after { color: var(--state-error-text); background: r
   scrollbar-width: thin;
   max-width: 100%;
 }
-.table-scroll:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 2px; }
+.table-scroll:focus-visible, .incident-scroll:focus-visible { outline: 2px solid var(--cyan-400); outline-offset: 2px; }
 .table-scroll::-webkit-scrollbar { height: 9px; }
 .table-scroll::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.35); border-radius: 999px; }
 
