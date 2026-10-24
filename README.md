@@ -1,49 +1,289 @@
-# FloodPulse
+# FloodPulse Coastal India
 
-Live AWS-based flash-flood early-warning and risk-prediction system (cloud computing project).
+A live, AWS-hosted **coastal flood-risk monitoring prototype**: an experimental, serverless system that
+watches twelve selected Indian coastal cities, scores the current and recent flood risk with a
+deterministic heuristic, records incidents, and emails confirmed subscribers.
 
-**Current milestone: M4 — India live-weather integration is deployed and verified live.**
-M2 remains live: a reading → API Gateway HTTP API → one Lambda → DynamoDB → read back through the
-API → **an S3-hosted dashboard that polls the live API every 5 seconds**, which never invents risk
-values. M3 added automatic incident records (`GET /incidents`), escalation-only SNS alerts with a
-per-zone cooldown, and an incident log panel. M4 adds five **live-weather zones** (Chennai, Mumbai,
-Bengaluru, Hyderabad, Kochi) fed by the external Open-Meteo service, keeps the simulator as the
-demo/fallback fleet, and tags **every metric** as `REAL`, `MODEL_DERIVED` or `SIMULATED`.
+**This is a monitoring and risk-indicator system, not a flood forecast.** It produces no flood
+probability, no validated hydrological prediction and no official warning. See
+[What this is, and what it is not](#what-this-is-and-what-it-is-not).
 
-**Dashboard: <http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com>**
-**API: <https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com>**
+**Live dashboard:** <http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com>
+**Live API:** <https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com>
+**Region / account:** `eu-north-1` / `725934295966` (profile `cloud-project`)
 
-Two honesty rules run through the whole project:
-
-* **Measured vs simulated is never blurred.** In `demo` mode every reading is synthetic and every
-  record says `simulated: true` / `data_classification: "simulated"`. In `live` mode rainfall and soil
-  saturation are the weather provider's values (`REAL` / `MODEL_DERIVED`) while drain level, water
-  level and flow rate stay `SIMULATED`, because no real sensor for them exists; those responses are
-  `data_classification: "mixed"` and carry a per-metric `metric_sources` map.
-* **Risk scores are always a heuristic.** `heuristic-v1` is deterministic and explainable — *not* a
-  validated hydrological model, *not* a forecast and *not* machine learning, and it is not calibrated
-  for the Indian cities. It is never presented as an official flood warning.
+**Reading this repository:** the current state is this section and the next few; from `## M1 AWS slice`
+onward the file is the build history. The companion documents are
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (diagram, inventory, data model),
+[`docs/FINAL_TECHNICAL_SUMMARY.md`](docs/FINAL_TECHNICAL_SUMMARY.md) (3-5 pages, no prior context needed),
+[`docs/VIVA_CHEATSHEET.md`](docs/VIVA_CHEATSHEET.md) (33 questions),
+[`docs/PRESENTATION_FACTS.md`](docs/PRESENTATION_FACTS.md) (numbers with their evidence),
+[`docs/FINAL_PROJECT_STATUS.md`](docs/FINAL_PROJECT_STATUS.md) (status, limitations, open items, handoff)
+and [`DEMO_RUNBOOK.md`](DEMO_RUNBOOK.md) (the 7-10 minute presentation).
 
 ---
+
+## Current state
+
+Measured on **2026-10-24**, at commit `a2bd955` (M18 closeout). The milestone sections further down are
+the historical record of how the system was built; **this section describes what exists today.**
+
+| | |
+|---|---|
+| Fleet | **12 coastal cities** - 5 west coast, 6 east coast, 1 island |
+| Model | `heuristic-v1`, deterministic, hand-tuned, explainable, current and retrospective |
+| Backend | one Python 3.13 Lambda (`floodpulse-api`), 256 MB, 15 s timeout |
+| API | HTTP API `2rg2u8quzd`, 5 routes, 20 req/s steady with a 40-request burst |
+| Storage | DynamoDB `floodpulse`, `PAY_PER_REQUEST`, 1,772 items / 1.49 MB, TTL on |
+| Front end | four shipped files (HTML/CSS/JS, no framework, no dependencies) on an S3 website bucket |
+| Alerts | SNS topic `floodpulse-alerts`, escalation-only publishing, double opt-in e-mail |
+| Logs | CloudWatch `/aws/lambda/floodpulse-api`, 7-day retention |
+| Tests | 773 tests / 2,333 subtests, plus eleven browser and tool harnesses |
+
+### What this is, and what it is not
+
+**It is:** a working cloud application that ingests real weather data for twelve coastal cities, derives
+a deterministic risk indicator for each, stores the history, raises incidents on threshold crossings,
+e-mails confirmed subscribers, and shows all of it in a dashboard that labels every number with where it
+came from.
+
+**It is not:** a flood forecast, a flood probability, a validated hydrological model, a national flood
+warning system, a state-level risk product, or a physical IoT sensor deployment. The risk score is a
+deterministic risk indicator, never an observed flood report. Incidents record that *this system's
+threshold was crossed*, not that a flood happened.
+
+### Architecture
+
+```mermaid
+flowchart LR
+  OM["Open-Meteo<br/>(real weather: rainfall, soil moisture)"] -->|one batched HTTPS request<br/>for all 12 cities| L
+  SIM["Simulator<br/>(demo fleet, 3 zones)"] -->|POST /readings<br/>x-fp-key| APIGW
+  APIGW["API Gateway HTTP API<br/>2rg2u8quzd · 5 routes"] --> L["Lambda floodpulse-api<br/>Python 3.13 · validates, scores, stores"]
+  L -->|latest + history, weather cache,<br/>incidents, rate-limit windows| DDB[("DynamoDB floodpulse<br/>pk/sk · TTL · PAY_PER_REQUEST")]
+  L -->|escalation-only publish| SNS["SNS floodpulse-alerts"]
+  SNS -->|double opt-in| SUB["confirmed e-mail subscribers"]
+  L -->|logs, 7-day retention| CW["CloudWatch"]
+  DDB --> APIGW
+  APIGW -->|GET /zones · /history · /incidents| WEB["Dashboard on S3<br/>HTML + CSS + JS, polls every 5 s"]
+  BROWSER["Reviewer's browser"] --> WEB
+  WEB --> APIGW
+```
+
+Read paths (`/zones`, `/zones/{id}/history`, `/incidents`) are public. The write path (`POST /readings`)
+requires the ingestion key. Subscriptions (`POST /subscriptions`) are public but validated and
+rate-limited.
+
+### The twelve cities
+
+| Coast | Cities |
+|---|---|
+| West Coast (5) | Mumbai, Surat, Kochi, Mangaluru, Kozhikode |
+| East Coast (6) | Kolkata, Puri, Paradip, Visakhapatnam, Chennai, Puducherry |
+| Island (1) | Port Blair |
+
+`src/floodpulse/config.py` is the single place a city is defined: name, state, coast group, coordinates,
+selection reason. The fleet is a **selected** set of coastal cities with documented flood hazard, not
+national coverage; the coast group is navigation, not a score, and the system computes no state-level,
+coast-level or national risk figure. Why these cities, and the sources behind each selection:
+[M13](#m13---coastal-india-a-selected-coastal-fleet-and-the-copy-that-explains-it).
+
+### Data provenance
+
+Every metric carries its own label, per response and per metric:
+
+| Metric | Source | Label |
+|---|---|---|
+| Rainfall intensity | Open-Meteo (live) | **REAL** |
+| Soil saturation | derived from the provider's soil moisture | **MODEL_DERIVED** |
+| Drain level, water level, flow rate | deterministic hydraulic response to that rainfall | **SIMULATED** |
+
+There is no rain gauge, drain sensor, water-level sensor or flow meter anywhere in this project. The
+dashboard prints those labels next to the numbers, and the Data page states the same in public wording.
+
+### Risk model (`heuristic-v1`)
+
+Deterministic and explainable: weighted contributions from the five metrics, each bounded, summed into a
+score in `[0, 1]`, then classified against hand-set band edges **0.35 / 0.60 / 0.80** into
+**NORMAL / WATCH / WARNING / CRITICAL**. Escalation needs 2 consecutive readings, de-escalation 3
+(hysteresis), so a single noisy poll cannot move a city up or down on its own. The dashboard shows the
+score, the band, the top contributing driver, and the plain-language reason. The thresholds are **not
+calibrated** for these cities and are not official warning levels. Detail:
+[Risk model](#risk-model-heuristic-v1).
+
+### Temporal analytics (retrospective)
+
+Computed from stored samples only - nothing is extrapolated:
+
+* **window** anchored on the newest stored sample, not on the clock;
+* **net change** = last minus first sample in the window;
+* **trend** = least-squares slope per hour: `RISING` above +0.02/h, `FALLING` below -0.02/h, `STEADY`
+  inside that band, and `INSUFFICIENT` below 3 samples or 600 s of span (server and page use the same
+  word);
+* **peak / minimum** state the sample they came from; ties go to the earlier row;
+* **gap** = an interval longer than `max(3 × median interval, 900 s)`, disclosed rather than smoothed;
+* **rainfall is an instantaneous rate** (mm/h), never an accumulation.
+
+The page states the span the stored history actually covers, so a thin window is visible instead of
+implied. Detail: [M16](#m16---retrospective-temporal-intelligence-backend-and-frontend-deployed-no-new-aws-resources).
+
+### Incident lifecycle
+
+A city at **WARNING** or **CRITICAL** opens an incident; the open incident escalates if the city moves to
+a more severe band, and closes when the city de-escalates. **At most one incident is open per city** -
+enforced by a single pointer item at a fixed sort key, so the decision is atomic. A refused write reports
+the stored state, skips the alert and lets the next reading re-decide. "Published to SNS" means exactly
+that: the system published a message to the topic. It does **not** mean an e-mail was delivered - only a
+confirmed subscription plus the subscriber's mail provider can make that true, and the dashboard does not
+claim it.
+
+### Email alerts
+
+`POST /subscriptions` takes an address, validates its shape, rate-limits per address (3 per hour, the
+fourth gets HTTP 429), publishes a subscription request to SNS, and answers with a generic
+anti-enumeration response that reveals nothing about whether the address was already known. SNS sends a
+confirmation mail; only after the subscriber confirms does the topic deliver alerts. The rate-limit
+record stores a hash of the address, not the plain address.
+
+### API
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /zones` | public | current state for the whole fleet (12 cities) |
+| `GET /zones/{zone_id}/history?minutes=N` | public | stored samples, `1 ≤ N ≤ 1440`; out-of-range is refused with a described error |
+| `GET /incidents` | public | incident list with severity, window and status |
+| `POST /readings` | `x-fp-key` header | ingest one reading (simulator / live pipeline); refuses anonymous writes |
+| `POST /subscriptions` | public, validated, rate-limited | subscribe an e-mail address |
+
+Refusals are described rather than silent: `{"error":"invalid_query","field":"minutes",...}`,
+`{"error":"unknown_zone",...}`, `{"status":"rate_limited",...}`. The ingestion key value is never
+printed, logged or committed - it lives in the gitignored `.floodpulse-key`.
+
+### Data model
+
+One DynamoDB table, `pk`/`sk`, no GSI, no scan on any read path:
+
+* `LATEST` item per city - the newest reading, what `/zones` serves;
+* timestamped history items per city - what `/history` queries, with a `ttl` attribute so old samples
+  expire on their own;
+* weather-cache items per city - the Open-Meteo response and when it was fetched (the 10-minute rule);
+* incident items per city - the incident record plus the open-incident pointer;
+* rate-limit window items per address hash - the subscription budget.
+
+### Security
+
+Ingestion is key-gated; IAM is scoped to this one table, this one topic and this one log group, with no
+`DeleteItem` and no wildcard resource; the execution role has only `AWSLambdaBasicExecutionRole` plus two
+inline policies. Subscriptions are validated, rate-limited and anti-enumerated. The page escapes all
+payload text, renders images from an explicit trusted map of local files, and carries a content-security
+policy with no inline script and no wildcard origin. No secret is in the front end.
+
+**Known limitation:** the dashboard is served from an S3 website endpoint, so the CSP is delivered as a
+meta element, and `frame-ancestors` cannot be enforced from a meta element. Clickjacking protection
+therefore rests on the S3 website origin not being framed by anything under our control; there is no
+`X-Frame-Options` equivalent here and the project does not pretend otherwise.
+
+### Failure handling
+
+* **Weather provider down or unusable** - the last good cached weather is used and the response says so;
+  the poll never fails because the provider did.
+* **One city's cache corrupt, foreign or future-dated** - that city degrades alone; the other eleven
+  serve normally.
+* **History route fails** - the current-state panels keep the last good data and the panel states the
+  reason; retries back off instead of hammering the API on every 5-second poll.
+* **A payload element that is not an object** - ignored rather than thrown; one malformed zone cannot
+  blank the fleet.
+* **A late history response for a city the visitor has left** - discarded, so it cannot repaint the wrong
+  city.
+* **A refused incident write** - reports stored state, skips the alert, re-decides next reading.
+* **Provider throttling / abuse** - the API stage enforces 20 req/s with a 40 burst, and the subscription
+  route carries its own per-address budget.
+
+### Cost posture
+
+Serverless and pay-per-use throughout: S3 static hosting (no server), Lambda billed per request and per
+GB-second, DynamoDB on `PAY_PER_REQUEST`, SNS billed per publish, CloudWatch on 7-day retention. There is
+no EC2, no RDS, no Kubernetes, no NAT Gateway and no always-on compute. **No dollar figure is claimed
+here**, because no billing data were queried: this section states the billing model, not a measured
+spend. The AWS credits were treated as limited throughout - read-only auditing only, no new resource in
+this pass.
+
+### Testing and verification
+
+| Gate | Last measured |
+|---|---|
+| `python -m pytest -q tests` | 773 passed, 2,333 subtests |
+| `node tools/dashboard_check.mjs` | 138 checks (144 with live payloads) |
+| `node tools/dashboard_run.mjs --site … --api …` | 80 runtime checks |
+| `node tools/dashboard_scenarios.mjs` | 66 scenario checks |
+| `node tools/story_check.mjs` | 29 checks |
+| `node tools/temporal_check.mjs` | 141 assertion groups |
+| `node tools/m16_browser_check.mjs --site … --api …` | 32 checks in a real browser |
+| `node tools/keyboard_check.mjs <site>` | 8 keyboard checks in a real browser |
+| `node tools/layout_scan.mjs <site>` | 4 routes × 4 widths, 0 contract failures |
+| `node tools/clipping_scan.mjs <site>` | 72 overflows, 0 hidden by an ancestor |
+| `python tools/live_acceptance.py` | 62 checks against the deployed API |
+| `python tools/verify_deployed_code.py` | deployed Lambda byte-identical to `src/` (15 files) |
+| `python tools/verify_deployed_page.py` | every deployed page contract holds |
+| `python build/m16_bytes.py` | 409,501 / 409,600 bytes, no CRLF |
+
+### Deployment and reproducibility
+
+`infra/deploy.ps1` is idempotent: it creates only what is missing, never deletes, keeps IAM read-only,
+and prints the exact commands it would run under `-DryRun`. Backend-only or dashboard-only runs are
+switchable (`-SkipDashboard`, `-DashboardOnly`). The local demo pair (static `web/` plus a frozen API
+replaying recorded payloads) is separate from the live endpoints, and the page never falls back to frozen
+data on its own. Full walkthrough: [Running it locally](#running-it-locally).
+
+### Limitations
+
+Canonical list; each is a property of the design, not an apology:
+
+1. **Selected fleet of twelve coastal cities** - not national coverage, and no claim that these are the
+   twelve most at-risk cities in India.
+2. **No state, coast or national risk figure** - a city being NORMAL says nothing about its neighbours.
+3. **Heuristic, not a validated model** - thresholds are hand-set and not calibrated for these cities;
+   the score is a risk indicator, not a flood probability.
+4. **Hydraulic values are simulated** - drain level, water level and flow rate come from a deterministic
+   response to real rainfall, because no such sensors exist here.
+5. **External provider dependency** - if Open-Meteo is unreachable, the system degrades to its last good
+   cache and says so.
+6. **Provider observation time unavailable** - the feed does not carry the observation timestamp, so the
+   page names the fetch time and the age of the fetch, not a claim about when the weather was observed.
+7. **Historical gaps are possible** - ingestion is event-driven and history expires by TTL, so a window
+   can hold few samples; the page states the span instead of inventing one.
+8. **Trend is retrospective only** - it describes stored samples; nothing is extrapolated.
+9. **Incident threshold crossings are not observed floods** - an incident says this system crossed its own
+   band edge.
+10. **City photo licensing** - the twelve images are used under the terms recorded in
+    [M13](#m13---coastal-india-a-selected-coastal-fleet-and-the-copy-that-explains-it); if any image's
+    provenance is unresolved for publication beyond this project, replace it before external reuse.
+
+---
+
+The table below summarises the layers as they stand today. From `## M1 AWS slice (deployed, verified)`
+onward this document is the **build history** - M1 to M17, in the order they were done, with the
+evidence each pass produced. Those sections are kept because they record what was measured at the time,
+and some of their numbers (an earlier fleet size, an earlier test count, an earlier byte total) are
+deliberately left exactly as they were measured then.
 
 ## Architecture status
 
 | Layer | Component | Status |
 |---|---|---|
-| Simulator | Deterministic phase-driven sensor simulator (demo fleet) | ✅ implemented (`src/floodpulse/simulator.py`) |
-| Live weather | Open-Meteo client: one request for all 5 Indian cities, DynamoDB cache, 10-minute refresh rule | ✅ **live** (`src/floodpulse/weather.py`, `live_weather.py`) |
-| Provenance | Per-metric `REAL` / `MODEL_DERIVED` / `SIMULATED` tags in storage, API and dashboard | ✅ **live and verified** |
-| Ingest | Single Lambda handler, `POST /readings`, shared-secret protected | ✅ **live** on API Gateway |
-| Validation | Strict payload validation, server-side epoch/TTL | ✅ implemented |
-| Risk engine | Deterministic `heuristic-v1` + explainability + hysteresis | ✅ implemented |
-| Storage | In-memory store + DynamoDB store (same interface) | ✅ **live** against table `floodpulse` |
-| API | `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (public reads) | ✅ **live** in the same handler |
-| AWS deployment | DynamoDB / Lambda / HTTP API / S3 site / SNS topic | ✅ **deployed and verified** (`infra/deploy.ps1`) |
-| Dashboard | S3-hosted static UI polling the live API, incident log panel, provenance chips, city nightscape cards | ✅ **live and verified** (`web/`, deployed 2026-10-18) |
-| Incidents | Automatic incident records + lifecycle (open/escalate/close) | ✅ **live and verified** |
-| Alerts | One SNS topic, escalation-only publishing with a per-zone cooldown | ✅ **live and verified** (publish proof; no subscriber yet) |
-| Time-to-threshold | Estimate time to a threshold | ⛔ **deferred** (still reported as a deferred feature, never faked) |
-| ML | Any learned model | ⛔ out of scope until the deterministic system works end to end |
+| Simulator | Deterministic phase-driven sensor simulator (demo fleet of 3 zones) | implemented (`src/floodpulse/simulator.py`) |
+| Live weather | Open-Meteo client: one batched request for all 12 coastal cities, DynamoDB cache, 10-minute refresh rule | **live** (`src/floodpulse/weather.py`, `live_weather.py`) |
+| Provenance | Per-metric `REAL` / `MODEL_DERIVED` / `SIMULATED` tags in storage, API and dashboard | **live and verified** |
+| Ingest | Single Lambda handler, `POST /readings`, shared-secret protected | **live** on API Gateway |
+| Validation | Strict payload validation, server-side epoch/TTL | implemented |
+| Risk engine | Deterministic `heuristic-v1` + explainability + hysteresis | implemented |
+| Storage | In-memory store + DynamoDB store (same interface) | **live** against table `floodpulse` |
+| API | `GET /zones`, `GET /zones/{zone_id}/history`, `GET /incidents` (public reads), `POST /readings`, `POST /subscriptions` | **live** in the same handler |
+| AWS deployment | DynamoDB / Lambda / HTTP API / S3 site / SNS topic / CloudWatch | **deployed and verified** (`infra/deploy.ps1`) |
+| Dashboard | S3-hosted static UI polling the live API every 5 s: overview, cities, city detail, incidents, data page, coast map | **live and verified** |
+| Incidents | Automatic incident records + lifecycle (open/escalate/close), one open per city | **live and verified** |
+| Alerts | One SNS topic, escalation-only publishing with a per-zone cooldown, public double opt-in subscriptions | **live**, with confirmed subscribers |
+| Time-to-threshold | Estimate time to a threshold | **deferred** (reported as deferred, never faked) |
+| ML | Any learned model | out of scope until the deterministic system works end to end |
 
 Locked MVP decisions reflected in the code: **one** Lambda handling all routes,
 **one** Lambda execution role, **no** aggregate snapshot item (a `LATEST` record per zone
@@ -2130,8 +2370,9 @@ infra/deploy.ps1              idempotent deployment (table + Lambda + HTTP API +
 Requires Python 3.11+ (tested on 3.13.7). **No dependencies, no Docker, no AWS credentials.**
 
 ```powershell
-# full test suite (597 tests and 2096 subtests, no AWS calls, no network)
-python -m unittest discover -s tests -t .
+# full test suite: 773 tests / 2,333 subtests, no AWS calls, no network (measured 2026-10-24)
+python -m pytest -q tests
+python -m unittest discover -s tests -t .   # the same suite through unittest discovery
 
 # the demo story, rehearsed end to end: drives the arc, verifies it, exports what the API served
 python tools/storm_demo.py --export build/story
@@ -2143,12 +2384,12 @@ python tools/weather_probe.py
 # dashboard static checks: pure helpers, rendering from a real payload, provenance, site safety,
 # the asset budget, and the information architecture (five sections, router, phone menu, icons,
 # empty states, touch targets, methodology vs config.py, the coastal fleet and its copy):
-# 130 checks
+# 138 checks (144 with live payloads)
 node tools/dashboard_check.mjs
 node tools/dashboard_check.mjs --payload build/zones-demo-m4.json --history build/history-demo-m4.json
 node tools/dashboard_check.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json
 
-# dashboard scenario harness: 49 failure and edge cases (first-poll failure, 500s, stale feed,
+# dashboard scenario harness: 66 failure and edge cases (first-poll failure, 500s, stale feed,
 # hung requests, mode switching, history backoff, a hostile payload, an incident with no fields,
 # a half-answering fleet...) through the real poller
 node tools/dashboard_scenarios.mjs
@@ -2158,7 +2399,7 @@ node tools/dashboard_scenarios.mjs
 # states, the About page, the retry button, the skeleton, the phone menu, a failed poll, recovery,
 # and the plain-language check: with a real payload, no primary view may show a snake_case variable,
 # the formula or the model's own output line (80 checks live, 78 for the demo fleet), on top of the
-# 130 static checks from dashboard_check.mjs.
+# 138 static checks from dashboard_check.mjs.
 node tools/dashboard_run.mjs --payload build/zones-live-weather.json --history build/history-live-weather.json --incidents build/incidents-live-weather.json
 #   ...or against the deployed assets and the live API:
 node tools/dashboard_run.mjs --site http://floodpulse-dashboard-725934295966.s3-website.eu-north-1.amazonaws.com --api https://2rg2u8quzd.execute-api.eu-north-1.amazonaws.com
@@ -2191,10 +2432,10 @@ touching AWS.
 Overrides represent different local drainage capacity. They are hand-set tuning values,
 not calibration against measured data.
 
-`demo` mode uses exactly these three zones (that is the library default). `live` mode uses the five
-M4 city zones listed under **M4 live weather for Indian cities**; their thresholds are the same
-heuristic defaults, which are **not** calibrated for those cities and are not official warning
-thresholds.
+`demo` mode uses exactly these three zones (that is the library default). `live_weather` mode serves the
+**twelve coastal cities** defined in `config.LIVE_ZONE_DEFINITIONS` (the list at the top of this file and
+under **M13**); their thresholds are the same heuristic defaults, which are **not** calibrated for those
+cities and are not official warning thresholds.
 
 ## Sensor payload (`POST /readings`)
 
@@ -2283,8 +2524,16 @@ constant so tests never depend on the wall clock.
 | M7 | Final hardening and product quality pass: full-system audit, per-defect fixes with tests, accessibility and mobile work, cost and security review. No new AWS resources, no architecture change | ✅ **done, verified against the deployed stack** |
 | M8 | Production hardening / adversarial reliability pass: API abuse and cost protection, replay and reordering under test, provider-failure behaviour, one freshness contract, observability and deployment tooling | ✅ **done, verified against the deployed stack** |
 | M9 | Product experience, information design and responsive polish: the Overview answers in one sentence, five routed sections with an About page and flood-safety guidance, a local icon set, designed empty/loading/error states, honest alert-delivery wording, phone-first layout. Front end only: no backend, IAM, threshold or CSP change | ✅ **done, verified live** |
-| M10 | Premium UI polish and public email alert subscriptions: a cinematic dark weather-monitoring front end (scrimmed backdrop, state-carrying header, answering hero, icon summary cards, city plates with a risk meter, recent-alert preview, three-step explainer) and a self-service SNS-confirmed email subscription route with validation, hashed-address rate limiting and no stored visitor email. Front end deployed; **backend blocked at the IAM gate pending `sns:Subscribe` on the one topic** | ✅ done (front end live, backend awaiting one approved permission) |
-| M11 | Time-to-threshold, CloudWatch alarm, scheduled refresh (EventBridge) | ⛔ planned |
+| M10 | Premium UI polish and public email alert subscriptions: a cinematic dark weather-monitoring front end and a self-service SNS-confirmed email subscription route with validation, hashed-address rate limiting and no stored visitor email | ✅ **done** (front end live; backend deployed once `sns:Subscribe` was approved) |
+| M10.1 / M10.2 | City imagery wired into the dashboard, then made visible: an explicit trusted image map, nightscape surfaces, readability measured against the real pixels | ✅ **done, verified live** |
+| M11 | India coverage: fifteen monitored cities, five navigation regions, one batched weather request, no new architecture | ✅ **done and verified live** (superseded by M13) |
+| M13 | Coastal India: the fleet refocused on **twelve selected coastal cities**, with sourced selection reasons and copy that explains them | ✅ **done, verified live** |
+| M14 / M14.1 | Overnight quality pass: four layouts that were hiding their own content, verified negatives, byte accounting, one line ending for the shipped files | ✅ **done, deployed** |
+| M15 | Coastal coverage map: twelve named markers, each a link with its own accessible name; coast grouping used for navigation only | ✅ **done, verified live** |
+| M16 | Retrospective temporal intelligence: net change, least-squares trend, gap disclosure, history windows, and information hygiene on the public Data page | ✅ **done, deployed, verified** |
+| M17 | Submission-grade finalisation: nine defects fixed with tests, response compression, accessibility and byte work, a read-only AWS review, no scientific claim changed | ✅ **done, deployed, verified** |
+| M18 | Final submission / handoff / reproducibility pass: current-state documentation at the top of this file, viva and presentation material under `docs/`, live and API smoke tests, limitations stated once and plainly | ✅ **done** (see `docs/FINAL_PROJECT_STATUS.md`) |
+| - | Time-to-threshold, CloudWatch alarms, scheduled refresh, city comparison | ⛔ **not built** (deliberate; see [known open items](docs/FINAL_PROJECT_STATUS.md)) |
 
 ## AWS state (verified)
 
@@ -2292,7 +2541,8 @@ constant so tests never depend on the wall clock.
 * created by this project, and nothing else: DynamoDB table `floodpulse`, Lambda `floodpulse-api`
   (+ its invoke permission), HTTP API `floodpulse-api` (`2rg2u8quzd`), log group
   `/aws/lambda/floodpulse-api`, S3 bucket `floodpulse-dashboard-725934295966` (M2), SNS topic
-  `floodpulse-alerts` (M3, `DisplayName = FloodPulse Alerts`, **0 subscriptions**)
+  `floodpulse-alerts` (M3, `DisplayName = FloodPulse Alerts`; **1 confirmed subscription** measured
+  on 2026-10-24 - subscriber addresses are never listed or printed)
 * the execution role `floodpulse-lambda-role` was created by the project owner, not by this repository;
   the M3 inline policy `FloodPulseSnsPublish` (`sns:Publish` on that one topic ARN) was attached by the
   owner as well, because `iam:PutRolePolicy` is denied for the `cloud-project` user (AWS returns
@@ -2309,7 +2559,9 @@ constant so tests never depend on the wall clock.
 
 ## Cost posture
 
-Measured at the end of this pass (read-only AWS CLI, eu-north-1):
+Measured at the end of the M8 pass (read-only AWS CLI, eu-north-1) - **kept as the record of that
+measurement, not as today's numbers**. Today's inventory, including the current item and object counts,
+is in [`docs/FINAL_PROJECT_STATUS.md`](docs/FINAL_PROJECT_STATUS.md).
 
 | Resource | Usage now | Cost effect |
 | --- | --- | --- |
@@ -2318,7 +2570,7 @@ Measured at the end of this pass (read-only AWS CLI, eu-north-1):
 | DynamoDB `floodpulse` | **1,364 items / 947 KB**, on-demand, TTL pruning history at 7 days, no GSI, no scans | 25 GB storage free tier: **$0**; writes are a few thousand a day (on-demand write units cost $1.25/million) |
 | S3 `floodpulse-dashboard-…` | **10 objects / 612.3 KB** (index, styles, lib, app, the 60,192 B WebP backdrop and the five city nightscapes — all ten re-uploaded and byte-verified on 2026-10-18, which replaced the 579 KB PNG-as-`.webp`) | a few cents **per year**, no CloudFront |
 | CloudWatch Logs | **297 KB stored**, 7-day retention | ingestion ~$0.0002, storage negligible; retention bounds it by design |
-| SNS `floodpulse-alerts` | **0 confirmed subscriptions**, 1 pending | 1 M publishes/month free; nothing is delivered to anyone |
+| SNS `floodpulse-alerts` | at the time: **0 confirmed subscriptions**, 1 pending (today: 1 confirmed) | 1 M publishes/month free |
 | External weather API | at most 1 request per 10 minutes (~144/day), free and key-less | **$0** (attribution is the price: CC BY 4.0) |
 
 Idle cost is effectively **$0**; the two days of development and demo traffic above cost under
@@ -2327,11 +2579,12 @@ scheduled refresh exists. Three things are deliberately absent and would be the 
 the budget allowed (all are cheap or free, none was created because adding resources needs the
 owner's approval):
 
-1. **API Gateway throttling** — `$default` has no burst or rate limit, so a runaway client could
-   spend credits and inflate the bill. A burst/rate limit is a configuration change on the existing
-   stage, not a new resource.
+1. **API Gateway throttling** — the `$default` stage had no burst or rate limit at the time, so a
+   runaway client could spend credits and inflate the bill. **This was added afterwards**: the stage
+   now enforces 20 requests/second with a 40-request burst (measured 2026-10-24) — a configuration
+   change on the existing stage, not a new resource.
 2. **CloudWatch alarms** — nothing pages anyone if the error rate or latency spikes. The first ten
-   alarms are free; with 0 confirmed SNS subscribers an alarm would need an action target first.
+   alarms are free; an alarm would need an action target first.
 3. **Detailed API metrics** — currently off, so per-route latency is only visible in the Lambda's own
    logs rather than in API Gateway metrics.
 
@@ -3958,3 +4211,50 @@ Honesty about the gaps is part of the deliverable:
 * The tests, not the live system, are the evidence for every rate limit, refusal and degradation rule
   above; the live system was verified separately for the deployed code identity, the five routes, the
   resource inventory and the deployed page's content.
+
+## M18 - final submission, handoff and reproducibility pass (documentation only; no deployed change)
+
+The last pass did **not** add a feature. It audited, verified, documented, packaged and handed over what
+already existed, and it fixed only what was genuinely broken.
+
+**What changed**
+
+* `README.md`: the current state was moved to the top (see [Current state](#current-state)); the stale
+  "current milestone: M4" header, the five-city fleet claim, the milestone table (which stopped at M11 and
+  mislabelled it) and the "5 cities / no subscriber" status rows were corrected; the running-it-locally
+  counts were refreshed; the cost section is now labelled as the M8-era measurement it is, with its since
+  superseded "no throttling" claim corrected. **No milestone section was deleted** - they are the build
+  history, and their numbers are their own measurements of that time.
+* New: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/FINAL_TECHNICAL_SUMMARY.md`](docs/FINAL_TECHNICAL_SUMMARY.md),
+  [`docs/VIVA_CHEATSHEET.md`](docs/VIVA_CHEATSHEET.md), [`docs/PRESENTATION_FACTS.md`](docs/PRESENTATION_FACTS.md),
+  [`docs/FINAL_PROJECT_STATUS.md`](docs/FINAL_PROJECT_STATUS.md). `DEMO_RUNBOOK.md` was rewritten as a
+  17-step, 7-10 minute presentation with a click / say / technical-point structure, plus an offline path.
+* Two harness defects were found by running the checks against the real, currently-thin live history and
+  fixed: `tools/dashboard_scenarios.mjs` assumed a history document with more than one sample, and
+  `tools/m16_browser_check.mjs` matched the page's sentence only in its plural form. Both now accept every
+  honest state the product can display. No product behaviour changed.
+
+**What was verified in this pass** (all re-run, all read-only)
+
+| Gate | Result |
+|---|---|
+| `python -m pytest -q tests` / `unittest discover` | 773 passed / 2,333 subtests |
+| `tools/dashboard_check.mjs` | 138 checks, 144 with live payloads, 0 failed |
+| `tools/dashboard_run.mjs --site … --api …` | 80 runtime checks against the live site, 0 failed |
+| `tools/dashboard_scenarios.mjs` | 66 checks, 0 failed |
+| `tools/story_check.mjs` | 29 checks, 0 failed |
+| `tools/temporal_check.mjs` | 141 assertion groups, 0 failed |
+| `tools/m16_browser_check.mjs` (headless Edge, live) | 32 checks, 0 failed |
+| `tools/keyboard_check.mjs` (headless Edge, live) | 8 checks, 0 failed, 2 observations recorded |
+| `tools/layout_scan.mjs` / `tools/clipping_scan.mjs` (live) | 0 contract failures; 0 of 72 overflows hidden |
+| `tools/live_acceptance.py` | 62 checks against the deployed API, 0 failed |
+| `tools/verify_deployed_code.py` / `verify_deployed_page.py` | 15 files byte-identical; all page contracts hold |
+| live smoke (new in this pass) | 18 checks: 12 cities, 12 photographs decoded, map, city page, alerts, Data, About, no console error |
+| `build/m16_bytes.py` | 409,501 / 409,600 B, no CRLF |
+| secret scan (new in this pass) | 112 tracked files, 16,578 string literals, no key material present |
+
+**What this pass deliberately did not do:** no product code change, no threshold or weight change, no new
+AWS resource, no IAM change, no secret rotation, no redeployment (the deployed Lambda and bucket were
+already byte-identical to this repository), no history rewrite, and nothing pushed. The full picture,
+including what is limited and what is left open, is in
+[`docs/FINAL_PROJECT_STATUS.md`](docs/FINAL_PROJECT_STATUS.md).
