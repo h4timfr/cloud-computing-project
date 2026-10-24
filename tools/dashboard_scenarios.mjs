@@ -107,9 +107,48 @@ function withFeedAge(payload, seconds, attemptSeconds) {
   return copy;
 }
 
+/* Give the history fixture a known span.
+ *
+ * The live fixture is pulled from the deployed API, so how far its points reach depends on how much
+ * history the table held at that moment - old samples expire by TTL, and the newest window can end up
+ * with a single point. A window click can only be shown to re-slice when the series reaches past the
+ * window being chosen: with one stored point, "all" and "360" are the same sample and the summary is
+ * right not to change. This helper is a fixture, not a claim about live data - it spreads timestamps
+ * over the requested span and carries the values along a gentle slope, so a narrower window really
+ * does describe a different slice.
+ */
+function withHistorySpan(history, minutes, count = 12) {
+  const copy = JSON.parse(JSON.stringify(history));
+  const points = copy.points || [];
+  if (!points.length) return copy;
+  const newest = points[points.length - 1];
+  const end = Number(newest.ts_epoch) || Math.floor(Date.parse(newest.timestamp) / 1000);
+  const step = (minutes * 60) / Math.max(count - 1, 1);
+  const made = [];
+  for (let index = 0; index < count; index += 1) {
+    const slope = index / Math.max(count - 1, 1);
+    const stamp = end - (count - 1 - index) * step;
+    const point = JSON.parse(JSON.stringify(newest));
+    point.ts_epoch = Math.round(stamp);
+    point.timestamp = new Date(stamp * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    point.risk_score = Number((0.1 + 0.5 * slope).toFixed(2));
+    if (point.readings && typeof point.readings === 'object') {
+      Object.keys(point.readings).forEach((name) => {
+        const value = Number(point.readings[name]);
+        if (Number.isFinite(value)) point.readings[name] = Number((value * (0.6 + 0.8 * slope)).toFixed(3));
+      });
+    }
+    made.push(point);
+  }
+  copy.points = made;
+  copy.point_count = made.length;
+  copy.minutes = minutes;
+  copy.downsampled = false;
+  return copy;
+}
+
 async function main() {
-  console.log(`  live fixtures: ${paths.live.payload}`);
-  console.log(`  demo fixtures: ${paths.demo.payload}`);
+  console.log(`  live fixtures: ${paths.live.payload}`);  console.log(`  demo fixtures: ${paths.demo.payload}`);
 
   /* --------------------------------------------------------- outage/recovery --- */
 
@@ -944,9 +983,12 @@ async function main() {
 
   await (async () => {
     const runtime = createRuntime();
+    /* A series that spans the widest window: the deployed fixture may hold a single point today, and
+     * a window click cannot be shown to re-slice a series shorter than the window being chosen. */
+    const series = withHistorySpan(live.history, 1440);
     runtime.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
     runtime.on(incidentsRoute, () => ({ body: live.incidents }));
-    runtime.on(historyRoute, () => ({ body: live.history }));
+    runtime.on(historyRoute, () => ({ body: series }));
 
     const leader = live.payload.highest_risk_zone ? live.payload.highest_risk_zone.zone_id : live.payload.zones[0].zone_id;
     const dom = boot(runtime, '#/city/' + leader);
@@ -964,7 +1006,7 @@ async function main() {
       const quiet = createRuntime();
       quiet.on(zonesRoute, () => ({ body: withFeedAge(live.payload, 120, 120) }));
       quiet.on(incidentsRoute, () => ({ body: live.incidents }));
-      quiet.on(historyRoute, () => ({ body: live.history }));
+      quiet.on(historyRoute, () => ({ body: withHistorySpan(live.history, 1440) }));
       const quietDom = boot(quiet);
       return quiet.settle().then(() => {
         assert.equal(quiet.count(historyRoute), 0, `the overview asked for history ${quiet.count(historyRoute)} times`);

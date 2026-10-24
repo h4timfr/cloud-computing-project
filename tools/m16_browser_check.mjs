@@ -322,7 +322,7 @@ check('both text summaries exist and describe their own chart', () => {
   // M17: a window with too few usable samples describes no direction and says so in its own words; a
   // window that can be described states the range and span. The contract is one of the two, never
   // neither, so a live deployment whose stored history is momentarily thin is not reported as a defect.
-  assert.match(seen.summary, /Risk score \d\.\d\d to \d\.\d\d over|usable historical samples/,
+  assert.match(seen.summary, /Risk score \d\.\d\d to \d\.\d\d over|usable historical sample/,
     'the risk summary neither states the range and span nor says why it cannot');
   assert.match(seen.rainSummary, /Rainfall rate|No stored rainfall reading/, 'the rainfall summary is missing');
   assert.match(seen.rainSummary, /Instantaneous rate, not an accumulation|No stored rainfall reading/, 'the rainfall summary could be read as an accumulation');
@@ -333,7 +333,7 @@ check('the change block agrees with the sentence under the chart', () => {
   if (/Risk score \d\.\d\d to \d\.\d\d over/.test(seen.summary)) {
     assert.match(seen.summary, new RegExp(`ending ${riskNow[1]}`), 'the summary and the change block disagree about the newest score');
   } else {
-    assert.match(seen.summary, /usable historical samples/,
+    assert.match(seen.summary, /usable historical sample/,
       'the sentence under the chart neither agrees with the change block nor says why it cannot');
   }
   // dt and dd are separate nodes, so textContent joins them without a space: "Risk now0.23 · NORMAL".
